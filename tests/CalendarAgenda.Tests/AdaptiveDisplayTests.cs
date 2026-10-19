@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Playwright;
 using Xunit;
@@ -56,11 +57,16 @@ public sealed class AdaptiveDisplayTests
         await using var browser = await playwright.Chromium.LaunchAsync();
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
         await DisplayTests.Show(page, data, placement, device);
+        Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
+        var screenshot = Path.Combine(DisplayTests.Root, "artifacts",
+            $"busy-{(device == "v2" ? "x" : device)}-{placement}.png");
+        await page.ScreenshotAsync(new() { Path = screenshot });
         await NativeBounds(page, width, height, density, viewWidth, viewHeight);
 
         var visible = page.Locator(".agenda-primary [data-agenda-start]:visible");
         var count = await visible.CountAsync();
         Assert.InRange(count, 1, 31);
+        await VisibleInsideView(page.GetByText("Friday, Oct 23", new() { Exact = true }));
         await VisibleInsideView(page.GetByText($"+{47 - count} more", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("47 eligible events", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("Monday, Oct 26", new() { Exact = true }));
@@ -74,6 +80,24 @@ public sealed class AdaptiveDisplayTests
         }
         Assert.True(await visible.First.EvaluateAsync<float>(
             "element => parseFloat(getComputedStyle(element).fontSize)") >= 20);
+        await ReadableRows(page.Locator(".agenda-primary tbody tr:visible"));
+        var regions = await page.Locator("""
+            .agenda-day .agenda-heading .title, .agenda-day .agenda-heading .label,
+            .agenda-primary .agenda-overflow, [data-agenda-source],
+            .agenda-primary tbody tr:not([hidden]) .label--large,
+            .agenda-primary tbody tr:not([hidden]) td .title
+            """).EvaluateAllAsync<JsonElement>("""
+                elements => elements.map(element => {
+                  const box = element.getBoundingClientRect();
+                  return { text: element.textContent.trim(), x: box.x, y: box.y, width: box.width, height: box.height };
+                })
+                """);
+        Assert.Equal(6 + 2 * count, regions.GetArrayLength());
+        using var raster = JsonDocument.Parse(DisplayTests.RunRuby(
+            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image = screenshot, regions }));
+        foreach (var region in raster.RootElement.EnumerateArray())
+            Assert.True(region.GetProperty("dark_pixels").GetInt32() >= 20,
+                $"Required text has no readable ink in the actual screenshot: {region.GetProperty("text").GetString()}");
     }
 
     [Theory]
@@ -202,9 +226,12 @@ public sealed class AdaptiveDisplayTests
         data["secondary"]!["label"] = "Tuesday, Oct 27";
         data["primary"]!["occurrences"]![0] = new JsonObject
         {
-            ["time_kind"] = "all_day", ["id"] = "synthetic-all-day",
-            ["title"] = "All-day preparation", ["location"] = null,
-            ["start_date"] = "2026-10-23", ["end_date_exclusive"] = "2026-10-27"
+            ["time_kind"] = "all_day",
+            ["id"] = "synthetic-all-day",
+            ["title"] = "All-day preparation",
+            ["location"] = null,
+            ["start_date"] = "2026-10-23",
+            ["end_date_exclusive"] = "2026-10-27"
         };
         foreach (var occurrence in data["primary"]!["occurrences"]!.AsArray().Skip(1))
         {
@@ -250,7 +277,8 @@ public sealed class AdaptiveDisplayTests
         data["primary"]!["eligible_total"] = 47;
         data["error"] = new JsonObject
         {
-            ["code"] = "source_unavailable", ["message"] = "The calendar source could not be checked."
+            ["code"] = "source_unavailable",
+            ["message"] = "The calendar source could not be checked."
         };
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
@@ -414,6 +442,61 @@ public sealed class AdaptiveDisplayTests
         await VisibleInsideView(page.GetByText($"+{32 - original} more", new() { Exact = true }));
     }
 
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Native_capture_readiness_is_not_published_before_production_fitting_completes(
+        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+    {
+        var data = Agenda(primaryRows: 32, secondaryRows: 12);
+        data["primary"]!["eligible_total"] = 47;
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        await page.AddInitScriptAsync("""
+            (() => {
+              let ready;
+              window.agendaNativeReadySnapshots = [];
+              Object.defineProperty(window, "TRMNL_PLUGINS_READY", {
+                configurable: true,
+                get: () => ready,
+                set: value => {
+                  ready = value;
+                  const agenda = document.querySelector(".agenda");
+                  if (value !== true || !agenda) return;
+                  const view = agenda.closest(".view").getBoundingClientRect();
+                  const inside = element => {
+                    const box = element.getBoundingClientRect();
+                    return box.width > 0 && box.height > 0 && box.left >= view.left
+                      && box.top >= view.top && box.right <= view.right && box.bottom <= view.bottom;
+                  };
+                  const primary = agenda.querySelector(".agenda-primary");
+                  const overflow = primary.querySelector(".agenda-overflow");
+                  window.agendaNativeReadySnapshots.push({
+                    fitted: agenda.dataset.agendaReady === "true",
+                    rows: [...primary.querySelectorAll("tbody tr")].filter(row => !row.hidden).length,
+                    overflow: overflow.textContent,
+                    overflowInside: inside(overflow),
+                    sourceInside: inside(document.querySelector("[data-agenda-source]"))
+                  });
+                }
+              });
+            })();
+            """);
+        await DisplayTests.Show(page, data, placement, device);
+        await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+        var snapshots = await page.EvaluateAsync<JsonElement>("window.agendaNativeReadySnapshots");
+        Assert.NotEmpty(snapshots.EnumerateArray());
+        foreach (var snapshot in snapshots.EnumerateArray())
+        {
+            Assert.True(snapshot.GetProperty("fitted").GetBoolean(), snapshot.GetRawText());
+            var count = snapshot.GetProperty("rows").GetInt32();
+            Assert.InRange(count, 1, 31);
+            Assert.Equal($"+{47 - count} more", snapshot.GetProperty("overflow").GetString());
+            Assert.True(snapshot.GetProperty("overflowInside").GetBoolean());
+            Assert.True(snapshot.GetProperty("sourceInside").GetBoolean());
+        }
+    }
+
     private static JsonObject Agenda(int primaryRows, int secondaryRows)
     {
         var data = DisplayTests.CurrentAgenda();
@@ -454,7 +537,31 @@ public sealed class AdaptiveDisplayTests
         Assert.Equal(viewHeight * density, view.Height, precision: 1);
     }
 
-    private static async Task VisibleInsideView(ILocator content, bool textMayBeTruncated = false)
+    private static async Task ReadableRows(ILocator rows)
+    {
+        float previousBottom = 0;
+        for (var index = 0; index < await rows.CountAsync(); index++)
+        {
+            var row = rows.Nth(index);
+            var bounds = await row.BoundingBoxAsync();
+            var time = await row.Locator(".agenda-time .label").BoundingBoxAsync();
+            var title = await row.Locator("td .title").BoundingBoxAsync();
+            Assert.NotNull(bounds);
+            Assert.NotNull(time);
+            Assert.NotNull(title);
+            Assert.True(bounds.Y >= previousBottom - 1, "Visible occurrence rows must not overlap.");
+            Assert.True(time.Y >= bounds.Y - 1 && time.Y + time.Height <= bounds.Y + bounds.Height + 1,
+                "The time range must fit inside its occurrence row.");
+            Assert.True(title.Y >= bounds.Y - 1 && title.Y + title.Height <= bounds.Y + bounds.Height + 1,
+                "The title must fit inside its occurrence row.");
+            Assert.True(time.X + time.Width <= title.X + 1 || title.X + title.Width <= time.X + 1
+                || time.Y + time.Height <= title.Y + 1 || title.Y + title.Height <= time.Y + 1,
+                "Essential time and title text must not overlap.");
+            previousBottom = bounds.Y + bounds.Height;
+        }
+    }
+
+    internal static async Task VisibleInsideView(ILocator content, bool textMayBeTruncated = false)
     {
         await Assertions.Expect(content).ToBeVisibleAsync();
         Assert.True(await content.EvaluateAsync<bool>("""

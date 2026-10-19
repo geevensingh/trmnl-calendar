@@ -183,7 +183,8 @@
     };
     document.fonts.ready.then(scheduleFit);
     document.fonts.addEventListener("loadingdone", scheduleFit);
-    window.addEventListener("trmnl:terminalize:stats", scheduleFit);
+    // Finish fitting before the framework publishes capture readiness.
+    window.addEventListener("trmnl:terminalize:stats", fit);
     new ResizeObserver(scheduleFit).observe(view);
   })();
 </script>

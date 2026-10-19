@@ -11,7 +11,7 @@ namespace CalendarAgenda.Tests;
 
 public sealed class DisplayTests
 {
-    private static readonly string Root = Path.GetFullPath(
+    internal static readonly string Root = Path.GetFullPath(
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 
     [Fact]
@@ -235,6 +235,34 @@ public sealed class DisplayTests
             await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo.html"), Render("full", data));
             await page.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", "demo.png") });
 
+            foreach (var (device, width, height) in new[] { ("og", 800, 480), ("v2", 1872, 1404) })
+                foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
+                {
+                    var name = $"demo-{(device == "v2" ? "x" : device)}-{placement}";
+                    await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", $"{name}.html"),
+                        Render(placement, data, device));
+                    var preview = await browser.NewPageAsync(new()
+                    {
+                        ViewportSize = new() { Width = width, Height = height }
+                    });
+                    var navigation = await preview.GotoAsync($"http://127.0.0.1:{sourcePort}/{name}.html");
+                    Assert.NotNull(navigation);
+                    Assert.Equal(200, navigation.Status);
+                    await preview.EvaluateAsync("document.fonts.ready");
+                    await preview.WaitForFunctionAsync("window.TRMNL_PLUGINS_READY === true");
+                    await preview.WaitForFunctionAsync("document.querySelector('.agenda').dataset.agendaReady === 'true'");
+                    await AdaptiveDisplayTests.VisibleInsideView(
+                        preview.GetByText("Synthetic source meeting", new() { Exact = true }));
+                    foreach (var day in new[] { "primary", "secondary" })
+                        await AdaptiveDisplayTests.VisibleInsideView(
+                            preview.GetByText(data[day]!["label"]!.GetValue<string>(), new() { Exact = true }));
+                    await AdaptiveDisplayTests.VisibleInsideView(preview.Locator("[data-agenda-source]"));
+                    await Assertions.Expect(preview.Locator("[data-agenda-source]"))
+                        .ToHaveAttributeAsync("datetime", data["source_succeeded_at"]!.GetValue<string>());
+                    await preview.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", $"{name}.png") });
+                    await preview.CloseAsync();
+                }
+
             var editedBody = Render("polling-body", new
             {
                 rules_json = """
@@ -323,6 +351,9 @@ public sealed class DisplayTests
     }
 
     internal static string Render(string mode, object variables, string device = "og")
+        => RunRuby(Path.Combine(Root, "display", "render.rb"), variables, mode, device);
+
+    internal static string RunRuby(string script, object variables, params string[] arguments)
     {
         var localRuby = Path.Combine(Root, ".tools", "ruby", "bin", "ruby.exe");
         var ruby = Environment.GetEnvironmentVariable("TRMNL_RUBY")
@@ -334,9 +365,8 @@ public sealed class DisplayTests
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
-        start.ArgumentList.Add(Path.Combine(Root, "display", "render.rb"));
-        start.ArgumentList.Add(mode);
-        start.ArgumentList.Add(device);
+        start.ArgumentList.Add(script);
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start)!;
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();

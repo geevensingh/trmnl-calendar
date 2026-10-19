@@ -5,6 +5,9 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Ical.Net.CalendarComponents;
+using Ical.Net.DataTypes;
+using Ical.Net.Evaluation;
 using Ical.Net.Serialization;
 using Calendar = Ical.Net.Calendar;
 using Microsoft.AspNetCore.Http;
@@ -96,46 +99,125 @@ public sealed class AgendaFunction(
         {
             if (string.IsNullOrWhiteSpace(item.Uid))
                 return Fail("source_invalid", "The source contains an event without an identifier.");
-            if (new[] { "UID", "DTSTART", "DTEND", "DURATION", "SUMMARY", "LOCATION", "STATUS" }
+            if (new[] { "UID", "DTSTART", "DTEND", "DURATION", "SUMMARY", "LOCATION", "STATUS", "RECURRENCE-ID" }
                     .Any(name => item.Properties.Count(property => property.Name == name) > 1)
                 || item.DtEnd is not null && item.Duration is not null)
                 return Fail("source_invalid", "The source contains conflicting event properties.");
-            if (new[] { "RRULE", "RDATE", "EXRULE", "EXDATE", "RECURRENCE-ID" }.Any(item.Properties.ContainsKey)
-                || item.DtStart is { HasTime: false } or { IsFloating: true }
-                || item.DtEnd is { HasTime: false } or { IsFloating: true })
+            if (item.Properties.Any(property => (property.Name is "DTSTART" or "DTEND" or "DURATION")
+                && property.Value is null))
+                return Fail("source_invalid", "The source contains an invalid event date or duration.");
+            if (item.Properties.ContainsKey("RECURRENCE-ID") && item.RecurrenceIdentifier is null
+                || item.Properties.Any(property => (property.Name is "RDATE" or "EXDATE")
+                    && (property.Value is not IEnumerable<Period> periods || !periods.Any())))
+                return Fail("source_invalid", "The source contains an invalid recurrence date.");
+            if (item.RecurrenceIdentifier is { Range: RecurrenceRange.ThisAndFuture })
+                return Fail("compatibility_unsupported", "Recurring changes with RANGE=THISANDFUTURE are not supported.");
+            if (item.Properties.Any(property => property.Name == "RECURRENCE-ID"
+                && property.Parameters.Get("RANGE") is not null))
+                return Fail("compatibility_unsupported", "The source contains an unsupported recurrence range.");
+            if (item.Properties.ContainsKey("EXRULE"))
+                return Fail("compatibility_unsupported", "Deprecated recurrence exclusion rules are not supported.");
+            if (item.DtStart is { HasTime: true, IsFloating: true }
+                || item.DtEnd is { HasTime: true, IsFloating: true })
                 return Fail("compatibility_unsupported", "The source contains calendar semantics not supported by this slice.");
             if (item.DtStart is null)
+            {
+                if (!item.IsActive && item.RecurrenceIdentifier is not null)
+                    continue; // Keep the cancellation in the library's original-occurrence replacement map.
                 return Fail("source_invalid", "The source contains an event without a valid start.");
-            if (item.DtEnd is null && item.Duration is null)
+            }
+            if (item.DtEnd is not null && item.DtStart.HasTime != item.DtEnd.HasTime)
+                return Fail("source_invalid", "The source contains conflicting event date types.");
+            if (item.DtStart.HasTime && item.DtEnd is null && item.Duration is null)
                 return Fail("compatibility_unsupported", "A timed event end or duration is required by this slice.");
         }
-        if (calendar.Events.Select(item => item.Uid).Distinct(StringComparer.Ordinal).Count() != calendar.Events.Count)
-            return Fail("source_invalid", "The source contains duplicate nonrecurring event identifiers.");
+        if (calendar.Events.Where(item => item.RecurrenceIdentifier is null)
+            .GroupBy(item => item.Uid, StringComparer.Ordinal).Any(group => group.Count() > 1))
+            return Fail("source_invalid", "The source contains duplicate event series identifiers.");
+        var masters = calendar.Events.Where(item => item.RecurrenceIdentifier is null)
+            .ToDictionary(item => item.Uid!, StringComparer.Ordinal);
+        if (calendar.Events.Any(item => item.RecurrenceIdentifier is not null && !masters.ContainsKey(item.Uid!)))
+            return Fail("compatibility_unsupported", "The source contains a recurring change without its series.");
         var now = clock.GetUtcNow();
         var primary = NextWorkingDay(DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, AgendaTimeZone).DateTime));
         var secondary = NextWorkingDay(primary.AddDays(1));
-        TimedOccurrence[] occurrences;
+        AgendaOccurrence[] occurrences;
         try
         {
-            var interpreted = calendar.Events.Select(item =>
+            foreach (var item in calendar.Events)
             {
-                var start = new DateTimeOffset(item.DtStart!.AsUtc);
-                var end = new DateTimeOffset((item.DtEnd ?? item.DtStart!.Add(item.Duration!.Value)).AsUtc);
-                var id = Convert.ToHexStringLower(SHA256.HashData(
-                    Encoding.UTF8.GetBytes($"{item.Uid}\n{start:O}")));
-                return (Occurrence: new TimedOccurrence(id, item.Summary ?? "(Untitled)", item.Location, start, end),
-                    item.IsActive, SourceTitle: item.Summary);
-            }).ToArray();
-            if (interpreted.Any(item => item.Occurrence.EndAt <= item.Occurrence.StartAt))
+                foreach (var date in SourceDates(item).Where(date => date.HasTime))
+                {
+                    if (date.IsFloating)
+                        return Fail("compatibility_unsupported", "The source contains a floating event or recurrence time.");
+                    _ = date.AsUtc;
+                }
+                if (item.RecurrenceIdentifier is { } identifier)
+                {
+                    var masterStart = masters[item.Uid!].DtStart!;
+                    if (identifier.StartTime.HasTime != masterStart.HasTime)
+                        return Fail("compatibility_unsupported", "A recurring change uses a different identifier date type.");
+                    // Stable 5.2.3 matches wall times, so equivalent identifiers must use the series' zone.
+                    if (masterStart.HasTime)
+                        identifier.StartTime = identifier.StartTime.ToTimeZone(masterStart.TzId!);
+                }
+                if (item.DtStart is null)
+                    continue;
+                var start = item.DtStart!;
+                var end = item.DtEnd ?? start.Add(item.EffectiveDuration);
+                if (start.HasTime ? end.AsUtc <= start.AsUtc : end.Date <= start.Date)
+                    return Fail("source_invalid", "The source contains an invalid event interval.");
+            }
+            if (calendar.Events.GroupBy(item => (item.Uid, item.RecurrenceIdentifier?.StartTime.Value))
+                .Any(group => group.Count() > 1))
+                return Fail("source_invalid", "The source contains duplicate event occurrence identifiers.");
+            var windowStart = new CalDateTime(primary.ToDateTime(TimeOnly.MinValue), TimeZoneId);
+            var windowEnd = new CalDateTime(secondary.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeZoneId);
+            var interpreted = calendar.GetOccurrences<CalendarEvent>(windowStart,
+                new EvaluationOptions { MaxUnmatchedIncrementsLimit = 1_000 })
+                .TakeWhile(item => item.Period.StartTime < windowEnd)
+                .Select(instance =>
+                {
+                    var item = (CalendarEvent)instance.Source;
+                    var start = instance.Period.StartTime;
+                    var end = instance.Period.EffectiveEndTime
+                        ?? throw new InvalidOperationException("An evaluated occurrence has no end.");
+                    var key = start.HasTime
+                        ? new DateTimeOffset(start.AsUtc).ToString("O", CultureInfo.InvariantCulture)
+                        : start.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    var id = Convert.ToHexStringLower(SHA256.HashData(
+                        Encoding.UTF8.GetBytes($"{item.Uid}\n{key}")));
+                    AgendaOccurrence occurrence = start.HasTime
+                        ? new TimedOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
+                            new DateTimeOffset(start.AsUtc), new DateTimeOffset(end.AsUtc))
+                        : new AllDayOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
+                            DateOnly.FromDateTime(start.Value), DateOnly.FromDateTime(end.Value));
+                    return (Occurrence: occurrence, IsActive: item.IsActive && masters[item.Uid!].IsActive,
+                        SourceTitle: item.Summary);
+                }).ToArray();
+            if (interpreted.Any(item => item.Occurrence switch
+                {
+                    TimedOccurrence timed => timed.EndAt <= timed.StartAt,
+                    AllDayOccurrence allDay => allDay.EndDateExclusive <= allDay.StartDate,
+                    _ => throw new InvalidOperationException("Unknown occurrence kind.")
+                }))
                 return Fail("source_invalid", "The source contains an invalid event interval.");
-            occurrences = interpreted.Where(item => item.IsActive && item.Occurrence.EndAt > now
+            occurrences = interpreted.Where(item => item.IsActive
+                    && (item.Occurrence is not TimedOccurrence timed || timed.EndAt > now)
                     && !rules.Any(rule => rule.Matches(item.SourceTitle)))
-                .Select(item => item.Occurrence).OrderBy(item => item.StartAt)
-                .ThenBy(item => item.EndAt).ThenBy(item => item.Id, StringComparer.Ordinal).ToArray();
+                .Select(item => item.Occurrence).ToArray();
         }
         catch (ArgumentException)
         {
             return Fail("compatibility_unsupported", "The source contains an unsupported time zone.");
+        }
+        catch (EvaluationException)
+        {
+            return Fail("compatibility_unsupported", "The calendar recurrence could not be safely evaluated.");
+        }
+        catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException)
+        {
+            return Fail("source_invalid", "The calendar source could not be interpreted.");
         }
         var result = new AgendaResult(1, AgendaState.Current, TimeZoneId, now, now,
             SelectDay(primary, occurrences), SelectDay(secondary, occurrences), null);
@@ -266,12 +348,25 @@ public sealed class AgendaFunction(
         return date;
     }
 
-    private static AgendaDay SelectDay(DateOnly date, IEnumerable<TimedOccurrence> occurrences)
+    private static IEnumerable<CalDateTime> SourceDates(CalendarEvent item) =>
+        new[] { item.DtStart, item.DtEnd, item.RecurrenceIdentifier?.StartTime }.OfType<CalDateTime>()
+            .Concat(item.RecurrenceDates.GetAllDates())
+            .Concat(item.ExceptionDates.GetAllDates())
+            .Concat(item.RecurrenceDates.GetAllPeriods()
+                .SelectMany(period => new[] { period.StartTime, period.EndTime }).OfType<CalDateTime>());
+
+    private static AgendaDay SelectDay(DateOnly date, IReadOnlyList<AgendaOccurrence> occurrences)
     {
         var start = TimeZoneInfo.ConvertTimeToUtc(date.ToDateTime(TimeOnly.MinValue), AgendaTimeZone);
         var end = TimeZoneInfo.ConvertTimeToUtc(date.AddDays(1).ToDateTime(TimeOnly.MinValue), AgendaTimeZone);
-        var eligible = occurrences.Where(item => item.StartAt < end && item.EndAt > start)
-            .Cast<AgendaOccurrence>().ToArray();
+        var eligible = occurrences.OfType<AllDayOccurrence>()
+            .Where(item => item.StartDate <= date && item.EndDateExclusive > date)
+            .OrderBy(item => item.StartDate).ThenBy(item => item.EndDateExclusive)
+            .ThenBy(item => item.Id, StringComparer.Ordinal).Cast<AgendaOccurrence>()
+            .Concat(occurrences.OfType<TimedOccurrence>()
+                .Where(item => item.StartAt < end && item.EndAt > start)
+                .OrderBy(item => item.StartAt).ThenBy(item => item.EndAt)
+                .ThenBy(item => item.Id, StringComparer.Ordinal)).ToArray();
         return new AgendaDay(date, date.ToString("dddd, MMM d", CultureInfo.InvariantCulture), eligible.Length, eligible);
     }
 }

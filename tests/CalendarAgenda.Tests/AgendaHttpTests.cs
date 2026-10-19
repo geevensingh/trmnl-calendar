@@ -17,7 +17,7 @@ using Xunit;
 
 namespace CalendarAgenda.Tests;
 
-public sealed class AgendaHttpTests
+public sealed partial class AgendaHttpTests
 {
     [Fact]
     public async Task Http_poll_returns_ongoing_and_upcoming_occurrences_in_the_working_day_window()
@@ -101,13 +101,9 @@ public sealed class AgendaHttpTests
     }
 
     [Theory]
-    [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nRRULE:FREQ=DAILY")]
-    [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nRDATE:20261020T190000Z")]
-    [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nEXDATE:20261020T190000Z")]
     [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nEXRULE:FREQ=DAILY")]
     [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nRECURRENCE-ID:20261019T190000Z")]
     [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nRECURRENCE-ID;RANGE=THISANDFUTURE:20261019T190000Z")]
-    [InlineData("DTSTART;VALUE=DATE:20261019\nDTEND;VALUE=DATE:20261020")]
     [InlineData("DTSTART:20261019T120000\nDTEND:20261019T130000")]
     [InlineData("DTSTART;TZID=Unverified/Secret:20261019T120000\nDTEND;TZID=Unverified/Secret:20261019T130000")]
     public async Task Unsupported_calendar_semantics_fail_the_entire_agenda(string properties)

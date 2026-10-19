@@ -50,7 +50,7 @@ createServer((request, response) => {
     response.writeHead(200, { "Content-Type": "text/calendar; charset=utf-8" }).end(syntheticCalendar());
   } else {
     const preview = path === "/" ? "demo.html"
-      : /^\/demo-(og|x)-(full|half_horizontal|half_vertical)\.html$/.test(path) ? path.slice(1) : null;
+      : /^\/demo-(stale-)?(og|x)-(full|half_horizontal|half_vertical)\.html$/.test(path) ? path.slice(1) : null;
     const isAsset = /^\/(css|js)\/3\.4\.3\/plugins\.(css|js)$/.test(path)
       || /^\/fonts\/[A-Za-z0-9_-]+\.(ttf|woff2?)$/.test(path);
     if (!preview && !isAsset) {

@@ -1,6 +1,6 @@
 # TRMNL Calendar
 
-The agenda slices for [#3](https://github.com/geevensingh/trmnl-calendar/issues/3) and [#4](https://github.com/geevensingh/trmnl-calendar/issues/4), native configurable title exclusions from [#5](https://github.com/geevensingh/trmnl-calendar/issues/5), and adaptive production views from [#6](https://github.com/geevensingh/trmnl-calendar/issues/6), under [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2).
+The agenda slices for [#3](https://github.com/geevensingh/trmnl-calendar/issues/3) and [#4](https://github.com/geevensingh/trmnl-calendar/issues/4), native configurable title exclusions from [#5](https://github.com/geevensingh/trmnl-calendar/issues/5), adaptive production views from [#6](https://github.com/geevensingh/trmnl-calendar/issues/6), and persistent stale-source fallback from [#7](https://github.com/geevensingh/trmnl-calendar/issues/7), under [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2).
 
 The production path is a .NET 10 isolated Azure Function, stable Ical.Net **5.2.3**, and a private TRMNL plugin. The function fetches its configured source, resolves timed and all-day occurrences, applies validated title exclusions, and returns a two-working-day agenda in `America/Los_Angeles`. OG and X support full-screen, half-horizontal, and half-vertical placements through the actual `trmnl-liquid` environment and pinned TRMNL framework **3.4.3**.
 
@@ -8,7 +8,28 @@ Recurring series use the installed stable library's `RRULE`, `RDATE`, and `EXDAT
 
 The native code-style rule editor starts with whole-word OOF/OOO and starts-with working from/`Following: ` exclusions. An edit changes the next poll without adapter redeployment. A deliberate `[]` disables exclusions; missing, malformed, or unsupported configuration shows a visible error, never defaults, old rules, or an unfiltered fallback.
 
-Parsed `RECURRENCE-ID;RANGE=THISANDFUTURE`, other recurrence ranges, deprecated `EXRULE`, orphan overrides, floating times, unsupported timezones, and invalid sources produce explicit errors rather than partial success. The stable occurrence engine does not cascade ranged edits; serializer support does not establish evaluation support. Unproductive recurrence evaluation is bounded and returns a compatibility error. Persistent stale fallback, private-feed compatibility, and Azure/TRMNL activation belong to follow-on tickets; the display already supports the agreed stale result shape without implementing a cache.
+Parsed `RECURRENCE-ID;RANGE=THISANDFUTURE`, other recurrence ranges, deprecated `EXRULE`, orphan overrides, floating times, unsupported timezones, and invalid sources fail the whole source check rather than producing partial success. The stable occurrence engine does not cascade ranged edits; serializer support does not establish evaluation support. Unproductive recurrence evaluation is bounded and returns a compatibility error. Such failures may use a recent, visibly stale last-good source, but never replace it or renew its timestamp. Private-feed compatibility and Azure/TRMNL activation remain [#8](https://github.com/geevensingh/trmnl-calendar/issues/8).
+
+## Persistent source and freshness
+
+The cache retains the last successfully fetched **and interpreted source within supported calendar semantics**, not filtered agenda rows or rendered output. Every fallback runs that source through the same real calendar/rule logic with the current request's rules, current Los Angeles working dates, and current ended-event cutoff. Edited rules and Friday-to-Saturday rollover therefore take effect during an outage. Missing or invalid rules still return a configuration error without reading or using cached data.
+
+After a rejected response, redirect, timeout, transport/encoding/parse failure, or unsupported calendar feature, a matching retained source is usable only while its source-success age is **strictly less than one hour**. It returns `stale`, the safe fresh-check failure, a visible warning, and its **original** source-success date/time. At exactly one hour or later, with no usable cache, or with a future-dated snapshot, it returns an error with unknown counts and no events, never a healthy empty day. Repeated stale polls and renders cannot extend this interval. A later supported source check replaces the snapshot and establishes a new success time. Changing the configured feed cannot reuse another feed's commitments.
+
+Production stores one overwritten `last-good-source.json` blob in a **private, pre-existing container**. Its versioned envelope contains the raw source, a digest binding it to the configured source URL, and the original source-success time. Raw source may contain confidential fields that are never returned to TRMNL. The 2 MiB source limit also applies on reload; stored JSON is bounded to 13 MiB to allow JSON escaping. Conditional blob writes prevent an older concurrent source success from overwriting a newer one. A worker restart does not erase this cache.
+
+Configure these **Azure runtime settings**, not TRMNL settings or HTTP inputs:
+
+| Setting | Value |
+|---|---|
+| `Agenda__CacheServiceUri` | The HTTPS blob service URI of the reused Functions StorageV2 account, e.g. `https://<account>.blob.core.windows.net`. No credentials, SAS/query string, or container path. |
+| `Agenda__CacheContainer` | The name of the private cache container created during activation. |
+
+The cache explicitly uses the Function app's **system-assigned managed identity**. Grant that identity **Storage Blob Data Contributor at the cache container's scope only**, `/subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Storage/storageAccounts/<account>/blobServices/default/containers/<container>`. The adapter reads and conditionally overwrites its blob; it does not create containers, request account keys, or require account/resource-group/subscription-wide Contributor access. Do not enable anonymous container/blob access or configure storage credentials. The Functions host's separate user-assigned storage identity and its settings do not select the cache identity.
+
+Missing/unsafe storage configuration, unavailable storage, or an unusable stored envelope produce bounded `cache_configuration`, `cache_unavailable`, or `cache_invalid` errors. Even a supported fresh source produces an explicit error if it cannot be persisted; its known source-success time remains visible, but counts are not claimed. SDK URL/content diagnostics and retries are disabled for the cache. Outbound I/O shares a nine-second cancellation budget, with source acquisition additionally limited to six seconds; deployed cold-start and delivery latency still need the activation measurement. Keep blob versioning/soft-delete retention and telemetry growth bounded when configuring the reused account; one overwritten live blob alone does not bound retained versions.
+
+Polling targets **15 minutes**, not end-to-end freshness: Outlook publication and device refresh add delay. An unreachable adapter or offline TRMNL can retain the previous e-ink image, including its previous warning state. The always-visible source-success timestamp matters even when no new warning or error can be delivered.
 
 ## Local prerequisites
 
@@ -33,10 +54,12 @@ Count labels use standard Liquid conditionals: the standalone `trmnl-liquid` env
 
 The tests cross the two agreed outer interfaces:
 
-- **HTTP requests/results:** the production function handler, real Ical.Net parser and title matching, controlled external HTTP transport and clock. No private parser/matcher/helper tests.
+- **HTTP requests/results:** the production function handler, real Ical.Net parser and title matching, controlled external HTTP transport and clock, and persistent local cache states/recreation. No private parser/matcher/helper tests.
 - **Rendered output:** the production `display\src` Liquid templates rendered by `TRMNL::Liquid`, with the real framework, fonts, JavaScript, and all six native placements. Assertions check text ranges against clipping ancestors and physical view bounds, non-overlapping essential rows, physical PNG dimensions and actual raster ink at required-text positions, readable font sizes, truthful overflow, escaping, and fitting at the native capture-readiness signal itself. Raster inspection uses the already-locked ChunkyPNG gem; it does not render or fit the agenda.
 
 Synthetic recurrence fixtures cover ongoing and ended instances, recurrence dates/exclusions, exclusive all-day ends, implicit single-day all-day occurrences, cross-date moves, start-less cancellations, cancelled series, and UTC-equivalent override identifiers. Representative HTTP results are rendered through production Liquid to verify all-day labels, actual moved times, complete per-day counts, both DST transitions with Outlook Pacific/Eastern aliases, and visible compatibility failures without a successful source timestamp.
+
+Cache requests cover repeated failures, invalid UTF-8, malformed/unsupported replacements, a stale response one tick below an hour, expiry at exactly an hour, source replacement, feed isolation, edited/invalid rules, and working-date rollover. HTTP-produced current, empty, stale, stale-empty, expired compatibility, configuration, and no-cache source-error results are raster-checked inside all six native views, including truthful overflow, secondary counts, and source freshness.
 
 ## Adaptive production views
 
@@ -69,15 +92,15 @@ The runnable end-to-end demonstration is independently repeatable:
 dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restore --nologo --verbosity minimal --filter End_to_end_demo
 ```
 
-It starts a loopback synthetic ICS server and the **real Functions host from the build output**, renders the actual settings' POST body, fetches the feed through the production HTTP adapter, and passes the returned JSON directly to the production templates. Chromium visits all six generated display pages over HTTP with the actual pinned assets, checking selected labels, visible commitments, physical bounds, and the unchanged source-success timestamp. It also preserves the native rule-editor example: edit exclusions between polls, show a visible configuration error for malformed editor text, and clear exclusions with `[]`, without restarting the host. It checks the host's actual POST/function-auth definition, verifies confidential synthetic rule/key/source markers are absent from host diagnostics, and verifies that a redirect is a source error, exercising the production HttpClient registration. Owned processes are stopped, including on failure.
+It starts a loopback synthetic ICS server and the **real Functions host from the build output**, renders the actual settings' POST body, fetches the feed through the production HTTP adapter, and passes the returned JSON directly to the production templates. Chromium visits all six generated display pages over HTTP with the actual pinned assets, checking selected labels, visible commitments, physical bounds, and the source-success timestamp. It preserves the native rule-editor example: edit exclusions between polls, show a visible configuration error for malformed editor text, and clear exclusions with `[]`, without restarting the host. A subsequent redirect fails the fresh source check without being followed. The test then **terminates and restarts the Functions process**, reloads the same persisted source, and renders visibly stale results in all six views with the unchanged last-success timestamp. It checks the host's actual POST/function-auth definition and verifies confidential synthetic rule/key/source markers are absent from both processes' diagnostics. Owned processes and temporary local cache directories are cleaned up, including on failure.
 
-Generated synthetic outputs include `artifacts\demo-agenda.json`, `artifacts\demo.html`, `artifacts\demo.png`, `artifacts\demo-host.log`, and six `demo-{og|x}-{full|half_horizontal|half_vertical}.html`/`.png` pairs. The adaptive matrix also saves six `busy-{og|x}-{full|half_horizontal|half_vertical}.png` images; these generated artifacts are ignored, not private or committed calendar data. To inspect the last generated HTML previews:
+Generated synthetic outputs include `artifacts\demo-agenda.json`, `artifacts\demo-stale-agenda.json`, `artifacts\demo.html`, `artifacts\demo.png`, `artifacts\demo-host.log`, and six each of `demo-{og|x}-{full|half_horizontal|half_vertical}.html`/`.png` and `demo-stale-{og|x}-{full|half_horizontal|half_vertical}.html`/`.png`. The adaptive and HTTP/cache matrices also save native-bounds screenshots. These generated artifacts are ignored, not private or committed calendar data. To inspect the last generated HTML previews:
 
 ```powershell
 node .\scripts\synthetic-source.mjs 8899
 ```
 
-Open `http://127.0.0.1:8899/` for the default OG view, or, for example, `http://127.0.0.1:8899/demo-x-half_vertical.html` and `http://127.0.0.1:8899/demo-og-half_horizontal.html`. Stop the preview with Ctrl+C. This server exposes only the allowlisted synthetic demo pages/feed and the downloaded framework assets.
+Open `http://127.0.0.1:8899/` for the default OG view, or, for example, `http://127.0.0.1:8899/demo-x-half_vertical.html` and `http://127.0.0.1:8899/demo-stale-og-half_horizontal.html`. Stop the preview with Ctrl+C. This server exposes only the allowlisted synthetic demo pages/feed and the downloaded framework assets.
 
 ## Interactive Functions run
 
@@ -89,6 +112,7 @@ $env:AZURE_FUNCTIONS_ENVIRONMENT = 'Development'
 $env:AzureWebJobsSecretStorageType = 'files'
 $env:AzureWebJobsStorage = ''
 $env:Agenda__SourceUrl = 'http://127.0.0.1:8899/calendar.ics'
+$env:Agenda__DevelopmentCacheDirectory = Join-Path (Get-Location) 'artifacts\interactive-source-cache'
 dotnet build .\src\CalendarAgenda\CalendarAgenda.csproj
 func start --no-build --script-root .\src\CalendarAgenda\bin\Debug\net10.0
 ```
@@ -101,7 +125,9 @@ Invoke-RestMethod http://127.0.0.1:7071/api/agenda -Method Post `
   -ContentType application/json -Body '{"rules_json":"[]"}'
 ```
 
-**Core Tools normally disables local authentication.** A local success with this synthetic header does not prove Azure key enforcement. The emitted function definition is POST with `AuthorizationLevel.Function`; Azure function-scoped key/header enforcement, actual TRMNL delivery, managed hosting/storage, and cold-start latency still require the later activation check. An empty local storage setting can produce a host storage-health warning; this HTTP-only slice does not use persistent storage.
+`Agenda__DevelopmentCacheDirectory` is an internal local-persistence substitute selected **only** in the explicit Development environment. It exercises the production source-cache policy without cloud credentials; it is not an end-user/plugin setting. Production ignores it and requires the managed-identity blob settings above. Use synthetic sources only with these local tools.
+
+**Core Tools normally disables local authentication.** A local success with this synthetic header does not prove Azure key enforcement. The emitted function definition is POST with `AuthorizationLevel.Function`; Azure function-scoped key/header enforcement, actual TRMNL delivery, system-managed-identity blob access, and cold-start latency still require [#8](https://github.com/geevensingh/trmnl-calendar/issues/8). An empty local host storage setting can produce a host storage-health warning; the adapter's local source cache is separate from Functions host storage.
 
 ## Production surfaces, not activation
 
@@ -119,4 +145,4 @@ The target is Functions v4, .NET 10 isolated, Linux **Flex Consumption**, not cl
 
 Only fixed error codes are logged. HttpClient URL logging is removed. Do not enable request/response body logging or use private data with the local preview tools. Committed fixtures and generated demo inputs are synthetic.
 
-See [the shared agenda contract](docs/agenda-contract.md) for field definitions, timed/all-day shapes, grouping, the reserved stale state, and sibling-ticket extension points. Source-success time is the successful fetch/interpretation time, not Outlook's publication time. Fifteen-minute polling plus Outlook publication and device refresh delays is not a freshness guarantee; an offline device can retain its old image.
+See [the shared agenda contract](docs/agenda-contract.md) for field definitions, timed/all-day shapes, grouping, stale/expiry behavior, and explicit errors. Source-success time is the successful fetch/interpretation time, not Outlook's publication time or the most recent cache response.

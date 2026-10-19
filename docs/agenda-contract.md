@@ -86,10 +86,10 @@ Authorized, completed polls return HTTP 200 and `application/json`, with `Cache-
 | Field | Meaning |
 |---|---|
 | `schema_version` | Integer `1`; incompatible shape changes require a new version. |
-| `state` | `current`, reserved `stale`, or `error`. Never infer health from empty arrays. |
+| `state` | `current`, `stale`, or `error`. Never infer health from empty arrays. |
 | `time_zone` | IANA timezone for date selection and display; version 1 uses `America/Los_Angeles`. |
 | `generated_at` | UTC instant when this agenda result was evaluated, not the source freshness clock. |
-| `source_succeeded_at` | UTC instant of the latest known successful fetch **and supported interpretation**. Null when unavailable. Rendering/retrying an error must not renew it. |
+| `source_succeeded_at` | UTC instant of the latest known successful fetch **and supported interpretation**, persisted with the last-good source. Null when unavailable. Storage reads, failed checks, stale HTTP responses, and rendering must not renew it. |
 | `primary`, `secondary` | The selected dates and their complete eligible totals/ordered occurrences. |
 | `error` | Null for current data; otherwise `{ "code": "...", "message": "..." }` with a safe, renderable explanation, never raw exception/source/rule text. |
 
@@ -97,7 +97,7 @@ Authorized, completed polls return HTTP 200 and `application/json`, with `Cache-
 
 The primary day is the first Monday-Friday date on or after the Los Angeles current date; the secondary day is the following working day. Holidays are ordinary weekdays. An empty primary day never moves the window.
 
-Each day has ISO date-only `date`, a literal weekday/date `label` (not misleading today/tomorrow aliases), nullable integer `eligible_total`, and `occurrences`. Current totals are complete **after** supported calendar selection, exclusions, and time filtering, not the visible row count. An occurrence overlapping both selected local dates appears and counts on each; its end is exclusive. Overnight timing is not clipped or rewritten to midnight. A timed occurrence disappears at `end_at <= now`, including ongoing occurrences only while their end is still ahead.
+Each day has ISO date-only `date`, a literal weekday/date `label` (not misleading today/tomorrow aliases), nullable integer `eligible_total`, and `occurrences`. Current and stale totals are complete **after** supported calendar selection, current exclusions, and current time filtering, not the visible row count. An occurrence overlapping both selected local dates appears and counts on each; its end is exclusive. Overnight timing is not clipped or rewritten to midnight. A timed occurrence disappears at `end_at <= now`, including ongoing occurrences only while their end is still ahead.
 
 Each occurrence has an opaque `id`, `title`, optional/null `location`, and a `time_kind` discriminator. Descriptions, attendees, source URL, raw UID, and rule contents are absent. IDs distinguish occurrences; consumers must not decode them. The implementation hashes the parser's UID and resolved UTC start for timed occurrences, or its date-only start for all-day occurrences. It uses Ical.Net's normalization and occurrence evaluation, not a separate hand-written RFC parser.
 
@@ -115,8 +115,12 @@ Non-published calendar methods, non-Gregorian scales, conflicting event properti
 ### States and errors
 
 - **`current`:** Supported source interpretation succeeded for this poll. `source_succeeded_at` is non-null, `error` is null, and both totals are nonnegative integers. A genuinely empty day has total `0` and an empty array.
-- **Reserved `stale`:** A follow-on cache slice may use last-good **source**, reevaluate the current rules/window/time filtering, and retain its original `source_succeeded_at`. `generated_at` remains this evaluation's time. Totals/occurrences still describe that reevaluated source, and `error` explains the failed fresh check. It is eligible only while source-success age is strictly less than one hour; at one hour or with no usable source, return `error`. Invalid configuration never falls back to old rules. The current adapter emits no stale responses; the adaptive display supports this contract with a visible stale warning, the safe failure explanation, and the original source-success date/time.
-- **`error`:** Neither date has an authoritative count: both totals are **null**, not `0`, and both occurrence arrays are empty. Dates/labels remain defined. `source_succeeded_at` is null unless a successful source check is known (for example, the source parsed successfully but its complete agenda exceeded the response budget). The no-cache basic slice never invents an earlier success.
+- **`stale`:** A failed fresh source check uses last-good **source**, reevaluates the current rules/window/time filtering, and retains its original `source_succeeded_at`. `generated_at` remains this evaluation's time. Totals/occurrences describe that reevaluated source, and `error` explains the failed fresh check. Source-success age must be nonnegative and **strictly less than one hour**; at exactly one hour, with a future-dated snapshot, or with no usable source, return `error`. Repeated stale delivery cannot restart age. Invalid/missing rule configuration never reads the cache or falls back to old/default rules. All six production views show the warning, safe failure explanation, and original source-success date/time, including when the reevaluated agenda is empty.
+- **`error`:** Neither date has an authoritative count: both totals are **null**, not `0`, and both occurrence arrays are empty. Dates/labels remain defined. `source_succeeded_at` is null unless a successful source check is known, including an expired retained source or a supported source whose agenda exceeded the response budget or could not be persisted. This known timestamp does not make the result current or authorize cached events.
+
+Last-good persistence retains raw source, a version, a binding to the configured feed, and the source-success instant, not the filtered window/old rules/rendered output. Rejected, timed-out, malformed, and unsupported source checks cannot replace it. A later supported check replaces the snapshot even when its filtered agenda is empty. Cached source is reinterpreted using the same maintained parser, including recurrence, moved/cancelled instances, and date-only semantics; no independent cache parser or partial-agenda policy is used. A different configured feed cannot receive the previous feed's retained commitments.
+
+Production storage is a private, pre-existing blob container with explicit system-assigned managed-identity access; a process restart does not erase it. `Agenda__CacheServiceUri` and `Agenda__CacheContainer` are Azure runtime settings, not HTTP/plugin fields. The internal file persistence substitute is Development-only. See [setup and container-scoped permissions](../README.md#persistent-source-and-freshness). Persistence/configuration/decoding errors are explicit and redacted, not silently lost resilience.
 
 Current error codes:
 
@@ -127,9 +131,12 @@ Current error codes:
 | `source_unavailable` | Timeout, transport failure, rejected HTTP status, or redirect. |
 | `source_invalid` | Invalid source encoding/calendar/interval/identity, or a source above 2 MiB. |
 | `compatibility_unsupported` | Recognized semantics outside the supported subset; no partial result. |
-| `agenda_too_large` | The complete serialized current agenda exceeds 95,000 UTF-8 bytes. Return a bounded error, never a silently shortened agenda. |
+| `agenda_too_large` | The complete serialized current or stale agenda exceeds 95,000 UTF-8 bytes. Return a bounded error, never a silently shortened agenda. |
+| `cache_configuration` | Missing/unsafe persistent-storage runtime settings; no storage credentials or local production fallback are accepted. |
+| `cache_unavailable` | Persistent source could not be read or written, including access/authentication/timeout failures. |
+| `cache_invalid` | Stored source envelope is malformed, unsupported, oversized, or missing required information. |
 
-Codes are extensible safe strings; consumers display the message/code and must not treat an unknown error as current or empty. The later cache implementation must distinguish configuration errors from source/compatibility failures and preserve the source-success clock.
+Codes are extensible safe strings; consumers display the message/code and must not treat an unknown error as current or empty. Configuration errors are not source failures eligible for old-rules fallback. Only a supported fresh source interpretation can advance the source-success clock.
 
 ## Display ownership
 

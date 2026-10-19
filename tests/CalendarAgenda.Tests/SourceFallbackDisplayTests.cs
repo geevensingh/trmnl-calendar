@@ -1,0 +1,170 @@
+using System.Buffers.Binary;
+using System.Net;
+using System.Text.Json;
+using Microsoft.Playwright;
+using Xunit;
+using AgendaHttp = CalendarAgenda.Tests.AgendaHttpTests.AgendaHttp;
+
+namespace CalendarAgenda.Tests;
+
+public sealed class SourceFallbackDisplayTests
+{
+    [Theory]
+    [MemberData(nameof(AdaptiveDisplayTests.Views), MemberType = typeof(AdaptiveDisplayTests))]
+    public async Task Production_views_display_HTTP_fresh_stale_empty_and_failed_source_states(
+        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+    {
+        using var agenda = new AgendaHttp("2026-10-23T18:00:00Z", BusyCalendar(),
+            sourceUrl: "https://synthetic.invalid/CONFIDENTIAL_SOURCE_CREDENTIAL");
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        using var current = await agenda.Poll();
+        await Agenda(current, "current", 32, 1, stale: false);
+
+        var emptyRules = JsonSerializer.Serialize(new
+        {
+            rules_json = """[{"field":"title","mode":"contains","value":"commitment"}]"""
+        });
+        using var empty = await agenda.Poll(emptyRules);
+        await Agenda(empty, "empty", 0, 0, stale: false);
+
+        agenda.Clock.Advance(TimeSpan.FromMinutes(45));
+        agenda.SetSource(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "this-and-future.ics")));
+        using var stale = await agenda.Poll(JsonSerializer.Serialize(new
+        {
+            rules_json = """[{"field":"title","mode":"whole_word","value":"1"}]"""
+        }));
+        await Agenda(stale, "stale", 31, 1, stale: true);
+        Assert.DoesNotContain("Cached commitment 1", stale.RootElement.GetProperty("primary")
+            .GetProperty("occurrences").EnumerateArray().Select(item => item.GetProperty("title").GetString()));
+        Assert.DoesNotContain("11:45", await page.Locator("body").InnerTextAsync());
+
+        using var staleEmpty = await agenda.Poll(emptyRules);
+        await Agenda(staleEmpty, "stale-empty", 0, 0, stale: true);
+
+        agenda.Clock.Advance(TimeSpan.FromMinutes(15));
+        using var expired = await agenda.Poll();
+        await Error(expired, "expired", "Compatibility error", "compatibility_unsupported",
+            "Recurring changes with RANGE=THISANDFUTURE are not supported.", knownSuccess: true);
+
+        using var configurationError = await agenda.Poll("{}");
+        await Error(configurationError, "configuration", "Configuration error", "configuration_invalid",
+            "Rule configuration is missing or malformed.", knownSuccess: false);
+
+        using var noCache = new AgendaHttp("2026-10-23T19:00:00Z", "", status: HttpStatusCode.ServiceUnavailable);
+        using var unavailable = await noCache.Poll();
+        await Error(unavailable, "unavailable", "Source error", "source_unavailable",
+            "The calendar source could not be checked.", knownSuccess: false);
+
+        async Task Agenda(JsonDocument result, string name, int primaryTotal, int secondaryTotal, bool stale)
+        {
+            var body = result.RootElement;
+            Assert.Equal(stale ? "stale" : "current", body.GetProperty("state").GetString());
+            Assert.Equal(primaryTotal, body.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+            Assert.Equal(secondaryTotal, body.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
+            Assert.Equal(DateTimeOffset.Parse("2026-10-23T18:00:00Z"),
+                body.GetProperty("source_succeeded_at").GetDateTimeOffset());
+            Assert.DoesNotContain("CONFIDENTIAL", body.GetRawText());
+            await DisplayTests.Show(page, body, placement, device);
+            await AdaptiveDisplayTests.NativeBounds(page, width, height, density, viewWidth, viewHeight);
+            var required = new List<ILocator>
+            {
+                page.GetByText("Friday, Oct 23", new() { Exact = true }),
+                page.GetByText("Monday, Oct 26", new() { Exact = true }),
+                page.Locator(".agenda-primary .agenda-heading .label"),
+                page.Locator(".agenda-secondary .agenda-heading .label"),
+                page.GetByText("Source checked:", new() { Exact = true }),
+                page.GetByText("Oct 23, 2026, 11:00 AM PDT", new() { Exact = true })
+            };
+            if (stale)
+            {
+                required.Add(page.GetByText("Stale agenda", new() { Exact = true }));
+                required.Add(page.GetByText("Recurring changes with RANGE=THISANDFUTURE are not supported.",
+                    new() { Exact = true }));
+            }
+            else
+                Assert.DoesNotContain("Stale agenda", await page.Locator("body").InnerTextAsync());
+            if (primaryTotal == 0)
+            {
+                required.Add(page.Locator(".agenda-primary .agenda-empty"));
+                required.Add(page.Locator(".agenda-secondary .agenda-empty"));
+            }
+            else
+            {
+                var rows = page.Locator(".agenda-primary tbody tr:visible");
+                var visible = await rows.CountAsync();
+                Assert.InRange(visible, 1, primaryTotal - 1);
+                required.Add(rows.First.Locator("[data-agenda-start]"));
+                required.Add(rows.First.Locator("td .title"));
+                required.Add(page.GetByText($"+{primaryTotal - visible} more", new() { Exact = true }));
+                Assert.Equal(0, await page.Locator(".agenda-secondary tbody tr:visible").CountAsync());
+            }
+            await Assertions.Expect(page.Locator("[data-agenda-source]"))
+                .ToHaveAttributeAsync("datetime", body.GetProperty("source_succeeded_at").GetString()!);
+            await VisibleInk(page, $"cache-{device}-{placement}-{name}", width, height, required);
+        }
+
+        async Task Error(JsonDocument result, string name, string kind, string code, string message, bool knownSuccess)
+        {
+            var body = result.RootElement;
+            Assert.Equal("error", body.GetProperty("state").GetString());
+            Assert.Equal(code, body.GetProperty("error").GetProperty("code").GetString());
+            foreach (var day in new[] { "primary", "secondary" })
+            {
+                Assert.Equal(JsonValueKind.Null, body.GetProperty(day).GetProperty("eligible_total").ValueKind);
+                Assert.Empty(body.GetProperty(day).GetProperty("occurrences").EnumerateArray());
+            }
+            await DisplayTests.Show(page, body, placement, device);
+            await AdaptiveDisplayTests.NativeBounds(page, width, height, density, viewWidth, viewHeight);
+            var required = new[]
+            {
+                page.GetByText("Agenda unavailable", new() { Exact = true }),
+                page.GetByText(kind, new() { Exact = true }),
+                page.GetByText(code, new() { Exact = true }),
+                page.GetByText(message, new() { Exact = true }),
+                page.GetByText("Source checked:", new() { Exact = true }),
+                page.GetByText(knownSuccess ? "Oct 23, 2026, 11:00 AM PDT" : "No successful source check",
+                    new() { Exact = true })
+            };
+            Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());
+            Assert.DoesNotContain("No remaining events", await page.Locator("body").InnerTextAsync());
+            await VisibleInk(page, $"cache-{device}-{placement}-{name}", width, height, required);
+        }
+    }
+
+    private static async Task VisibleInk(IPage page, string name, int width, int height, IEnumerable<ILocator> required)
+    {
+        var regions = new List<JsonElement>();
+        foreach (var content in required)
+        {
+            await AdaptiveDisplayTests.VisibleInsideView(content);
+            regions.Add(await content.EvaluateAsync<JsonElement>("""
+                element => {
+                  const box = element.getBoundingClientRect();
+                  return { text: element.textContent.trim(), x: box.x, y: box.y, width: box.width, height: box.height };
+                }
+                """));
+        }
+        Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
+        var image = Path.Combine(DisplayTests.Root, "artifacts", $"{name}.png");
+        var screenshot = await page.ScreenshotAsync(new() { Path = image });
+        Assert.Equal(width, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
+        Assert.Equal(height, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
+        using var ink = JsonDocument.Parse(DisplayTests.RunRuby(
+            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image, regions }));
+        foreach (var region in ink.RootElement.EnumerateArray())
+            Assert.True(region.GetProperty("dark_pixels").GetInt32() >= 20,
+                $"Required cache-state text has no readable raster ink: {region.GetProperty("text").GetString()}");
+    }
+
+    private static string BusyCalendar() =>
+        "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//TRMNL Calendar//Synthetic cache display//EN\n"
+        + string.Concat(Enumerable.Range(1, 32).Select(index =>
+            $"BEGIN:VEVENT\nUID:cached-{index}@synthetic.invalid\nDTSTAMP:20261018T120000Z\n"
+            + "DTSTART:20261023T180000Z\nDTEND:20261023T210000Z\n"
+            + $"SUMMARY:Cached commitment {index}\nDESCRIPTION:CONFIDENTIAL_SOURCE_DESCRIPTION\nEND:VEVENT\n"))
+        + "BEGIN:VEVENT\nUID:secondary@synthetic.invalid\nDTSTAMP:20261018T120000Z\n"
+        + "DTSTART:20261026T180000Z\nDTEND:20261026T190000Z\nSUMMARY:Secondary commitment\n"
+        + "END:VEVENT\nEND:VCALENDAR\n";
+}

@@ -163,7 +163,8 @@ public sealed class DisplayTests
         }
         functionStart.Environment["FUNCTIONS_WORKER_RUNTIME"] = "dotnet-isolated";
         functionStart.Environment["AZURE_FUNCTIONS_ENVIRONMENT"] = "Development";
-        functionStart.Environment["Agenda__SourceUrl"] = $"http://127.0.0.1:{sourcePort}/calendar.ics";
+        functionStart.Environment["Agenda__SourceUrl"] =
+            $"http://127.0.0.1:{sourcePort}/calendar.ics?key=CONFIDENTIAL_SOURCE_CREDENTIAL";
         functionStart.Environment["AzureWebJobsSecretStorageType"] = "files";
         functionStart.Environment["AzureWebJobsStorage"] = "";
         functionStart.Environment.Remove("APPLICATIONINSIGHTS_CONNECTION_STRING");
@@ -234,6 +235,52 @@ public sealed class DisplayTests
             await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo.html"), Render("full", data));
             await page.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", "demo.png") });
 
+            var editedBody = Render("polling-body", new
+            {
+                rules_json = """
+                    [
+                      {"field":"title","mode":"contains","value":"meeting"},
+                      {"field":"title","mode":"contains","value":"CONFIDENTIAL_RULE_LITERAL"}
+                    ]
+                    """
+            });
+            using var editedResponse = await client.PostAsync($"http://127.0.0.1:{functionPort}/api/agenda",
+                new StringContent(editedBody, System.Text.Encoding.UTF8, "application/json"));
+            editedResponse.EnsureSuccessStatusCode();
+            var edited = JsonNode.Parse(await editedResponse.Content.ReadAsStringAsync())!.AsObject();
+            Assert.Equal("current", edited["state"]!.GetValue<string>());
+            Assert.Equal(0, edited["primary"]!["eligible_total"]!.GetValue<int>());
+            Assert.Equal(0, edited["secondary"]!["eligible_total"]!.GetValue<int>());
+            Assert.DoesNotContain("meeting", edited.ToJsonString(), StringComparison.OrdinalIgnoreCase);
+            await Show(page, edited);
+            await Assertions.Expect(page.GetByText("No remaining events", new() { Exact = true })).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByText("0 eligible events", new() { Exact = true })).ToHaveCountAsync(2);
+
+            var invalidBody = Render("polling-body", new
+            {
+                rules_json = "CONFIDENTIAL_EDITOR_LITERAL\n\"},\"rules_json\":\"[]\""
+            });
+            using var invalidResponse = await client.PostAsync($"http://127.0.0.1:{functionPort}/api/agenda",
+                new StringContent(invalidBody, System.Text.Encoding.UTF8, "application/json"));
+            invalidResponse.EnsureSuccessStatusCode();
+            var invalid = JsonNode.Parse(await invalidResponse.Content.ReadAsStringAsync())!.AsObject();
+            Assert.Equal("error", invalid["state"]!.GetValue<string>());
+            Assert.Null(invalid["primary"]!["eligible_total"]);
+            Assert.DoesNotContain("CONFIDENTIAL", invalid.ToJsonString());
+            await Show(page, invalid);
+            await Assertions.Expect(page.GetByText("configuration_invalid", new() { Exact = true })).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByText("Agenda unavailable", new() { Exact = true })).ToBeVisibleAsync();
+            await InsideScreen(page, page.GetByText("configuration_invalid", new() { Exact = true }));
+            await InsideScreen(page, page.Locator(".agenda-source"));
+
+            using var clearedResponse = await client.PostAsync($"http://127.0.0.1:{functionPort}/api/agenda",
+                new StringContent(pollingBody, System.Text.Encoding.UTF8, "application/json"));
+            clearedResponse.EnsureSuccessStatusCode();
+            var cleared = JsonNode.Parse(await clearedResponse.Content.ReadAsStringAsync())!.AsObject();
+            Assert.Equal("current", cleared["state"]!.GetValue<string>());
+            await Show(page, cleared);
+            await Assertions.Expect(page.GetByText("Synthetic source meeting", new() { Exact = true })).ToBeVisibleAsync();
+
             using var failSource = await client.PostAsync($"http://127.0.0.1:{sourcePort}/fail-source", null);
             failSource.EnsureSuccessStatusCode();
             using var failedResponse = await client.PostAsync($"http://127.0.0.1:{functionPort}/api/agenda",
@@ -250,8 +297,10 @@ public sealed class DisplayTests
             if (functionStarted) await functions.WaitForExitAsync();
             await synthetic.WaitForExitAsync();
             Directory.CreateDirectory(Path.Combine(Root, "artifacts"));
-            await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo-host.log"),
-                $"{await stdout}\n{await stderr}");
+            var diagnostics = $"{await stdout}\n{await stderr}";
+            await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo-host.log"), diagnostics);
+            Assert.DoesNotContain("CONFIDENTIAL", diagnostics);
+            Assert.DoesNotContain("synthetic-local-only", diagnostics);
         }
     }
 
@@ -262,7 +311,7 @@ public sealed class DisplayTests
         return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
-    private static async Task InsideScreen(IPage page, ILocator content)
+    internal static async Task InsideScreen(IPage page, ILocator content)
     {
         var screen = await page.Locator(".screen").BoundingBoxAsync();
         var box = await content.BoundingBoxAsync();
@@ -303,7 +352,7 @@ public sealed class DisplayTests
         return output[0];
     }
 
-    private static async Task Show(IPage page, object data)
+    internal static async Task Show(IPage page, object data)
     {
         var html = Render("full", data);
         await page.RouteAsync("http://trmnl.local/**", async route =>

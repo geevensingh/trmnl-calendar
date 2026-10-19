@@ -25,6 +25,15 @@ custom_fields:
   - keyname: rules_json
     field_type: code
     name: Exclusion rules JSON
-    rows: 8
-    default: "[]"
-    help_text: This basic slice accepts only an intentionally empty array. Nonempty or malformed rules show an explicit error.
+    rows: 10
+    default: |-
+      [
+        {"field":"title","mode":"whole_word","value":"OOF"},
+        {"field":"title","mode":"whole_word","value":"OOO"},
+        {"field":"title","mode":"starts_with","value":"working from"},
+        {"field":"title","mode":"starts_with","value":"Following: "}
+      ]
+    help_text: >-
+      An array of title rules with modes whole_word, starts_with, or contains.
+      Any match excludes an occurrence; [] intentionally disables exclusions.
+      Values are nonblank literal strings; spaces are significant. Invalid rules show an error.

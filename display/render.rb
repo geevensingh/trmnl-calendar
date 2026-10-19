@@ -11,6 +11,9 @@ mode = ARGV.fetch(0)
 
 markup =
   case mode
+  when "settings"
+    puts JSON.generate(YAML.safe_load(File.read(File.join(__dir__, "src", "settings.yml"))))
+    exit
   when "full"
     File.read(File.join(__dir__, "src", "shared.liquid")) +
       File.read(File.join(__dir__, "src", "full.liquid"))

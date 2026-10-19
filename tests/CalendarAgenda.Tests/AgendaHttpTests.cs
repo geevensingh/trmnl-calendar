@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Xunit;
@@ -47,9 +48,7 @@ public sealed class AgendaHttpTests
     [InlineData("""{"rules_json":"null"}""", "configuration_invalid")]
     [InlineData("""{"rules_json":"[]","source_url":"https://caller.invalid/secret"}""", "configuration_invalid")]
     [InlineData("""{"rules_json":"[]","rules_json":"[]"}""", "configuration_invalid")]
-    [InlineData("""{"rules_json":"[{\"field\":\"title\",\"mode\":\"contains\",\"value\":\"secret\"}]"}""",
-        "configuration_unsupported")]
-    public async Task Invalid_or_not_yet_supported_rules_are_renderable_errors_not_unfiltered_agendas(
+    public async Task Invalid_rules_are_renderable_errors_not_unfiltered_agendas(
         string request, string code)
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", Fixture("basic.ics"));
@@ -217,7 +216,7 @@ public sealed class AgendaHttpTests
     [Theory]
     [InlineData("[]", "current")]
     [InlineData(" \r\n[ ]\n ", "current")]
-    [InlineData("[{\r\n\"field\":\"title\",\"mode\":\"contains\",\"value\":\"A \\\"quote\\\" & </script>\"}]", "error")]
+    [InlineData("[{\r\n\"field\":\"title\",\"mode\":\"contains\",\"value\":\"A \\\"quote\\\" & </script>\"}]", "current")]
     [InlineData("{\"broken\": [\n\"quote\"", "error")]
     [InlineData("", "error")]
     public async Task Native_TRMNL_polling_body_safely_transports_edited_rule_JSON(string rules, string expectedState)
@@ -294,7 +293,7 @@ public sealed class AgendaHttpTests
     private static string Fixture(string name) =>
         File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", name));
 
-    private sealed class AgendaHttp : IDisposable
+    internal sealed class AgendaHttp : IDisposable
     {
         private readonly IHost host;
         private readonly HttpClient source;
@@ -302,14 +301,15 @@ public sealed class AgendaHttpTests
 
         public AgendaHttp(string now, string ics,
             string? sourceUrl = "https://synthetic.invalid/calendar.ics",
-            HttpStatusCode status = HttpStatusCode.OK, bool timeout = false)
+            HttpStatusCode status = HttpStatusCode.OK, bool timeout = false,
+            ILogger<AgendaFunction>? logger = null)
         {
             source = new HttpClient(new SourceResponse(ics, status, timeout));
             var settings = new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?> { ["Agenda:SourceUrl"] = sourceUrl })
                 .Build();
             var function = new AgendaFunction(source, settings,
-                new FakeTimeProvider(DateTimeOffset.Parse(now)), NullLogger<AgendaFunction>.Instance);
+                new FakeTimeProvider(DateTimeOffset.Parse(now)), logger ?? NullLogger<AgendaFunction>.Instance);
             host = new HostBuilder().ConfigureWebHost(web => web.UseTestServer()
                 .ConfigureServices(services =>
                 {

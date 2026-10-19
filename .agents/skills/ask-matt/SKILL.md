@@ -35,9 +35,9 @@ The route most work travels. You have an idea and want it built.
 
 ### Context hygiene
 
-Keep steps 1–3 in **one unbroken context window** (don't compact or clear until after `/to-tickets`) so the grilling, spec, and tickets all build on the same thinking. Each `/implement` then starts fresh, working from the ticket. Run `/retro` in the session it's looking back on, before you clear; after clearing, point it at that session's log instead.
+At each boundary in steps 1–3, apply the **capacity gate** in [PHASE-BOUNDARIES.md](PHASE-BOUNDARIES.md#the-tree) before starting the next phase. Keep grilling, spec, and tickets together while the whole upcoming phase fits; otherwise follow the tree, preserving authoritative sources rather than relying on the conversation alone.
 
-The limit on this is the **[smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone)**: the window (~150k tokens on state-of-the-art models) within which the model still reasons sharply. If a session approaches it before `/to-tickets`, don't push on degraded; `/compact` at the nearest phase boundary and carry on (see Phase boundaries).
+Each `/implement` starts fresh, working from its self-contained ticket. Run `/retro` in the session it's looking back on, before you clear; after clearing, point it at that session's log instead.
 
 ## On-ramps
 
@@ -70,13 +70,13 @@ Two model-invoked references that run *beneath* the other skills, each the singl
 
 A **phase** is a chunk of work inside a session: the grilling, the implementation, the QA. At the **boundary** between two of them you have five options, and picking between them is the fuzziest decision in this whole map:
 
-- **Continue**: stay put. Costs nothing, loses nothing.
-- **`/clear`**: empty the window, when nothing here matters to what's next.
+- **Continue**: stay put when the next phase fits within the capacity gate.
+- **`/clear`**: empty the window when the conversation is disposable; reload any needed authoritative artifacts.
 - **`/handoff`** writes a portable markdown file. Narrow: only for a **new harness**, a **new directory**, a **colleague**, or forking a side task **mid-phase**. What it buys is portability.
 - **Subagent**: send a tightly-scoped task to its own window and get a report back.
 - **`/compact`** compresses this context and seeds a fresh session with it. The **default**, at the bottom of the tree rather than the first reach.
 
-Read [PHASE-BOUNDARIES.md](PHASE-BOUNDARIES.md) for the ordered tree: the five questions, the reasoning behind each branch, and why the primary-source cost makes **Continue** the one to rule out first. Make the decision **at** a boundary; mid-phase, continue or split the rest into subagents.
+Read [PHASE-BOUNDARIES.md](PHASE-BOUNDARIES.md) for the ordered tree: the capacity gate, the remaining choices, and how to preserve needed sources when changing context. Make the decision **at** a boundary; mid-phase, continue or split the rest into subagents.
 
 ## Standalone
 

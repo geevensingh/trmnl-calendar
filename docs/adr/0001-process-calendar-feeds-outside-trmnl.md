@@ -1,0 +1,3 @@
+# Process calendar feeds outside TRMNL
+
+Use an Azure Functions adapter implemented in C# to parse the Outlook feed with a maintained iCalendar library, apply configured exclusions, and return agenda data to a TRMNL private plugin. TRMNL's generic polling does not parse iCalendar, and adding a parser to its [Serverless environment](https://help.trmnl.com/en/articles/14130649-serverless) requires a support request, so this avoids hand-written calendar parsing and dependence on changes to TRMNL's runtime image. The trade-off is an adapter deployment to maintain, while keeping the feed URL and excluded events out of TRMNL's data.

@@ -7,6 +7,116 @@ namespace CalendarAgenda.Tests;
 public sealed partial class AgendaHttpTests
 {
     [Fact]
+    public async Task Out_of_window_all_day_commitments_do_not_hide_an_eligible_UTC_evening_meeting()
+    {
+        var ics = CalendarWithEvent("DTSTART:20261021T020000Z\nDTEND:20261021T030000Z\nSUMMARY:Evening planning");
+        using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", ics);
+        using var meetingOnly = await agenda.Poll();
+        Assert.Equal(1, meetingOnly.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
+
+        agenda.SetSource(ics.Replace("END:VCALENDAR",
+            "BEGIN:VEVENT\nUID:future-all-day@synthetic.invalid\nDTSTAMP:20261018T120000Z\n"
+            + "DTSTART;VALUE=DATE:20261021\nDTEND;VALUE=DATE:20261022\n"
+            + "SUMMARY:Future all-day commitment\nEND:VEVENT\nEND:VCALENDAR"));
+        using var result = await agenda.Poll();
+        var body = result.RootElement;
+
+        Assert.Equal("current", body.GetProperty("state").GetString());
+        Assert.Equal("2026-10-19", body.GetProperty("primary").GetProperty("date").GetString());
+        Assert.Equal("2026-10-20", body.GetProperty("secondary").GetProperty("date").GetString());
+        Assert.Equal(0, body.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.Equal(1, body.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
+        var occurrence = Assert.Single(body.GetProperty("secondary").GetProperty("occurrences").EnumerateArray());
+        Assert.Equal("Evening planning", occurrence.GetProperty("title").GetString());
+        Assert.Equal(DateTimeOffset.Parse("2026-10-21T02:00:00Z"), occurrence.GetProperty("start_at").GetDateTimeOffset());
+        Assert.Equal(DateTimeOffset.Parse("2026-10-21T03:00:00Z"), occurrence.GetProperty("end_at").GetDateTimeOffset());
+        Assert.DoesNotContain("Future all-day commitment", body.GetRawText());
+
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
+        await DisplayTests.Show(page, body);
+
+        await Assertions.Expect(page.GetByText("Monday, Oct 19", new() { Exact = true })).ToBeVisibleAsync();
+        var secondary = page.Locator(".agenda-secondary");
+        await Assertions.Expect(secondary.GetByText("Tuesday, Oct 20", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(secondary.GetByText("1 eligible event", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(secondary.GetByText("Evening planning", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(secondary.GetByText("7:00 PM - 8:00 PM", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.DoesNotContain("Future all-day commitment", await page.Locator("body").InnerTextAsync());
+        await DisplayTests.InsideScreen(page, secondary);
+        await DisplayTests.InsideScreen(page, page.Locator(".agenda-source"));
+    }
+
+    [Theory]
+    [InlineData("DTSTART:20261021T020000Z\nDTEND:20261021T030000Z")]
+    [InlineData("DTSTART;TZID=Asia/Tokyo:20261021T110000\nDTEND;TZID=Asia/Tokyo:20261021T120000")]
+    public async Task An_unbounded_all_day_series_does_not_hide_a_secondary_day_evening_meeting(string meetingTimes)
+    {
+        var ics = CalendarWithEvent($"{meetingTimes}\nSUMMARY:Evening planning").Replace("END:VCALENDAR",
+            "BEGIN:VEVENT\nUID:daily-all-day@synthetic.invalid\nDTSTAMP:20261018T120000Z\n"
+            + "DTSTART;VALUE=DATE:20261020\nDTEND;VALUE=DATE:20261021\nRRULE:FREQ=DAILY\n"
+            + "SUMMARY:Daily all-day commitment\nEND:VEVENT\nEND:VCALENDAR");
+        using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", ics);
+        using var result = await agenda.Poll();
+        var body = result.RootElement;
+        var secondary = body.GetProperty("secondary");
+
+        Assert.Equal("current", body.GetProperty("state").GetString());
+        Assert.Equal("2026-10-19", body.GetProperty("primary").GetProperty("date").GetString());
+        Assert.Equal("2026-10-20", secondary.GetProperty("date").GetString());
+        Assert.Equal(0, body.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.Equal(2, secondary.GetProperty("eligible_total").GetInt32());
+        var occurrences = secondary.GetProperty("occurrences").EnumerateArray().ToArray();
+        Assert.Equal(["Daily all-day commitment", "Evening planning"],
+            occurrences.Select(item => item.GetProperty("title").GetString()));
+        Assert.Equal("all_day", occurrences[0].GetProperty("time_kind").GetString());
+        Assert.Equal("2026-10-20", occurrences[0].GetProperty("start_date").GetString());
+        Assert.Equal("2026-10-21", occurrences[0].GetProperty("end_date_exclusive").GetString());
+        Assert.False(occurrences[0].TryGetProperty("start_at", out _));
+        Assert.Equal(DateTimeOffset.Parse("2026-10-21T02:00:00Z"), occurrences[1].GetProperty("start_at").GetDateTimeOffset());
+        Assert.Equal(DateTimeOffset.Parse("2026-10-21T03:00:00Z"), occurrences[1].GetProperty("end_at").GetDateTimeOffset());
+
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
+        await DisplayTests.Show(page, body);
+
+        var secondaryView = page.Locator(".agenda-secondary");
+        foreach (var text in new[] { "Tuesday, Oct 20", "2 eligible events", "Daily all-day commitment",
+            "All day", "Evening planning", "7:00 PM - 8:00 PM" })
+            await Assertions.Expect(secondaryView.GetByText(text, new() { Exact = true })).ToBeVisibleAsync();
+        Assert.DoesNotContain("12:00 AM", await page.Locator("body").InnerTextAsync());
+        await DisplayTests.InsideScreen(page, secondaryView);
+        await DisplayTests.InsideScreen(page, page.Locator(".agenda-source"));
+    }
+
+    [Fact]
+    public async Task Mixed_source_time_zones_cannot_end_evaluation_before_an_eligible_meeting()
+    {
+        var ics = CalendarWithEvent("DTSTART;TZID=Asia/Tokyo:20261021T170000\n"
+            + "DTEND;TZID=Asia/Tokyo:20261021T180000\nSUMMARY:Next-day Tokyo meeting")
+            .Replace("END:VCALENDAR", string.Concat(new[]
+            {
+                "DTSTART;TZID=Asia/Tokyo:20261021T190000\nDTEND;TZID=Asia/Tokyo:20261021T200000\nSUMMARY:Later Tokyo meeting",
+                "DTSTART;TZID=Pacific/Honolulu:20261020T230000\nDTEND;TZID=Pacific/Honolulu:20261021T000000\nSUMMARY:Wednesday Honolulu meeting",
+                "DTSTART;VALUE=DATE:20261021\nDTEND;VALUE=DATE:20261022\nSUMMARY:Future all-day commitment",
+                "DTSTART;TZID=Asia/Tokyo:20261021T110000\nDTEND;TZID=Asia/Tokyo:20261021T120000\nSUMMARY:Evening planning"
+            }.Select((properties, index) => $"BEGIN:VEVENT\nUID:mixed-{index}@synthetic.invalid\n"
+                + $"DTSTAMP:20261018T120000Z\n{properties}\nEND:VEVENT\n")) + "END:VCALENDAR");
+        using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", ics);
+        using var result = await agenda.Poll();
+        var body = result.RootElement;
+
+        Assert.Equal("current", body.GetProperty("state").GetString());
+        Assert.Equal(0, body.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.Equal(1, body.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
+        var occurrence = Assert.Single(body.GetProperty("secondary").GetProperty("occurrences").EnumerateArray());
+        Assert.Equal("Evening planning", occurrence.GetProperty("title").GetString());
+        Assert.Equal(DateTimeOffset.Parse("2026-10-21T02:00:00Z"), occurrence.GetProperty("start_at").GetDateTimeOffset());
+    }
+
+    [Fact]
     public async Task Exclusions_apply_to_resolved_override_and_all_day_titles_not_series_definitions()
     {
         var ics = Fixture("moved-occurrences.ics")

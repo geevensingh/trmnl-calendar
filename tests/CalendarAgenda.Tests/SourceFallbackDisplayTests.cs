@@ -1,9 +1,9 @@
-using System.Buffers.Binary;
 using System.Net;
 using System.Text.Json;
 using Microsoft.Playwright;
 using Xunit;
 using AgendaHttp = CalendarAgenda.Tests.AgendaHttpTests.AgendaHttp;
+using NativeView = CalendarAgenda.Tests.AdaptiveDisplayTests.NativeView;
 
 namespace CalendarAgenda.Tests;
 
@@ -12,13 +12,16 @@ public sealed class SourceFallbackDisplayTests
     [Theory]
     [MemberData(nameof(AdaptiveDisplayTests.Views), MemberType = typeof(AdaptiveDisplayTests))]
     public async Task Production_views_display_HTTP_fresh_stale_empty_and_failed_source_states(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         using var agenda = new AgendaHttp("2026-10-23T18:00:00Z", BusyCalendar(),
             sourceUrl: "https://synthetic.invalid/CONFIDENTIAL_SOURCE_CREDENTIAL");
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
         using var current = await agenda.Poll();
         await Agenda(current, "current", 32, 1, stale: false);
 
@@ -66,8 +69,8 @@ public sealed class SourceFallbackDisplayTests
             Assert.Equal(DateTimeOffset.Parse("2026-10-23T18:00:00Z"),
                 body.GetProperty("source_succeeded_at").GetDateTimeOffset());
             Assert.DoesNotContain("CONFIDENTIAL", body.GetRawText());
-            await DisplayTests.Show(page, body, placement, device);
-            await AdaptiveDisplayTests.NativeBounds(page, width, height, density, viewWidth, viewHeight);
+            await DisplayTests.Show(page, body, view.Placement, view.Device);
+            await AdaptiveDisplayTests.NativeBounds(page, view);
             var required = new List<ILocator>
             {
                 page.GetByText("Friday, Oct 23", new() { Exact = true }),
@@ -102,7 +105,7 @@ public sealed class SourceFallbackDisplayTests
             }
             await Assertions.Expect(page.Locator("[data-agenda-source]"))
                 .ToHaveAttributeAsync("datetime", body.GetProperty("source_succeeded_at").GetString()!);
-            await VisibleInk(page, $"cache-{device}-{placement}-{name}", width, height, required);
+            await AdaptiveDisplayTests.VisibleInk(page, $"cache-{view.Device}-{view.Placement}-{name}", view, required);
         }
 
         async Task Error(JsonDocument result, string name, string kind, string code, string message, bool knownSuccess)
@@ -115,8 +118,8 @@ public sealed class SourceFallbackDisplayTests
                 Assert.Equal(JsonValueKind.Null, body.GetProperty(day).GetProperty("eligible_total").ValueKind);
                 Assert.Empty(body.GetProperty(day).GetProperty("occurrences").EnumerateArray());
             }
-            await DisplayTests.Show(page, body, placement, device);
-            await AdaptiveDisplayTests.NativeBounds(page, width, height, density, viewWidth, viewHeight);
+            await DisplayTests.Show(page, body, view.Placement, view.Device);
+            await AdaptiveDisplayTests.NativeBounds(page, view);
             var required = new[]
             {
                 page.GetByText("Agenda unavailable", new() { Exact = true }),
@@ -129,33 +132,8 @@ public sealed class SourceFallbackDisplayTests
             };
             Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());
             Assert.DoesNotContain("No remaining events", await page.Locator("body").InnerTextAsync());
-            await VisibleInk(page, $"cache-{device}-{placement}-{name}", width, height, required);
+            await AdaptiveDisplayTests.VisibleInk(page, $"cache-{view.Device}-{view.Placement}-{name}", view, required);
         }
-    }
-
-    private static async Task VisibleInk(IPage page, string name, int width, int height, IEnumerable<ILocator> required)
-    {
-        var regions = new List<JsonElement>();
-        foreach (var content in required)
-        {
-            await AdaptiveDisplayTests.VisibleInsideView(content);
-            regions.Add(await content.EvaluateAsync<JsonElement>("""
-                element => {
-                  const box = element.getBoundingClientRect();
-                  return { text: element.textContent.trim(), x: box.x, y: box.y, width: box.width, height: box.height };
-                }
-                """));
-        }
-        Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
-        var image = Path.Combine(DisplayTests.Root, "artifacts", $"{name}.png");
-        var screenshot = await page.ScreenshotAsync(new() { Path = image });
-        Assert.Equal(width, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
-        Assert.Equal(height, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
-        using var ink = JsonDocument.Parse(DisplayTests.RunRuby(
-            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image, regions }));
-        foreach (var region in ink.RootElement.EnumerateArray())
-            Assert.True(region.GetProperty("dark_pixels").GetInt32() >= 20,
-                $"Required cache-state text has no readable raster ink: {region.GetProperty("text").GetString()}");
     }
 
     private static string BusyCalendar() =>

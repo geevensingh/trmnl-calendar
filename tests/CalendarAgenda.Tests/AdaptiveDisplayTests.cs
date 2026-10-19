@@ -8,34 +8,37 @@ namespace CalendarAgenda.Tests;
 
 public sealed class AdaptiveDisplayTests
 {
-    public static TheoryData<string, string, int, int, float, int, int> Views => new()
+    public sealed record NativeView(string Device, string Placement, int PhysicalWidth, int PhysicalHeight,
+        float Density, int LogicalViewWidth, int LogicalViewHeight);
+
+    public static TheoryData<NativeView> Views => new()
     {
-        { "og", "full", 800, 480, 1, 780, 460 },
-        { "og", "half_horizontal", 800, 480, 1, 780, 225 },
-        { "og", "half_vertical", 800, 480, 1, 385, 460 },
-        { "v2", "full", 1872, 1404, 1.8f, 1020, 760 },
-        { "v2", "half_horizontal", 1872, 1404, 1.8f, 1020, 375 },
-        { "v2", "half_vertical", 1872, 1404, 1.8f, 505, 760 }
+        new("og", "full", 800, 480, 1, 780, 460),
+        new("og", "half_horizontal", 800, 480, 1, 780, 225),
+        new("og", "half_vertical", 800, 480, 1, 385, 460),
+        new("v2", "full", 1872, 1404, 1.8f, 1020, 760),
+        new("v2", "half_horizontal", 1872, 1404, 1.8f, 1020, 375),
+        new("v2", "half_vertical", 1872, 1404, 1.8f, 505, 760)
     };
 
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Essential_agenda_information_fits_each_native_physical_device_and_placement(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
         var page = await browser.NewPageAsync(new()
         {
-            ViewportSize = new() { Width = width, Height = height },
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
             DeviceScaleFactor = 1
         });
-        await DisplayTests.Show(page, DisplayTests.CurrentAgenda(), placement, device);
+        await DisplayTests.Show(page, DisplayTests.CurrentAgenda(), view.Placement, view.Device);
 
-        await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+        await NativeBounds(page, view);
         var screenshot = await page.ScreenshotAsync();
-        Assert.Equal(device == "og" ? 800 : 1872, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
-        Assert.Equal(device == "og" ? 480 : 1404, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
+        Assert.Equal(view.PhysicalWidth, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
+        Assert.Equal(view.PhysicalHeight, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
 
         foreach (var text in new[]
         {
@@ -48,20 +51,19 @@ public sealed class AdaptiveDisplayTests
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Busy_primary_days_reserve_truthful_overflow_before_secondary_details(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["primary"]!["eligible_total"] = 47;
         data["secondary"]!["eligible_total"] = 19;
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
-        await DisplayTests.Show(page, data, placement, device);
-        Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
-        var screenshot = Path.Combine(DisplayTests.Root, "artifacts",
-            $"busy-{(device == "v2" ? "x" : device)}-{placement}.png");
-        await page.ScreenshotAsync(new() { Path = screenshot });
-        await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await NativeBounds(page, view);
 
         var visible = page.Locator(".agenda-primary [data-agenda-start]:visible");
         var count = await visible.CountAsync();
@@ -81,37 +83,32 @@ public sealed class AdaptiveDisplayTests
         Assert.True(await visible.First.EvaluateAsync<float>(
             "element => parseFloat(getComputedStyle(element).fontSize)") >= 20);
         await ReadableRows(page.Locator(".agenda-primary tbody tr:visible"));
-        var regions = await page.Locator("""
+        var required = page.Locator("""
             .agenda-day .agenda-heading .title, .agenda-day .agenda-heading .label,
             .agenda-primary .agenda-overflow, [data-agenda-source],
             .agenda-primary tbody tr:not([hidden]) .label--large,
             .agenda-primary tbody tr:not([hidden]) td .title
-            """).EvaluateAllAsync<JsonElement>("""
-                elements => elements.map(element => {
-                  const box = element.getBoundingClientRect();
-                  return { text: element.textContent.trim(), x: box.x, y: box.y, width: box.width, height: box.height };
-                })
-                """);
-        Assert.Equal(6 + 2 * count, regions.GetArrayLength());
-        using var raster = JsonDocument.Parse(DisplayTests.RunRuby(
-            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image = screenshot, regions }));
-        foreach (var region in raster.RootElement.EnumerateArray())
-            Assert.True(region.GetProperty("dark_pixels").GetInt32() >= 20,
-                $"Required text has no readable ink in the actual screenshot: {region.GetProperty("text").GetString()}");
+            """);
+        Assert.Equal(6 + 2 * count, await required.CountAsync());
+        await VisibleInk(page, $"busy-{(view.Device == "v2" ? "x" : view.Device)}-{view.Placement}",
+            view, await required.AllAsync());
     }
 
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Remaining_room_shows_secondary_details_and_their_truthful_overflow(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         var data = Agenda(primaryRows: 1, secondaryRows: 32);
         data["secondary"]!["eligible_total"] = 50;
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
-        await DisplayTests.Show(page, data, placement, device);
-        await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await NativeBounds(page, view);
 
         await VisibleInsideView(page.GetByText("Primary commitment 1", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("1 eligible event", new() { Exact = true }));
@@ -119,7 +116,7 @@ public sealed class AdaptiveDisplayTests
         await VisibleInsideView(page.GetByText("50 eligible events", new() { Exact = true }));
         var secondary = page.Locator(".agenda-secondary [data-agenda-start]:visible");
         var count = await secondary.CountAsync();
-        Assert.InRange(count, device == "og" && placement == "half_horizontal" ? 0 : 1, 31);
+        Assert.InRange(count, view.Device == "og" && view.Placement == "half_horizontal" ? 0 : 1, 31);
         await VisibleInsideView(page.GetByText($"+{50 - count} more", new() { Exact = true }));
         for (var index = 0; index < count; index++)
         {
@@ -132,7 +129,7 @@ public sealed class AdaptiveDisplayTests
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Optional_locations_use_only_space_left_after_essential_rows(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         foreach (var day in new[] { "primary", "secondary" })
@@ -140,14 +137,17 @@ public sealed class AdaptiveDisplayTests
                 occurrence!["location"] = null;
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
-        await DisplayTests.Show(page, data, placement, device);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
         var primaryCount = await page.Locator(".agenda-primary tbody tr:visible").CountAsync();
         var secondaryCount = await page.Locator(".agenda-secondary tbody tr:visible").CountAsync();
         foreach (var day in new[] { "primary", "secondary" })
             foreach (var occurrence in data[day]!["occurrences"]!.AsArray())
                 occurrence!["location"] = $"Optional studio {new string('W', 400)}";
-        await DisplayTests.Show(page, data, placement, device);
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
 
         Assert.Equal(primaryCount, await page.Locator(".agenda-primary tbody tr:visible").CountAsync());
         Assert.Equal(secondaryCount, await page.Locator(".agenda-secondary tbody tr:visible").CountAsync());
@@ -155,8 +155,8 @@ public sealed class AdaptiveDisplayTests
         await VisibleInsideView(page.GetByText($"+{32 - primaryCount} more", new() { Exact = true }));
         await VisibleInsideView(page.Locator("[data-agenda-source]"));
 
-        await DisplayTests.Show(page, Agenda(primaryRows: 1, secondaryRows: 0), placement, device);
-        await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+        await DisplayTests.Show(page, Agenda(primaryRows: 1, secondaryRows: 0), view.Placement, view.Device);
+        await NativeBounds(page, view);
         await VisibleInsideView(page.Locator(".agenda-primary").GetByText("Studio A", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("Primary commitment 1", new() { Exact = true }));
         await VisibleInsideView(page.Locator("[data-agenda-source]"));
@@ -165,7 +165,7 @@ public sealed class AdaptiveDisplayTests
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Long_untrusted_calendar_strings_cannot_displace_essential_information_or_execute_markup(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["primary"]!["eligible_total"] = 47;
@@ -179,9 +179,12 @@ public sealed class AdaptiveDisplayTests
             }
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
-        await DisplayTests.Show(page, data, placement, device);
-        await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await NativeBounds(page, view);
 
         var count = await page.Locator(".agenda-primary tbody tr:visible").CountAsync();
         Assert.InRange(count, 1, 31);
@@ -203,7 +206,7 @@ public sealed class AdaptiveDisplayTests
         var sparse = Agenda(primaryRows: 1, secondaryRows: 0);
         const string location = "Studio <svg onload=window.locationPwn=1> & \"North\"";
         sparse["primary"]!["occurrences"]![0]!["location"] = location;
-        await DisplayTests.Show(page, sparse, placement, device);
+        await DisplayTests.Show(page, sparse, view.Placement, view.Device);
         var visibleLocation = page.Locator(".agenda-primary .agenda-location:visible");
         Assert.Equal(location, await visibleLocation.InnerTextAsync());
         await VisibleInsideView(visibleLocation, textMayBeTruncated: true);
@@ -214,7 +217,7 @@ public sealed class AdaptiveDisplayTests
     [Theory]
     [MemberData(nameof(Views))]
     public async Task All_day_contract_entries_keep_their_label_and_weekend_Monday_priority(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["generated_at"] = "2026-10-24T18:05:00Z";
@@ -245,9 +248,12 @@ public sealed class AdaptiveDisplayTests
         }
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
-        await DisplayTests.Show(page, data, placement, device);
-        await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await NativeBounds(page, view);
 
         var rows = page.Locator(".agenda-primary tbody tr:visible");
         var count = await rows.CountAsync();
@@ -269,7 +275,7 @@ public sealed class AdaptiveDisplayTests
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Stale_contract_keeps_commitments_warning_and_original_source_success_visible(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["state"] = "stale";
@@ -282,9 +288,12 @@ public sealed class AdaptiveDisplayTests
         };
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
-        await DisplayTests.Show(page, data, placement, device);
-        await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await NativeBounds(page, view);
 
         await VisibleInsideView(page.GetByText("Stale agenda", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("The calendar source could not be checked.", new() { Exact = true }));
@@ -312,11 +321,14 @@ public sealed class AdaptiveDisplayTests
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Configuration_source_compatibility_and_unknown_errors_are_readable_not_empty_agendas(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
         foreach (var (code, kind, message, knownSuccess) in new[]
         {
             ("configuration_invalid", "Configuration error", "Rule configuration is missing or malformed.", false),
@@ -333,8 +345,8 @@ public sealed class AdaptiveDisplayTests
             data["primary"]!["eligible_total"] = null;
             data["secondary"]!["eligible_total"] = null;
             data["error"] = new JsonObject { ["code"] = code, ["message"] = message };
-            await DisplayTests.Show(page, data, placement, device);
-            await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+            await DisplayTests.Show(page, data, view.Placement, view.Device);
+            await NativeBounds(page, view);
 
             await VisibleInsideView(page.GetByText("Agenda unavailable", new() { Exact = true }));
             await VisibleInsideView(page.GetByText(kind, new() { Exact = true }));
@@ -354,15 +366,18 @@ public sealed class AdaptiveDisplayTests
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Empty_primary_days_keep_selected_dates_instead_of_promoting_secondary_commitments(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
         foreach (var secondaryRows in new[] { 0, 32 })
         {
-            await DisplayTests.Show(page, Agenda(primaryRows: 0, secondaryRows), placement, device);
-            await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+            await DisplayTests.Show(page, Agenda(primaryRows: 0, secondaryRows), view.Placement, view.Device);
+            await NativeBounds(page, view);
             await VisibleInsideView(page.GetByText("Friday, Oct 23", new() { Exact = true }));
             await VisibleInsideView(page.GetByText("Monday, Oct 26", new() { Exact = true }));
             await VisibleInsideView(page.Locator(".agenda-primary").GetByText("0 eligible events", new() { Exact = true }));
@@ -445,13 +460,16 @@ public sealed class AdaptiveDisplayTests
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Native_capture_readiness_is_not_published_before_production_fitting_completes(
-        string device, string placement, int width, int height, float density, int viewWidth, int viewHeight)
+        NativeView view)
     {
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["primary"]!["eligible_total"] = 47;
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
-        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
         await page.AddInitScriptAsync("""
             (() => {
               let ready;
@@ -482,8 +500,8 @@ public sealed class AdaptiveDisplayTests
               });
             })();
             """);
-        await DisplayTests.Show(page, data, placement, device);
-        await NativeBounds(page, width, height, density, viewWidth, viewHeight);
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await NativeBounds(page, view);
         var snapshots = await page.EvaluateAsync<JsonElement>("window.agendaNativeReadySnapshots");
         Assert.NotEmpty(snapshots.EnumerateArray());
         foreach (var snapshot in snapshots.EnumerateArray())
@@ -525,16 +543,41 @@ public sealed class AdaptiveDisplayTests
         return data;
     }
 
-    internal static async Task NativeBounds(IPage page, int width, int height, float density, int viewWidth, int viewHeight)
+    internal static async Task NativeBounds(IPage page, NativeView nativeView)
     {
         var screen = await page.Locator(".screen").BoundingBoxAsync();
         var view = await page.Locator(".view:has(.agenda)").BoundingBoxAsync();
         Assert.NotNull(screen);
         Assert.NotNull(view);
-        Assert.Equal(width, screen.Width);
-        Assert.Equal(height, screen.Height);
-        Assert.Equal(viewWidth * density, view.Width, precision: 1);
-        Assert.Equal(viewHeight * density, view.Height, precision: 1);
+        Assert.Equal(nativeView.PhysicalWidth, screen.Width);
+        Assert.Equal(nativeView.PhysicalHeight, screen.Height);
+        Assert.Equal(nativeView.LogicalViewWidth * nativeView.Density, view.Width, precision: 1);
+        Assert.Equal(nativeView.LogicalViewHeight * nativeView.Density, view.Height, precision: 1);
+    }
+
+    internal static async Task VisibleInk(IPage page, string name, NativeView view, IEnumerable<ILocator> required)
+    {
+        var regions = new List<JsonElement>();
+        foreach (var content in required)
+        {
+            await VisibleInsideView(content);
+            regions.Add(await content.EvaluateAsync<JsonElement>("""
+                element => {
+                  const box = element.getBoundingClientRect();
+                  return { text: element.textContent.trim(), x: box.x, y: box.y, width: box.width, height: box.height };
+                }
+                """));
+        }
+        Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
+        var image = Path.Combine(DisplayTests.Root, "artifacts", $"{name}.png");
+        var screenshot = await page.ScreenshotAsync(new() { Path = image });
+        Assert.Equal(view.PhysicalWidth, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
+        Assert.Equal(view.PhysicalHeight, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
+        using var ink = JsonDocument.Parse(DisplayTests.RunRuby(
+            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image, regions }));
+        foreach (var region in ink.RootElement.EnumerateArray())
+            Assert.True(region.GetProperty("dark_pixels").GetInt32() >= 20,
+                $"Required text has no readable raster ink: {region.GetProperty("text").GetString()}");
     }
 
     private static async Task ReadableRows(ILocator rows)

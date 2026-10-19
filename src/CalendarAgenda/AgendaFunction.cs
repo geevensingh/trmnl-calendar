@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Ical.Net;
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Ical.Net.Evaluation;
@@ -232,9 +233,10 @@ public sealed class AgendaFunction
                 return Fail("source_invalid", "The source contains duplicate event occurrence identifiers.");
             var windowStart = new CalDateTime(primary.ToDateTime(TimeOnly.MinValue), TimeZoneId);
             var windowEnd = new CalDateTime(secondary.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeZoneId);
-            var interpreted = calendar.GetOccurrences<CalendarEvent>(windowStart,
-                new EvaluationOptions { MaxUnmatchedIncrementsLimit = 1_000 })
-                .TakeWhile(item => item.Period.StartTime < windowEnd)
+            var interpreted = new[] { false, true }.SelectMany(timed =>
+                new OccurrenceCalendar(calendar, timed).GetOccurrences<CalendarEvent>(windowStart,
+                    new EvaluationOptions { MaxUnmatchedIncrementsLimit = 1_000 })
+                    .TakeWhileBefore(windowEnd))
                 .Select(instance =>
                 {
                     var item = (CalendarEvent)instance.Source;
@@ -281,6 +283,14 @@ public sealed class AgendaFunction
         var result = new AgendaResult(1, AgendaState.Current, TimeZoneId, now, now,
             SelectDay(primary, occurrences), SelectDay(secondary, occurrences), null);
         return result;
+    }
+
+    private sealed class OccurrenceCalendar(Calendar source, bool timed) : Calendar
+    {
+        // Keep every override in the library's replacement map without merging DATE and DATE-TIME streams.
+        public override ICalendarObjectList<ICalendarObject> Children => source.Children;
+        public override IEnumerable<IRecurrable> RecurringItems =>
+            source.Events.Where(item => item.DtStart?.HasTime == timed);
     }
 
     private static async Task<(ExclusionRule[] Rules, AgendaError? Error)> ValidateRequest(HttpRequest request)

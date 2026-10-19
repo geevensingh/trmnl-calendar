@@ -5,6 +5,8 @@
     "logLevel": {
       "default": "None",
       "Function.Agenda.User": "Warning",
+      "Function.SmokeSource.User": "Warning",
+      "Function.SmokeSourceControl.User": "Warning",
       "Host.Aggregator": "Information",
       "System.Net.Http.HttpClient": "None",
       "Azure": "None"

@@ -176,15 +176,62 @@ Run separately after an observed on-demand idle/scale-to-zero interval, and on w
 
 ### Controlled source/cache evidence
 
-**Current blocker:** no owner-authorized controllable same-URL HTTPS synthetic source has been provided. Deployed fault, timeout, restart-read and expiry measurements remain blocked pending that owner decision. Do not add an endpoint/resource or modify the private publication to bypass this gate.
+The owner approved a temporary synthetic-source revision in the **existing** Function app, with a maximum 90-minute window and explicit teardown. This is approval of the narrow revision below, not evidence that it is deployed, enabled, or that any live check passed. No additional resource, role, instance, paid warming, or private-publication change is authorized.
 
 Before testing, verify runtime **Production**, the Key Vault source reference, safe `Agenda__CacheServiceUri`, the private pre-existing `Agenda__CacheContainer`, and no development disk-cache override, storage credential or SAS. Current output requires a supported source **and successful persistence**, so a real production `current` poll is useful write evidence only after verifying that configuration.
 
 For repeatable deployed stale/read/restart/expiry and timeout checks, an **already authorized, owner-controlled HTTPS synthetic source** must be able to serve a valid calendar and then reject/stall **the same URL**. Configure it only through the owner secret workflow for that smoke window, seed a last-good source, fail the upstream, restart the Function, and observe `stale` with the unchanged source-success time. At age **one hour or greater**, require `error` with null counts/no occurrences. Restore the actual owner source securely and obtain a new current result before device activation.
 
-Changing the configured URL alone cannot simulate an outage of its old cache: the cache is intentionally bound to the source URL. There is no production test-source endpoint, caller-selected feed, clock override or failure-injection switch. No separate test resource is approved. If a suitable synthetic endpoint or owner authorization is unavailable, leave these live gates **blocked**; do not add infrastructure, break private Outlook publication, weaken production cache identity, or present local substitutes as deployed proof.
+Changing the configured URL alone cannot simulate an outage of its old cache: the cache is intentionally bound to the source URL. The production agenda/parser/cache/time policy is unchanged and has no caller-selected feed, clock override, or test bypass. Use only the approved temporary source below; do not present local substitutes as deployed proof.
 
 Actual private-feed publication/compatibility is a separate owner gate. A technically current but availability-only publication does not establish the required information. Never save its returned bodies or use them with preview/screenshot tooling.
+
+### Temporary same-app synthetic source: remove after the approved smoke
+
+Package and deploy the clean reviewed temporary integration commit through the **same** `package-function.ps1` / `deploy-azure.ps1 -Mode DeployCode` procedure above. Keep max-one/default HTTP concurrency and zero always-ready capacity unchanged. Only the integration owner deploys, changes the source secret, creates/revokes the key, and performs Azure checks.
+
+`GET /api/smoke-source` is anonymous, `no-store`, and synthetic-only. It reads only `temporary-smoke-source-mode.json` in the existing private `Agenda__CacheContainer`, using the same explicit **system-assigned** identity and already-approved container Contributor scope. It never reads `last-good-source.json`, the configured source URL, or caller calendar/URL/path inputs. Its fixed synthetic all-day/timed appointments use current Los Angeles working dates. There is no new runtime setting; the existing Development-only cache directory substitutes local storage in tests and is ignored in Production.
+
+`POST /api/smoke-source-control` has **Function** host authentication. Create a dedicated temporary key under **SmokeSourceControl**, not Agenda or host/master keys. Use only `x-functions-key` in a protected owner terminal, with the hidden-input/cleanup pattern above; never print the key, put it in a query string, or send it to TRMNL. Local Core Tools disables normal auth enforcement: verify missing/wrong/revoked keys and the correct dedicated header in Azure.
+
+The control body is a JSON object, at most **1,024 UTF-8 bytes**, with exactly `mode` and `expires_at`, or exactly `mode` for disable. Names/modes are case-sensitive; unknown/duplicate properties, query parameters, non-JSON bodies, supplied URLs/calendars/scripts/paths, and invalid expiry data return `400 smoke_configuration_invalid`. `expires_at` is an absolute, offset-zero UTC ISO timestamp after the current time and no more than 90 minutes ahead. Save the **accepted original expiry** and reuse it for every mode change:
+
+```powershell
+# $temporaryControlHeaders contains only the privately obtained dedicated x-functions-key.
+$controlEndpoint = $agendaEndpoint -replace '/api/agenda$', '/api/smoke-source-control'
+$windowExpires = [DateTimeOffset]::UtcNow.AddMinutes(90).ToString('O')
+$body = @{ mode = 'valid'; expires_at = $windowExpires } | ConvertTo-Json -Compress
+$controlState = Invoke-RestMethod $controlEndpoint -Method Post `
+  -Headers $temporaryControlHeaders -ContentType application/json -Body $body
+$windowExpires = $controlState.expires_at
+```
+
+The successful response contains only version, fixed mode, original `opened_at`, and `expires_at`. Subsequent controls may preserve or shorten expiry, never extend it (`409 smoke_window_extension`). Expired state cannot be reopened by another mode write (`409 smoke_window_expired`); do not open another window without owner approval. Blob reads/writes/deletion use bounded I/O and conditional ETags; a competing mutation can return `409 smoke_conflict`. Storage/configuration/state failures are explicit fixed `smoke_*` codes, not raw Azure errors. Only the two temporary function warning categories are added to the existing bounded telemetry allowlist.
+
+| `mode` | Same fixed GET URL | Expected fresh-check failure, if any |
+| --- | --- | --- |
+| `valid` | HTTP 200, fixed supported synthetic ICS | None; `current` still requires production cache persistence |
+| `unavailable` | HTTP 503 | `source_unavailable` |
+| `delay` | Asynchronous seven-second wait, then HTTP 503 | `source_unavailable` at the adapter's unchanged six-second source deadline |
+| `malformed` | HTTP 200, fixed malformed synthetic data | `source_invalid` |
+| `unsupported_range` | HTTP 200, fixed synthetic `RANGE=THISANDFUTURE` recurrence | `compatibility_unsupported` |
+| `disabled` | Deletes only the mode blob; GET returns HTTP 503 `smoke_disabled` | `source_unavailable` |
+
+For a mode change, repeat the POST with the chosen mode and **the saved `$windowExpires`**, not a new `UtcNow + 90 minutes`. Missing state defaults to disabled; at the exact expiry or later, GET returns HTTP 503 `smoke_expired` without healthy ICS. Expiry does not delete code, revoke the key, or remove retained synthetic agenda source.
+
+Configure the nonsecret fixed HTTPS `/api/smoke-source` URL only through the approved source-secret workflow, and refresh its reference. Seed a supported source, switch modes at that same URL, and run the existing redacted smoke tool for stale/error categories, unchanged source-success time, restart-read, strict one-hour expiry, latency/retry and payload evidence. Same-app polling needs a second asynchronous HTTP invocation; stop if approved default concurrency cannot serve it, rather than increasing capacity. The public compute surface remains callable while code exists; budget alerts are not a spending cap.
+
+When the authorized smoke is complete, stop mode changes and explicitly clean up through the protected control:
+
+```powershell
+$disabled = Invoke-RestMethod $controlEndpoint -Method Post `
+  -Headers $temporaryControlHeaders -ContentType application/json -Body '{"mode":"disabled"}'
+# Clear protected key/header variables and revoke the dedicated function key in the owner workflow.
+```
+
+Verify disabled state, revoke the temporary key, then signal teardown. Remove `TemporarySmokeSource.cs`, `TemporarySmokeSourceTests.cs`, the two temporary host/test logging entries, the temporary Functions-definition test adjustment, and this temporary runbook section from the reviewed final tree. Deploy a newly built clean production package without either function and verify **both** routes have no function match. Do not delete the private source snapshot or a container to clean up this mode blob.
+
+Finally restore the actual source securely, refresh the reference, and obtain a new private-source `current` result to replace the synthetic snapshot before accepting native/private-device delivery. Synthetic success is not private-feed compatibility or activation proof. If interrupted, expiry only stops healthy synthetic publication: explicit key/blob/code teardown and actual-source restoration remain required.
 
 ## Bounded storage and diagnostics
 

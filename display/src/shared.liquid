@@ -1,11 +1,191 @@
 <style>
-  .agenda { gap: 12px; }
-  .agenda .agenda-heading,
-  .agenda .agenda-secondary { display: flex; justify-content: space-between; align-items: center; width: 100%; flex-shrink: 0; }
-  .agenda .agenda-primary { flex: 1; min-height: 0; width: 100%; overflow: hidden; }
-  .agenda .agenda-primary table { table-layout: fixed; width: 100%; }
-  .agenda .agenda-primary td .title { display: block; width: 100%; }
+  .trmnl .agenda-view .layout.agenda {
+    flex: 1; height: auto; min-height: 0; margin-bottom: 0;
+    padding: var(--gap); gap: 4px; align-items: stretch;
+  }
+  .agenda .agenda-heading { display: flex; justify-content: space-between; align-items: center; width: 100%; flex-shrink: 0; }
+  .agenda .agenda-warning { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; flex-shrink: 0; }
+  .agenda .title { font-size: 21px; line-height: 1.4; }
+  .agenda .label { line-height: 1.4; }
+  .agenda .description { line-height: 1.4; overflow-wrap: anywhere; }
+  .agenda > .title, .agenda > .label, .agenda > .description { flex-shrink: 0; }
+  .agenda [hidden] { display: none !important; }
+  .agenda .agenda-day { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; width: 100%; }
+  .agenda .agenda-day table { table-layout: fixed; width: 100%; }
+  .agenda .table.table--large tbody tr { height: auto; }
+  .agenda .table td { padding: 2px 0; vertical-align: top; }
+  .agenda .agenda-day td .title {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    width: 100%; overflow: hidden; overflow-wrap: anywhere;
+  }
+  .agenda .agenda-location {
+    display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 16px; line-height: 1.4;
+  }
+  .agenda .agenda-overflow { display: block; }
   .agenda .agenda-time { width: 230px; white-space: nowrap; }
-  .agenda .agenda-secondary { border-top: 2px solid; padding-top: 8px; }
-  .agenda-source { white-space: nowrap; }
+  .agenda .agenda-secondary { border-top: 2px solid; padding-top: 4px; }
+  .trmnl .agenda-view .agenda-footer { flex-shrink: 0; height: auto; min-height: 32px; }
+  .trmnl .agenda-view .agenda-source {
+    display: flex; flex-wrap: wrap; justify-content: flex-end; column-gap: 4px;
+    min-width: 0; white-space: normal; font-size: 16px; line-height: 1.4;
+  }
+  .agenda-view[data-agenda-compact] .agenda-footer > .title { display: none; }
+  .agenda-view[data-agenda-compact] .agenda-day tr { display: flex; flex-direction: column; }
+  .agenda-view[data-agenda-compact] .agenda-day td { width: 100%; }
 </style>
+{% capture agenda_content %}
+<div class="layout layout--col layout--top agenda" data-agenda-state="{{ state | escape }}">
+  {% if state == "current" or state == "stale" %}
+    {% if state == "stale" %}
+      <div class="agenda-warning" role="status">
+        <span class="title">Stale agenda</span>
+        {% if error %}<span class="label">{{ error.message | escape }}</span>{% endif %}
+      </div>
+    {% endif %}
+    {% assign day_names = "primary,secondary" | split: "," %}
+    {% for day_name in day_names %}
+      {% assign day = primary %}
+      {% if day_name == "secondary" %}{% assign day = secondary %}{% endif %}
+      <div class="agenda-{{ day_name }} agenda-day" data-agenda-total="{{ day.eligible_total }}">
+        <div class="agenda-heading">
+          <span class="title">{{ day.label | escape }}</span>
+          <span class="label">{{ day.eligible_total }} eligible event{% unless day.eligible_total == 1 %}s{% endunless %}</span>
+        </div>
+        {% if day.eligible_total == 0 %}
+          <span class="description agenda-empty">No remaining events</span>
+        {% else %}
+          <table class="table table--large">
+            <tbody>
+              {% for occurrence in day.occurrences %}
+                <tr hidden>
+                  <td class="agenda-time">
+                    {% if occurrence.time_kind == "all_day" %}
+                      <span class="label label--large">All day</span>
+                    {% else %}
+                      <span class="label label--large"
+                        data-agenda-start="{{ occurrence.start_at | escape }}"
+                        data-agenda-end="{{ occurrence.end_at | escape }}"></span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    <span class="title">{{ occurrence.title | escape }}</span>
+                    {% if occurrence.location and occurrence.location != empty %}
+                      <span class="label agenda-location" hidden>{{ occurrence.location | escape }}</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <span class="label agenda-overflow" hidden></span>
+        {% endif %}
+      </div>
+    {% endfor %}
+  {% else %}
+    <span class="title">Agenda unavailable</span>
+    {% if error %}
+      {% assign error_family = error.code | split: "_" | first %}
+      <span class="label">{% case error_family %}{% when "configuration" %}Configuration error{% when "source" %}Source error{% when "compatibility" %}Compatibility error{% else %}Agenda error{% endcase %}</span>
+      <span class="description">{{ error.message | escape }}</span>
+      <span class="label">{{ error.code | escape }}</span>
+    {% endif %}
+  {% endif %}
+</div>
+<div class="title_bar agenda-footer">
+  <span class="title">Agenda</span>
+  <span class="instance agenda-source"><span>Source checked:</span>
+    {% if source_succeeded_at %}
+      <time data-agenda-source datetime="{{ source_succeeded_at | escape }}"></time>
+    {% else %}
+      <span>No successful source check</span>
+    {% endif %}
+  </span>
+</div>
+<script>
+  (() => {
+    const view = document.currentScript.closest(".view");
+    const agenda = view.querySelector(".agenda");
+    view.classList.add("agenda-view");
+    const clock = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit", hour12: true
+    });
+    for (const range of view.querySelectorAll("[data-agenda-start]")) {
+      range.textContent = `${clock.format(new Date(range.dataset.agendaStart))} - ${clock.format(new Date(range.dataset.agendaEnd))}`;
+    }
+    const source = view.querySelector("[data-agenda-source]");
+    if (source && source.dateTime) {
+      source.textContent = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Los_Angeles", month: "short", day: "numeric", year: "numeric",
+        hour: "numeric", minute: "2-digit", hour12: true, timeZoneName: "short"
+      }).format(new Date(source.dateTime));
+    }
+    const fit = () => {
+      view.toggleAttribute("data-agenda-compact", view.clientWidth < 600);
+      const days = [...agenda.querySelectorAll(".agenda-day")].map(element => ({
+        rows: [...element.querySelectorAll("tbody tr")],
+        overflow: element.querySelector(".agenda-overflow"),
+        total: Number(element.dataset.agendaTotal),
+        visible: 0
+      }));
+      const fits = () => agenda.scrollHeight <= agenda.clientHeight;
+      const updateOverflow = day => {
+        if (day.overflow) {
+          const remaining = Math.max(0, day.total - day.visible);
+          day.overflow.hidden = remaining === 0;
+          day.overflow.textContent = `+${remaining} more`;
+        }
+      };
+      const admitRows = day => {
+        for (const row of day.rows) {
+          row.hidden = false;
+          day.visible++;
+          updateOverflow(day);
+          if (!fits()) {
+            row.hidden = true;
+            day.visible--;
+            updateOverflow(day);
+            break;
+          }
+        }
+      };
+      agenda.querySelectorAll(".agenda-location").forEach(location => { location.hidden = true; });
+      for (const day of days) {
+        day.rows.forEach(row => { row.hidden = true; });
+        if (day.overflow) day.overflow.hidden = true;
+      }
+      const [primary, secondary] = days;
+      if (primary) {
+        updateOverflow(primary);
+        admitRows(primary);
+        if (primary.visible === primary.rows.length && secondary.overflow) {
+          updateOverflow(secondary);
+          if (fits()) admitRows(secondary);
+          else secondary.overflow.hidden = true;
+        }
+      }
+      for (const day of days) {
+        for (const row of day.rows.slice(0, day.visible)) {
+          const location = row.querySelector(".agenda-location");
+          if (location) {
+            location.hidden = false;
+            if (!fits()) location.hidden = true;
+          }
+        }
+      }
+      agenda.dataset.agendaReady = "true";
+    };
+    let frame;
+    const scheduleFit = () => {
+      agenda.dataset.agendaReady = "false";
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(fit);
+    };
+    document.fonts.ready.then(scheduleFit);
+    document.fonts.addEventListener("loadingdone", scheduleFit);
+    // Finish fitting before the framework publishes capture readiness.
+    window.addEventListener("trmnl:terminalize:stats", fit);
+    new ResizeObserver(scheduleFit).observe(view);
+  })();
+</script>
+{% endcapture %}

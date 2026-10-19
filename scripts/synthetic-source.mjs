@@ -49,16 +49,18 @@ createServer((request, response) => {
   } else if (path === "/calendar.ics" || path === "/replacement.ics") {
     response.writeHead(200, { "Content-Type": "text/calendar; charset=utf-8" }).end(syntheticCalendar());
   } else {
+    const preview = path === "/" ? "demo.html"
+      : /^\/demo-(og|x)-(full|half_horizontal|half_vertical)\.html$/.test(path) ? path.slice(1) : null;
     const isAsset = /^\/(css|js)\/3\.4\.3\/plugins\.(css|js)$/.test(path)
       || /^\/fonts\/[A-Za-z0-9_-]+\.(ttf|woff2?)$/.test(path);
-    if (path !== "/" && !isAsset) {
+    if (!preview && !isAsset) {
       response.writeHead(404).end();
       return;
     }
-    const file = path === "/" ? join(root, "artifacts", "demo.html")
+    const file = preview ? join(root, "artifacts", preview)
       : join(root, ".tools", "framework", ...path.slice(1).split("/"));
     try {
-      const contentType = path === "/" ? "text/html; charset=utf-8"
+      const contentType = preview ? "text/html; charset=utf-8"
         : path.endsWith(".css") ? "text/css" : path.endsWith(".js") ? "application/javascript"
         : path.endsWith(".woff2") ? "font/woff2" : path.endsWith(".woff") ? "font/woff" : "font/ttf";
       response.writeHead(200, { "Content-Type": contentType }).end(readFileSync(file));

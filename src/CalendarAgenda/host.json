@@ -1,0 +1,10 @@
+{
+  "version": "2.0",
+  "logging": {
+    "logLevel": {
+      "default": "Warning",
+      "Function.Agenda": "Information",
+      "System.Net.Http.HttpClient": "None"
+    }
+  }
+}

@@ -271,12 +271,14 @@ public sealed partial class AgendaHttpTests
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, body);
 
-        await Assertions.Expect(page.GetByText("9:00 AM - 10:00 AM", new() { Exact = true })).ToHaveCountAsync(2);
-        await Assertions.Expect(page.GetByText("Pacific recurring planning", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("Eastern recurring planning", new() { Exact = true })).ToBeVisibleAsync();
+        var primary = page.Locator(".agenda-primary");
+        await Assertions.Expect(primary.GetByText("9:00 AM - 10:00 AM", new() { Exact = true })).ToHaveCountAsync(2);
+        await Assertions.Expect(primary.GetByText("Pacific recurring planning", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(primary.GetByText("Eastern recurring planning", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText(secondaryLabel, new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("2 eligible events", new() { Exact = true })).ToHaveCountAsync(2);
         await Assertions.Expect(page.GetByText(sourceLabel, new() { Exact = true })).ToBeVisibleAsync();
+        await DisplayTests.InsideScreen(page, primary.GetByText("9:00 AM - 10:00 AM", new() { Exact = true }).Last);
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-secondary"));
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-source"));
     }
@@ -345,15 +347,16 @@ public sealed partial class AgendaHttpTests
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, result.RootElement);
 
+        var primary = page.Locator(".agenda-primary");
         await Assertions.Expect(page.GetByText("Monday, Oct 19", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Tuesday, Oct 20", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("2 eligible events", new() { Exact = true })).ToHaveCountAsync(2);
-        await Assertions.Expect(page.GetByText("Multiday workshop", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("Monday commitment", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("All day", new() { Exact = true })).ToHaveCountAsync(2);
+        await Assertions.Expect(primary.GetByText("Multiday workshop", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(primary.GetByText("Monday commitment", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(primary.GetByText("All day", new() { Exact = true })).ToHaveCountAsync(2);
         Assert.DoesNotContain("12:00 AM", await page.Locator("body").InnerTextAsync());
         Assert.Equal(0, await page.Locator("[data-agenda-start]").CountAsync());
-        await DisplayTests.InsideScreen(page, page.GetByText("All day", new() { Exact = true }).Last);
+        await DisplayTests.InsideScreen(page, primary.GetByText("All day", new() { Exact = true }).Last);
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-secondary"));
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-source"));
     }

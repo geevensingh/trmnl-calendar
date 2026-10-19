@@ -192,7 +192,8 @@ public sealed class DisplayTests
             Assert.DoesNotContain("description", json, StringComparison.OrdinalIgnoreCase);
             using var definitions = JsonDocument.Parse(
                 await client.GetStringAsync($"http://127.0.0.1:{functionPort}/admin/functions"));
-            var definition = Assert.Single(definitions.RootElement.EnumerateArray());
+            var definition = Assert.Single(definitions.RootElement.EnumerateArray(),
+                function => function.GetProperty("name").GetString() == "Agenda");
             Assert.Equal("Agenda", definition.GetProperty("name").GetString());
             var trigger = definition.GetProperty("config").GetProperty("bindings").EnumerateArray()
                 .Single(binding => binding.GetProperty("type").GetString() == "httpTrigger");

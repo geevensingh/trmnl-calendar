@@ -21,6 +21,8 @@ test("Functions diagnostics disable automatic URL capture and bound allowed tele
   assert.deepEqual(host.logging.logLevel, {
     default: "None",
     "Function.Agenda.User": "Warning",
+    "Function.SmokeSource.User": "Warning",
+    "Function.SmokeSourceControl.User": "Warning",
     "Host.Aggregator": "Information",
     "System.Net.Http.HttpClient": "None",
     Azure: "None"

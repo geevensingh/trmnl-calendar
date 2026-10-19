@@ -34,7 +34,7 @@ public sealed class AgendaFunction(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "agenda")] HttpRequest request)
     {
         request.HttpContext.Response.Headers.CacheControl = "no-store";
-        var configurationError = await ValidateRequest(request);
+        var (rules, configurationError) = await ValidateRequest(request);
         if (configurationError is not null)
             return Fail(configurationError.Code, configurationError.Message);
 
@@ -124,12 +124,13 @@ public sealed class AgendaFunction(
                 var id = Convert.ToHexStringLower(SHA256.HashData(
                     Encoding.UTF8.GetBytes($"{item.Uid}\n{start:O}")));
                 return (Occurrence: new TimedOccurrence(id, item.Summary ?? "(Untitled)", item.Location, start, end),
-                    item.IsActive);
+                    item.IsActive, SourceTitle: item.Summary);
             }).ToArray();
             if (interpreted.Any(item => item.Occurrence.EndAt <= item.Occurrence.StartAt))
                 return Fail("source_invalid", "The source contains an invalid event interval.");
-            occurrences = interpreted.Where(item => item.IsActive).Select(item => item.Occurrence)
-                .Where(item => item.EndAt > now).OrderBy(item => item.StartAt)
+            occurrences = interpreted.Where(item => item.IsActive && item.Occurrence.EndAt > now
+                    && !rules.Any(rule => rule.Matches(item.SourceTitle)))
+                .Select(item => item.Occurrence).OrderBy(item => item.StartAt)
                 .ThenBy(item => item.EndAt).ThenBy(item => item.Id, StringComparer.Ordinal).ToArray();
         }
         catch (ArgumentException)
@@ -141,7 +142,7 @@ public sealed class AgendaFunction(
         return Respond(result);
     }
 
-    private static async Task<AgendaError?> ValidateRequest(HttpRequest request)
+    private static async Task<(ExclusionRule[] Rules, AgendaError? Error)> ValidateRequest(HttpRequest request)
     {
         const int limit = 16 * 1024;
         var invalid = new AgendaError("configuration_invalid", "Rule configuration is missing or malformed.");
@@ -149,27 +150,87 @@ public sealed class AgendaFunction(
         var length = await request.Body.ReadAtLeastAsync(buffer, buffer.Length,
             throwOnEndOfStream: false, request.HttpContext.RequestAborted);
         if (length > limit)
-            return invalid;
+            return ([], invalid);
 
         try
         {
             using var body = JsonDocument.Parse(buffer.AsMemory(0, length), new JsonDocumentOptions { MaxDepth = 16 });
             if (body.RootElement.ValueKind != JsonValueKind.Object)
-                return invalid;
+                return ([], invalid);
             var fields = body.RootElement.EnumerateObject().ToArray();
             if (fields.Length != 1 || fields[0].Name != "rules_json"
                 || fields[0].Value.ValueKind != JsonValueKind.String)
-                return invalid;
+                return ([], invalid);
             using var rules = JsonDocument.Parse(fields[0].Value.GetString()!,
                 new JsonDocumentOptions { MaxDepth = 16 });
             if (rules.RootElement.ValueKind != JsonValueKind.Array)
-                return invalid;
-            return rules.RootElement.GetArrayLength() == 0 ? null
-                : new AgendaError("configuration_unsupported", "Nonempty exclusion rules are not supported by this slice.");
+                return ([], invalid);
+            var validated = new List<ExclusionRule>();
+            foreach (var rule in rules.RootElement.EnumerateArray())
+            {
+                if (rule.ValueKind != JsonValueKind.Object || rule.EnumerateObject().Count() != 3
+                    || !rule.TryGetProperty("field", out var field) || field.ValueKind != JsonValueKind.String
+                    || !rule.TryGetProperty("mode", out var mode) || mode.ValueKind != JsonValueKind.String
+                    || !rule.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String
+                    || field.GetString() != "title"
+                    || string.IsNullOrWhiteSpace(value.GetString()))
+                    return ([], invalid);
+                MatchingMode? matchingMode = mode.GetString() switch
+                {
+                    "contains" => MatchingMode.Contains,
+                    "starts_with" => MatchingMode.StartsWith,
+                    "whole_word" => MatchingMode.WholeWord,
+                    _ => null
+                };
+                if (matchingMode is not { } supportedMode)
+                    return ([], invalid);
+                validated.Add(new ExclusionRule(ExclusionField.Title, supportedMode, value.GetString()!));
+            }
+            return (validated.ToArray(), null);
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
         {
-            return invalid;
+            // Invalid UTF-16 escapes can fail lazily when a JSON string is read.
+            return ([], invalid);
+        }
+    }
+
+    private enum ExclusionField { Title }
+    private enum MatchingMode { Contains, StartsWith, WholeWord }
+
+    private sealed record ExclusionRule(ExclusionField Field, MatchingMode Mode, string Value)
+    {
+        public bool Matches(string? sourceTitle) => sourceTitle is not null && (Field, Mode) switch
+        {
+            (ExclusionField.Title, MatchingMode.Contains) =>
+                sourceTitle.Contains(Value, StringComparison.OrdinalIgnoreCase),
+            (ExclusionField.Title, MatchingMode.StartsWith) =>
+                sourceTitle.StartsWith(Value, StringComparison.OrdinalIgnoreCase),
+            (ExclusionField.Title, MatchingMode.WholeWord) => MatchesWholeWord(sourceTitle),
+            _ => throw new InvalidOperationException("Unsupported validated exclusion rule.")
+        };
+
+        private bool MatchesWholeWord(string title)
+        {
+            for (var index = title.IndexOf(Value, StringComparison.OrdinalIgnoreCase); index >= 0;
+                index = title.IndexOf(Value, index + 1, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!IsWordCharacter(title, index - 1) && !IsWordCharacter(title, index + Value.Length))
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool IsWordCharacter(string text, int index)
+        {
+            if (index < 0 || index >= text.Length)
+                return false;
+            if (index > 0 && char.IsLowSurrogate(text[index]) && char.IsHighSurrogate(text[index - 1]))
+                index--;
+            return Rune.TryGetRuneAt(text, index, out var rune)
+                && (Rune.IsLetterOrDigit(rune) || Rune.GetUnicodeCategory(rune) is
+                    UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark
+                    or UnicodeCategory.EnclosingMark or UnicodeCategory.LetterNumber or UnicodeCategory.OtherNumber);
         }
     }
 

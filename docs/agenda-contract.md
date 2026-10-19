@@ -14,9 +14,38 @@ The agenda module's public interface is `POST /api/agenda`, with function-scoped
 {"rules_json": {{ rules_json | json }}}
 ```
 
-This deliberately preserves quotes, newlines, and malformed edited text for validation at the HTTP interface. The basic slice requires an object with exactly this one field and an intentionally empty array inside the string. Missing fields, nulls, duplicate/unknown fields, malformed outer or inner JSON, and non-array rule configuration are `configuration_invalid`; a nonempty array is `configuration_unsupported`. There is no implicit default or old-rules fallback. The exclusion slice can extend validation/evaluation of that same string without replacing transport.
+This deliberately preserves quotes, newlines, and malformed edited text for validation at the HTTP interface. The request must be an object with exactly this one required string field. Missing fields, nulls, duplicate/unknown fields, malformed outer or inner JSON (including invalid Unicode escapes), and non-array rule configuration are `configuration_invalid`. The entire UTF-8 request is limited to 16 KiB, inclusive, and both JSON documents have a maximum nesting depth of 16. There is no implicit default or old-rules fallback.
 
 The one source URL is secret runtime configuration `Agenda__SourceUrl`, never an HTTP input, display setting, query parameter, or result field.
+
+### Exclusion rules
+
+The native editable code-style TRMNL field seeds this JSON:
+
+```json
+[
+  {"field":"title","mode":"whole_word","value":"OOF"},
+  {"field":"title","mode":"whole_word","value":"OOO"},
+  {"field":"title","mode":"starts_with","value":"working from"},
+  {"field":"title","mode":"starts_with","value":"Following: "}
+]
+```
+
+Every rule is an object with exactly three required string fields: `field`, `mode`, and `value`. Field and mode names are case-sensitive identifiers. Only `title` is supported; description, participant, and location fields are not active features. Supported modes are:
+
+| Mode | Literal comparison |
+|---|---|
+| `whole_word` | Find the value with word boundaries on both sides. Letters, numbers, and combining marks continue a word; whitespace and punctuation, including underscores, separate words. `(OOO)`, `OOO/PTO`, and `OOF_holiday` match the defaults; `OOOps` and `Proofreading session` do not. |
+| `starts_with` | Match only the beginning of the title. The working from default does not exclude a policy discussion mentioning working from later. The `"Following: "` value includes the literal trailing space, so `Following:Roadmap` is not excluded. |
+| `contains` | Find the literal value anywhere in the title, including the middle. Regex metacharacters are ordinary text, not patterns. |
+
+All comparisons use culture-independent ordinal case-insensitive matching. Source titles are not trimmed or rewritten for evaluation or display, and leading/trailing whitespace in rule values is preserved. A value must be a valid, nonempty, non-whitespace-only string. Quotes, newlines, and punctuation within a literal are data, not expressions. A missing source title is not inferred from descriptions, locations, participants, or the display's `(Untitled)` placeholder.
+
+Validate the **complete** configuration before source acquisition or exclusion evaluation. Malformed rules, duplicate/unknown rule properties, unsupported fields/modes, non-string values, and empty/whitespace-only values reject the whole request as `configuration_invalid`; no valid prefix of the array is evaluated. Regex/executable modes and arbitrary Boolean expressions are unsupported.
+
+Any matching rule excludes the resolved occurrence. Counts are computed only after occurrence interpretation, exclusion, and ended-event removal, including every selected date an occurrence overlaps. Excluded occurrences, rules, descriptions, attendees, source credentials, and raw source identifiers are not included in results or diagnostics.
+
+A deliberately valid empty array (`[]`, with optional JSON whitespace) means **no exclusions**. Missing or malformed configuration is an error even after a previous valid poll; it never reuses old rules or substitutes the editor defaults. Every poll uses its current `rules_json`, so valid edits take effect without changing the adapter or its deployment. Defaults belong only to the native settings field, not the HTTP handler.
 
 ## Result
 
@@ -68,7 +97,7 @@ Authorized, completed polls return HTTP 200 and `application/json`, with `Cache-
 
 The primary day is the first Monday-Friday date on or after the Los Angeles current date; the secondary day is the following working day. Holidays are ordinary weekdays. An empty primary day never moves the window.
 
-Each day has ISO date-only `date`, a literal weekday/date `label` (not misleading today/tomorrow aliases), nullable integer `eligible_total`, and `occurrences`. Current totals are complete **after** supported calendar selection and time filtering, not the visible row count. An occurrence overlapping both selected local dates appears and counts on each; its end is exclusive. Overnight timing is not clipped or rewritten to midnight. A timed occurrence disappears at `end_at <= now`, including ongoing occurrences only while their end is still ahead.
+Each day has ISO date-only `date`, a literal weekday/date `label` (not misleading today/tomorrow aliases), nullable integer `eligible_total`, and `occurrences`. Current totals are complete **after** supported calendar selection, exclusions, and time filtering, not the visible row count. An occurrence overlapping both selected local dates appears and counts on each; its end is exclusive. Overnight timing is not clipped or rewritten to midnight. A timed occurrence disappears at `end_at <= now`, including ongoing occurrences only while their end is still ahead.
 
 Each occurrence has an opaque `id`, `title`, optional/null `location`, and a `time_kind` discriminator. Descriptions, attendees, source URL, raw UID, and rule contents are absent. IDs distinguish occurrences; consumers must not decode them. The basic implementation hashes the parser's UID and UTC start. It uses Ical.Net's normalization, not a separate hand-written RFC parser.
 
@@ -87,8 +116,7 @@ Current error codes:
 
 | Code | Meaning |
 |---|---|
-| `configuration_invalid` | Missing, malformed, oversized, duplicate, or unknown request/configuration fields. |
-| `configuration_unsupported` | Nonempty exclusions are not yet supported. |
+| `configuration_invalid` | Missing, malformed, oversized, duplicate, or unknown request/configuration fields; unsupported exclusion fields/modes or invalid literal values. |
 | `source_configuration` | Missing or unsafe runtime source URL. |
 | `source_unavailable` | Timeout, transport failure, rejected HTTP status, or redirect. |
 | `source_invalid` | Invalid source encoding/calendar/interval/identity, or a source above 2 MiB. |

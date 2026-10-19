@@ -7,6 +7,48 @@ namespace CalendarAgenda.Tests;
 public sealed partial class AgendaHttpTests
 {
     [Fact]
+    public async Task Exclusions_apply_to_resolved_override_and_all_day_titles_not_series_definitions()
+    {
+        var ics = Fixture("moved-occurrences.ics")
+            .Replace("SUMMARY:Series planning", "SUMMARY:OOF series planning")
+            .Replace("SUMMARY:Moved Monday planning", "SUMMARY:OOO moved planning")
+            .Replace("END:VCALENDAR", "BEGIN:VEVENT\nUID:excluded-all-day@synthetic.invalid\n"
+                + "DTSTAMP:20261018T120000Z\nDTSTART;VALUE=DATE:20261019\nDTEND;VALUE=DATE:20261021\n"
+                + "SUMMARY:OOF all-day commitment\nEND:VEVENT\nEND:VCALENDAR");
+        using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", ics);
+        var request = DisplayTests.Render("polling-body", new
+        {
+            rules_json = """[{"field":"title","mode":"whole_word","value":"OOF"},{"field":"title","mode":"whole_word","value":"OOO"}]"""
+        });
+        using var result = await agenda.Poll(request);
+        var body = result.RootElement;
+
+        Assert.Equal("current", body.GetProperty("state").GetString());
+        Assert.Equal(1, body.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.Equal(0, body.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
+        var retained = Assert.Single(body.GetProperty("primary").GetProperty("occurrences").EnumerateArray());
+        Assert.Equal("Moved Wednesday planning", retained.GetProperty("title").GetString());
+        Assert.DoesNotContain("OOF", body.GetRawText());
+        Assert.DoesNotContain("OOO", body.GetRawText());
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
+        await DisplayTests.Show(page, body);
+
+        await Assertions.Expect(page.GetByText("Moved Wednesday planning", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("1:30 PM - 2:15 PM", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("1 eligible event", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("0 eligible events", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.DoesNotContain("OOF", await page.Locator("body").InnerTextAsync());
+        await DisplayTests.InsideScreen(page, page.Locator(".agenda-secondary"));
+        await DisplayTests.InsideScreen(page, page.Locator(".agenda-source"));
+
+        using var cleared = await agenda.Poll();
+        Assert.Equal(2, cleared.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.Equal(3, cleared.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
+    }
+
+    [Fact]
     public async Task Recurrence_date_periods_keep_their_own_duration_and_Outlook_date_only_exclusions()
     {
         var ics = CalendarWithEvent("DTSTART:20261016T190000Z\nDTEND:20261016T200000Z\n"

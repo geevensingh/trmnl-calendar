@@ -12,6 +12,9 @@ views = %w[full half_horizontal half_vertical]
 
 markup =
   case mode
+  when "settings"
+    puts JSON.generate(YAML.safe_load(File.read(File.join(__dir__, "src", "settings.yml"))))
+    exit
   when *views
     File.read(File.join(__dir__, "src", "shared.liquid")) +
       File.read(File.join(__dir__, "src", "#{mode}.liquid"))

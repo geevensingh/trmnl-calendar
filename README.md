@@ -1,10 +1,14 @@
 # TRMNL Calendar
 
-The basic agenda slice for [#3](https://github.com/geevensingh/trmnl-calendar/issues/3), under [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2).
+The agenda slices for [#3](https://github.com/geevensingh/trmnl-calendar/issues/3) and [#4](https://github.com/geevensingh/trmnl-calendar/issues/4), with native configurable title exclusions from [#5](https://github.com/geevensingh/trmnl-calendar/issues/5), under [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2).
 
-The production path is a .NET 10 isolated Azure Function, stable Ical.Net **5.2.3**, and a private TRMNL plugin. The function fetches its configured source, interprets nonrecurring timed events, and returns a two-working-day agenda in `America/Los_Angeles`. The full-screen OG view uses the actual `trmnl-liquid` environment and TRMNL framework **3.4.3**, including its native clamp and overflow engines.
+The production path is a .NET 10 isolated Azure Function, stable Ical.Net **5.2.3**, and a private TRMNL plugin. The function fetches its configured source, resolves timed and all-day occurrences, applies validated title exclusions, and returns a two-working-day agenda in `America/Los_Angeles`. The full-screen OG view uses the actual `trmnl-liquid` environment and TRMNL framework **3.4.3**, including its native clamp and overflow engines.
 
-This slice intentionally accepts **only `[]` exclusion rules**. Recurrence, all-day events, floating times, unsupported timezones, nonempty rules, and invalid sources produce explicit errors rather than partial or unfiltered success. Adaptive OG/X layouts, persistent stale fallback, private-feed compatibility, and Azure/TRMNL activation belong to follow-on tickets.
+Recurring series use the installed stable library's `RRULE`, `RDATE`, and `EXDATE` evaluation before selection and counting. Moved instances replace their originals; cancelled overrides, including those without their own start/end, suppress originals without appearing themselves. Cancelling a series also suppresses its overrides. All-day ranges retain date-only, exclusive ends and render as **All day**, not midnight meetings. Windows timezone aliases use the library's actual resolver, including Los Angeles daylight-saving changes.
+
+The native code-style rule editor starts with whole-word OOF/OOO and starts-with working from/`Following: ` exclusions. An edit changes the next poll without adapter redeployment. A deliberate `[]` disables exclusions; missing, malformed, or unsupported configuration shows a visible error, never defaults, old rules, or an unfiltered fallback.
+
+Parsed `RECURRENCE-ID;RANGE=THISANDFUTURE`, other recurrence ranges, deprecated `EXRULE`, orphan overrides, floating times, unsupported timezones, and invalid sources produce explicit errors rather than partial success. The stable occurrence engine does not cascade ranged edits; serializer support does not establish evaluation support. Unproductive recurrence evaluation is bounded and returns a compatibility error. Adaptive OG/X layouts, persistent stale fallback, private-feed compatibility, and Azure/TRMNL activation belong to follow-on tickets.
 
 ## Local prerequisites
 
@@ -29,8 +33,10 @@ Count labels use standard Liquid conditionals: the standalone `trmnl-liquid` env
 
 The tests cross the two agreed outer interfaces:
 
-- **HTTP requests/results:** the production function handler, real Ical.Net parser, controlled external HTTP transport and clock. No private parser/matcher/helper tests.
+- **HTTP requests/results:** the production function handler, real Ical.Net parser and title matching, controlled external HTTP transport and clock. No private parser/matcher/helper tests.
 - **Rendered output:** the production `display\src` Liquid templates rendered by `TRMNL::Liquid`, with the real framework, fonts, JavaScript, 800 x 480 OG viewport, and framework readiness signal. Assertions check physical bounds as well as text, escaping, counts, and overflow.
+
+Synthetic recurrence fixtures cover ongoing and ended instances, recurrence dates/exclusions, exclusive all-day ends, implicit single-day all-day occurrences, cross-date moves, start-less cancellations, cancelled series, and UTC-equivalent override identifiers. Representative HTTP results are rendered through production Liquid to verify all-day labels, actual moved times, complete per-day counts, both DST transitions with Outlook Pacific/Eastern aliases, and visible compatibility failures without a successful source timestamp.
 
 The runnable end-to-end demonstration is also independently repeatable:
 
@@ -38,7 +44,7 @@ The runnable end-to-end demonstration is also independently repeatable:
 dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restore --nologo --verbosity minimal --filter End_to_end_demo
 ```
 
-It starts a loopback synthetic ICS server and the **real Functions host from the build output**, renders the actual settings' POST body, fetches the feed through the production HTTP adapter, and renders the resulting response through the production templates/framework. It checks the host's actual POST/function-auth definition and verifies that a redirect is a source error, exercising the production HttpClient registration. Owned processes are stopped, including on failure.
+It starts a loopback synthetic ICS server and the **real Functions host from the build output**, renders the actual settings' POST body, fetches the feed through the production HTTP adapter, and renders the resulting response through the production templates/framework. It edits exclusions between polls, shows a visible configuration error for malformed editor text, and clears exclusions with `[]`, without restarting the host. It checks the host's actual POST/function-auth definition, verifies confidential synthetic rule/key/source markers are absent from host diagnostics, and verifies that a redirect is a source error, exercising the production HttpClient registration. Owned processes are stopped, including on failure.
 
 Generated synthetic outputs are `artifacts\demo-agenda.json`, `artifacts\demo.html`, `artifacts\demo.png`, `artifacts\demo-host.log`, and `artifacts\og-busy.png`. To inspect the last generated HTML preview:
 
@@ -76,6 +82,8 @@ Invoke-RestMethod http://127.0.0.1:7071/api/agenda -Method Post `
 
 `display\src\settings.yml` defines native endpoint, password-style function key, and code-style rules fields. Polling is POST every 15 minutes, with `x-functions-key` in the header and the rule text serialized using TRMNL's `json` filter. The source URL is **not** a plugin field or request parameter.
 
+Rules have exactly `field`, `mode`, and `value`: use field `title`, mode `whole_word`, `starts_with`, or `contains`, and a nonblank literal string. Values match case-insensitively without changing displayed titles; any match excludes an occurrence. Whole-word matching treats punctuation and underscores as separators, so `OOF_holiday` matches while `Proofreading session` does not. Prefix rules do not match the middle of a title. Whitespace in values is significant, including the space in `"Following: "`. Unsupported fields/modes and any invalid rule reject the entire configuration. See [the rule contract](docs/agenda-contract.md#exclusion-rules) for the defaults and complete validation behavior.
+
 For deployment packaging only:
 
 ```powershell
@@ -86,4 +94,4 @@ The target is Functions v4, .NET 10 isolated, Linux **Flex Consumption**, not cl
 
 Only fixed error codes are logged. HttpClient URL logging is removed. Do not enable request/response body logging or use private data with the local preview tools. Committed fixtures and generated demo inputs are synthetic.
 
-See [the shared agenda contract](docs/agenda-contract.md) for field definitions, reserved all-day/stale shapes, grouping, and sibling-ticket extension points. Source-success time is the successful fetch/interpretation time, not Outlook's publication time. Fifteen-minute polling plus Outlook publication and device refresh delays is not a freshness guarantee; an offline device can retain its old image.
+See [the shared agenda contract](docs/agenda-contract.md) for field definitions, timed/all-day shapes, grouping, the reserved stale state, and sibling-ticket extension points. Source-success time is the successful fetch/interpretation time, not Outlook's publication time. Fifteen-minute polling plus Outlook publication and device refresh delays is not a freshness guarantee; an offline device can retain its old image.

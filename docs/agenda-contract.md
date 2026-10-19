@@ -14,9 +14,38 @@ The agenda module's public interface is `POST /api/agenda`, with function-scoped
 {"rules_json": {{ rules_json | json }}}
 ```
 
-This deliberately preserves quotes, newlines, and malformed edited text for validation at the HTTP interface. The basic slice requires an object with exactly this one field and an intentionally empty array inside the string. Missing fields, nulls, duplicate/unknown fields, malformed outer or inner JSON, and non-array rule configuration are `configuration_invalid`; a nonempty array is `configuration_unsupported`. There is no implicit default or old-rules fallback. The exclusion slice can extend validation/evaluation of that same string without replacing transport.
+This deliberately preserves quotes, newlines, and malformed edited text for validation at the HTTP interface. The request must be an object with exactly this one required string field. Missing fields, nulls, duplicate/unknown fields, malformed outer or inner JSON (including invalid Unicode escapes), and non-array rule configuration are `configuration_invalid`. The entire UTF-8 request is limited to 16 KiB, inclusive, and both JSON documents have a maximum nesting depth of 16. There is no implicit default or old-rules fallback.
 
 The one source URL is secret runtime configuration `Agenda__SourceUrl`, never an HTTP input, display setting, query parameter, or result field.
+
+### Exclusion rules
+
+The native editable code-style TRMNL field seeds this JSON:
+
+```json
+[
+  {"field":"title","mode":"whole_word","value":"OOF"},
+  {"field":"title","mode":"whole_word","value":"OOO"},
+  {"field":"title","mode":"starts_with","value":"working from"},
+  {"field":"title","mode":"starts_with","value":"Following: "}
+]
+```
+
+Every rule is an object with exactly three required string fields: `field`, `mode`, and `value`. Field and mode names are case-sensitive identifiers. Only `title` is supported; description, participant, and location fields are not active features. Supported modes are:
+
+| Mode | Literal comparison |
+|---|---|
+| `whole_word` | Find the value with word boundaries on both sides. Letters, numbers, and combining marks continue a word; whitespace and punctuation, including underscores, separate words. `(OOO)`, `OOO/PTO`, and `OOF_holiday` match the defaults; `OOOps` and `Proofreading session` do not. |
+| `starts_with` | Match only the beginning of the title. The working from default does not exclude a policy discussion mentioning working from later. The `"Following: "` value includes the literal trailing space, so `Following:Roadmap` is not excluded. |
+| `contains` | Find the literal value anywhere in the title, including the middle. Regex metacharacters are ordinary text, not patterns. |
+
+All comparisons use culture-independent ordinal case-insensitive matching. Source titles are not trimmed or rewritten for evaluation or display, and leading/trailing whitespace in rule values is preserved. A value must be a valid, nonempty, non-whitespace-only string. Quotes, newlines, and punctuation within a literal are data, not expressions. A missing source title is not inferred from descriptions, locations, participants, or the display's `(Untitled)` placeholder.
+
+Validate the **complete** configuration before source acquisition or exclusion evaluation. Malformed rules, duplicate/unknown rule properties, unsupported fields/modes, non-string values, and empty/whitespace-only values reject the whole request as `configuration_invalid`; no valid prefix of the array is evaluated. Regex/executable modes and arbitrary Boolean expressions are unsupported.
+
+Any matching rule excludes the resolved occurrence. Counts are computed only after occurrence interpretation, exclusion, and ended-event removal, including every selected date an occurrence overlaps. Excluded occurrences, rules, descriptions, attendees, source credentials, and raw source identifiers are not included in results or diagnostics.
+
+A deliberately valid empty array (`[]`, with optional JSON whitespace) means **no exclusions**. Missing or malformed configuration is an error even after a previous valid poll; it never reuses old rules or substitutes the editor defaults. Every poll uses its current `rules_json`, so valid edits take effect without changing the adapter or its deployment. Defaults belong only to the native settings field, not the HTTP handler.
 
 ## Result
 
@@ -68,14 +97,20 @@ Authorized, completed polls return HTTP 200 and `application/json`, with `Cache-
 
 The primary day is the first Monday-Friday date on or after the Los Angeles current date; the secondary day is the following working day. Holidays are ordinary weekdays. An empty primary day never moves the window.
 
-Each day has ISO date-only `date`, a literal weekday/date `label` (not misleading today/tomorrow aliases), nullable integer `eligible_total`, and `occurrences`. Current totals are complete **after** supported calendar selection and time filtering, not the visible row count. An occurrence overlapping both selected local dates appears and counts on each; its end is exclusive. Overnight timing is not clipped or rewritten to midnight. A timed occurrence disappears at `end_at <= now`, including ongoing occurrences only while their end is still ahead.
+Each day has ISO date-only `date`, a literal weekday/date `label` (not misleading today/tomorrow aliases), nullable integer `eligible_total`, and `occurrences`. Current totals are complete **after** supported calendar selection, exclusions, and time filtering, not the visible row count. An occurrence overlapping both selected local dates appears and counts on each; its end is exclusive. Overnight timing is not clipped or rewritten to midnight. A timed occurrence disappears at `end_at <= now`, including ongoing occurrences only while their end is still ahead.
 
-Each occurrence has an opaque `id`, `title`, optional/null `location`, and a `time_kind` discriminator. Descriptions, attendees, source URL, raw UID, and rule contents are absent. IDs distinguish occurrences; consumers must not decode them. The basic implementation hashes the parser's UID and UTC start. It uses Ical.Net's normalization, not a separate hand-written RFC parser.
+Each occurrence has an opaque `id`, `title`, optional/null `location`, and a `time_kind` discriminator. Descriptions, attendees, source URL, raw UID, and rule contents are absent. IDs distinguish occurrences; consumers must not decode them. The implementation hashes the parser's UID and resolved UTC start for timed occurrences, or its date-only start for all-day occurrences. It uses Ical.Net's normalization and occurrence evaluation, not a separate hand-written RFC parser.
 
 - **`timed`:** UTC offset-bearing `start_at` and `end_at`, with end strictly after start. There are no all-day date fields. Explicit DTSTART/DTEND or DTSTART/DURATION are interpreted by Ical.Net. UTC, ordinary IANA timezone IDs, and verified Outlook Windows timezone identifiers are supported; floating/unknown zones are explicit compatibility errors.
-- **Reserved `all_day`:** ISO date-only `start_date` and `end_date_exclusive`, with no timed instant fields. An all-day range is `[start_date, end_date_exclusive)` and must never be reinterpreted as midnight instants. `AllDayOccurrence` reserves this shape but the basic emitter/view does not support all-day behavior.
+- **`all_day`:** ISO date-only `start_date` and `end_date_exclusive`, with no timed instant fields. An all-day range is `[start_date, end_date_exclusive)` and must never be reinterpreted as midnight instants. Without an explicit end/duration, Ical.Net supplies the implicit one-day range. A multiday occurrence appears and counts once on each selected date in its range, never on its exclusive end date. The display labels it `All day`.
 
-Within a day, timed occurrences are ordered by start instant, end instant, then opaque ID. Future all-day/recurrence work owns its selection and mixed-kind ordering while preserving complete totals and unambiguous timing. Nonrecurring cancelled events are omitted. RRULE, RDATE, EXRULE, EXDATE, and RECURRENCE-ID (including parsed RANGE metadata) are rejected for the **entire source** until the recurrence slice; they cannot yield guessed or partial current data. Non-published calendar methods, non-Gregorian scales, duplicate nonrecurring identifiers, and invalid intervals are not accepted as healthy data.
+Within a day, all-day occurrences come first, ordered by start date, exclusive end date, then opaque ID. Timed occurrences follow, ordered by start instant, end instant, then opaque ID. Ordering never changes complete eligible totals.
+
+The installed stable Ical.Net 5.2.3 engine resolves `RRULE`, `RDATE` (dates or explicit periods), and `EXDATE` before time filtering, exclusion evaluation, and counting. Date-only `EXDATE` also follows the library's Outlook-compatible whole-date exclusion behavior. A moved individual instance replaces its original even when either date is outside the selected window. Cancelled overrides remain present during replacement resolution so they suppress originals, including overrides with only `RECURRENCE-ID` and cancellation status. They are omitted from the resulting agenda; a cancelled series suppresses its overrides as well. Equivalent timed recurrence identifiers are converted by the library into the series' timezone before its wall-time identity lookup.
+
+An override requires its series and an identifier with the same date-only/timed kind as that series. Duplicate series identifiers or duplicate UID/normalized recurrence-identifier pairs are invalid, not arbitrarily selected revisions. Parsed `RECURRENCE-ID` metadata with `RANGE=THISANDFUTURE` is an explicit **whole-source compatibility error**: the verified stable occurrence engine does not cascade that change correctly. Other supplied recurrence ranges and deprecated `EXRULE` also remain unsupported. No guessed, duplicate, or partial current agenda is returned for these features. Floating or unknown zones in start/end, recurrence dates, exclusions, or identifiers are compatibility errors rather than host-timezone defaults. Invalid parsed recurrence dates and bounded-evaluation failures cannot establish source success.
+
+Non-published calendar methods, non-Gregorian scales, conflicting event properties, and invalid intervals are not accepted as healthy data.
 
 ### States and errors
 
@@ -87,8 +122,7 @@ Current error codes:
 
 | Code | Meaning |
 |---|---|
-| `configuration_invalid` | Missing, malformed, oversized, duplicate, or unknown request/configuration fields. |
-| `configuration_unsupported` | Nonempty exclusions are not yet supported. |
+| `configuration_invalid` | Missing, malformed, oversized, duplicate, or unknown request/configuration fields; unsupported exclusion fields/modes or invalid literal values. |
 | `source_configuration` | Missing or unsafe runtime source URL. |
 | `source_unavailable` | Timeout, transport failure, rejected HTTP status, or redirect. |
 | `source_invalid` | Invalid source encoding/calendar/interval/identity, or a source above 2 MiB. |
@@ -99,7 +133,7 @@ Codes are extensible safe strings; consumers display the message/code and must n
 
 ## Display ownership
 
-The display consumes this result and the platform's view context. It does not select dates, reevaluate exclusions, drop ended meetings, or change totals. This slice supports only full-screen OG. It uses the platform-provided view wrapper, literal weekday labels, native 21px event titles/time labels, native clamping/table overflow, primary-day priority, secondary label/count, and an always-present source-check date/time or explicit absence of a successful check. Location is reserved in the response but omitted in this basic view.
+The display consumes this result and the platform's view context. It does not select dates, reevaluate exclusions, drop ended meetings, or change totals. This slice supports only full-screen OG. It uses the platform-provided view wrapper, literal weekday labels, native 21px event titles/time labels, native clamping/table overflow, primary-day priority, secondary label/count, and an always-present source-check date/time or explicit absence of a successful check. All-day entries use the `time_kind` discriminator to render `All day` without accessing or inventing timed instant fields. Location is reserved in the response but omitted in this basic view.
 
 TRMNL prepends `shared.liquid` to `full.liquid`; `display\render.rb` uses that exact production template sequence with `TRMNL::Liquid`, not a second rendering algorithm. Only the local preview adds the platform shell. CSS/JavaScript/fonts are the real pinned framework, not test approximations. Readiness and physical bounds are checked in a browser, including truthful overflow for a crowded OG view. Adaptive six-layout behavior and persistent stale rendering remain follow-on work.
 

@@ -1,6 +1,6 @@
 # TRMNL Calendar
 
-The agenda slices for [#3](https://github.com/geevensingh/trmnl-calendar/issues/3) and [#4](https://github.com/geevensingh/trmnl-calendar/issues/4), native configurable title exclusions from [#5](https://github.com/geevensingh/trmnl-calendar/issues/5), adaptive production views from [#6](https://github.com/geevensingh/trmnl-calendar/issues/6), and persistent stale-source fallback from [#7](https://github.com/geevensingh/trmnl-calendar/issues/7), under [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2).
+The agenda slices for [#3](https://github.com/geevensingh/trmnl-calendar/issues/3) and [#4](https://github.com/geevensingh/trmnl-calendar/issues/4), native configurable title exclusions from [#5](https://github.com/geevensingh/trmnl-calendar/issues/5), adaptive production views from [#6](https://github.com/geevensingh/trmnl-calendar/issues/6), persistent stale-source fallback from [#7](https://github.com/geevensingh/trmnl-calendar/issues/7), and secure delivery tooling for [#8](https://github.com/geevensingh/trmnl-calendar/issues/8), under [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2). Delivery tooling is not a claim of live activation.
 
 The production path is a .NET 10 isolated Azure Function, stable Ical.Net **5.2.3**, and a private TRMNL plugin. The function fetches its configured source, resolves timed and all-day occurrences, applies validated title exclusions, and returns a two-working-day agenda in `America/Los_Angeles`. OG and X support full-screen, half-horizontal, and half-vertical placements through the actual `trmnl-liquid` environment and pinned TRMNL framework **3.4.3**.
 
@@ -135,14 +135,16 @@ Invoke-RestMethod http://127.0.0.1:7071/api/agenda -Method Post `
 
 Rules have exactly `field`, `mode`, and `value`: use field `title`, mode `whole_word`, `starts_with`, or `contains`, and a nonblank literal string. Values match case-insensitively without changing displayed titles; any match excludes an occurrence. Whole-word matching treats punctuation and underscores as separators, so `OOF_holiday` matches while `Proofreading session` does not. Prefix rules do not match the middle of a title. Whitespace in values is significant, including the space in `"Following: "`. Unsupported fields/modes and any invalid rule reject the entire configuration. See [the rule contract](docs/agenda-contract.md#exclusion-rules) for the defaults and complete validation behavior.
 
-For deployment packaging only:
+For a secret-free, ready-to-run Release archive and commit/hash manifest:
 
 ```powershell
-dotnet publish .\src\CalendarAgenda\CalendarAgenda.csproj -c Release -o .\artifacts\publish
+.\scripts\package-function.ps1
 ```
+
+The [Azure delivery runbook](docs/azure-delivery.md) covers the approved Linux Flex .NET 10 infrastructure, guarded what-if/infrastructure/code deployment, runtime-only owner inputs, Key Vault source workflow, function-scoped key rotation, safe active/previous package retention, redacted smoke checks, $20 budget alerts, recovery and the still-unverified live evidence checklist. `.\scripts\deploy-azure.ps1` defaults to a local Bicep build, not cloud changes. Live activation belongs to the reviewed integration branch and explicit owner gates.
 
 The target is Functions v4, .NET 10 isolated, Linux **Flex Consumption**, not classic Linux Consumption. Configure the HTTPS source URL solely as the runtime secret `Agenda__SourceUrl`. HTTP source URLs are rejected except loopback URLs in the explicit Development environment. Redirects are not followed, retrieval is bounded to six seconds and 2 MiB, request JSON to 16 KiB, and serialized successful results to 95,000 UTF-8 bytes. An oversize agenda becomes a small renderable error; events are never silently truncated at the HTTP seam.
 
-Only fixed error codes are logged. HttpClient URL logging is removed. Do not enable request/response body logging or use private data with the local preview tools. Committed fixtures and generated demo inputs are synthetic.
+Only fixed error codes are logged. HttpClient URL logging and automatic dependency URL capture are disabled; allowed host telemetry categories, sampling, retention and volume safeguards are described in the runbook. Do not add worker auto-instrumentation, enable request/response body logging, or use private data with the local preview tools. Committed fixtures and generated demo inputs are synthetic.
 
 See [the shared agenda contract](docs/agenda-contract.md) for field definitions, timed/all-day shapes, grouping, stale/expiry behavior, and explicit errors. Source-success time is the successful fetch/interpretation time, not Outlook's publication time or the most recent cache response.

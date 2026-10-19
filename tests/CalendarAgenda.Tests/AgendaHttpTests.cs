@@ -303,12 +303,12 @@ public sealed partial class AgendaHttpTests
             string? sourceUrl = "https://synthetic.invalid/calendar.ics",
             HttpStatusCode status = HttpStatusCode.OK, bool timeout = false,
             ILogger<AgendaFunction>? logger = null, string? cacheDirectory = null,
-            IReadOnlyDictionary<string, string?>? runtimeSettings = null)
+            IReadOnlyDictionary<string, string?>? runtimeSettings = null, TimeSpan? sourceDelay = null)
         {
             ownsCacheDirectory = cacheDirectory is null;
             this.cacheDirectory = cacheDirectory ?? Path.Combine(DisplayTests.Root, "artifacts", "source-cache",
                 Guid.NewGuid().ToString("N"));
-            sourceResponse = new SourceResponse(ics, status, timeout);
+            sourceResponse = new SourceResponse(ics, status, timeout, sourceDelay);
             source = new HttpClient(sourceResponse);
             Clock = new FakeTimeProvider(DateTimeOffset.Parse(now));
             var values = new Dictionary<string, string?>
@@ -373,7 +373,7 @@ public sealed partial class AgendaHttpTests
         }
     }
 
-    private sealed class SourceResponse(string ics, HttpStatusCode status, bool timeout) : HttpMessageHandler
+    private sealed class SourceResponse(string ics, HttpStatusCode status, bool timeout, TimeSpan? delay) : HttpMessageHandler
     {
         public string Ics { get; set; } = ics;
         public HttpStatusCode Status { get; set; } = status;
@@ -381,18 +381,20 @@ public sealed partial class AgendaHttpTests
         public bool TransportFailure { get; set; }
         public byte[]? Bytes { get; set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (delay is { } duration)
+                await Task.Delay(duration, cancellationToken);
             if (Timeout)
                 throw new TaskCanceledException("Synthetic secret timeout.");
             if (TransportFailure)
                 throw new HttpRequestException("CONFIDENTIAL source transport failure.");
-            return Task.FromResult(new HttpResponseMessage(Status)
+            return new HttpResponseMessage(Status)
             {
                 Content = Bytes is not null ? new ByteArrayContent(Bytes)
                     : new StringContent(Ics, System.Text.Encoding.UTF8, "text/calendar")
-            });
+            };
         }
     }
 }

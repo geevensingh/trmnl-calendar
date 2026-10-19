@@ -267,7 +267,7 @@ public sealed class ExclusionTests
         body.GetProperty(day).GetProperty("occurrences").EnumerateArray()
             .Select(item => item.GetProperty("title").GetString());
 
-    private sealed class CapturedDiagnostics : ILogger<AgendaFunction>
+    internal sealed class CapturedDiagnostics : ILogger<AgendaFunction>
     {
         public List<string> Messages { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;

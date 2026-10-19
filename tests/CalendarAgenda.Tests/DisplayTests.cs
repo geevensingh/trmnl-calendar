@@ -165,6 +165,8 @@ public sealed class DisplayTests
         functionStart.Environment["AZURE_FUNCTIONS_ENVIRONMENT"] = "Development";
         functionStart.Environment["Agenda__SourceUrl"] =
             $"http://127.0.0.1:{sourcePort}/calendar.ics?key=CONFIDENTIAL_SOURCE_CREDENTIAL";
+        var cacheDirectory = Path.Combine(Root, "artifacts", "demo-source-cache", Guid.NewGuid().ToString("N"));
+        functionStart.Environment["Agenda__DevelopmentCacheDirectory"] = cacheDirectory;
         functionStart.Environment["AzureWebJobsSecretStorageType"] = "files";
         functionStart.Environment["AzureWebJobsStorage"] = "";
         functionStart.Environment.Remove("APPLICATIONINSIGHTS_CONNECTION_STRING");
@@ -173,6 +175,7 @@ public sealed class DisplayTests
         var functionStarted = false;
         var stdout = Task.FromResult("");
         var stderr = Task.FromResult("");
+        var previousDiagnostics = "";
         try
         {
             Assert.True(functions.Start(), "The local Functions process could not be started.");
@@ -182,34 +185,7 @@ public sealed class DisplayTests
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
             client.DefaultRequestHeaders.Add("x-functions-key", "synthetic-local-only");
             var pollingBody = Render("polling-body", new { rules_json = "[]" });
-            string? json = null;
-            var lastFailure = "No response.";
-            var deadline = DateTime.UtcNow.AddSeconds(60);
-            while (DateTime.UtcNow < deadline)
-            {
-                if (functions.HasExited)
-                    Assert.Fail($"Local Functions host exited.\n{await stdout}\n{await stderr}");
-                try
-                {
-                    using var response = await client.PostAsync($"http://127.0.0.1:{functionPort}/api/agenda",
-                        new StringContent(pollingBody, System.Text.Encoding.UTF8, "application/json"));
-                    if (response.IsSuccessStatusCode)
-                    {
-                        json = await response.Content.ReadAsStringAsync();
-                        break;
-                    }
-                    lastFailure = $"HTTP {(int)response.StatusCode}.";
-                }
-                catch (HttpRequestException) { lastFailure = "Local host connection failed."; }
-                catch (TaskCanceledException) { lastFailure = "Local host response timed out."; }
-                await Task.Delay(500);
-            }
-            if (json is null)
-            {
-                functions.Kill(entireProcessTree: true);
-                await functions.WaitForExitAsync();
-                Assert.Fail($"Local Functions host was not ready: {lastFailure}\n{await stdout}\n{await stderr}");
-            }
+            var json = await PollRunningHost();
             var data = JsonNode.Parse(json)!.AsObject();
             Assert.Equal("current", data["state"]!.GetValue<string>());
             Assert.True(data["primary"]!["eligible_total"]!.GetValue<int>() >= 1);
@@ -235,33 +211,7 @@ public sealed class DisplayTests
             await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo.html"), Render("full", data));
             await page.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", "demo.png") });
 
-            foreach (var (device, width, height) in new[] { ("og", 800, 480), ("v2", 1872, 1404) })
-                foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
-                {
-                    var name = $"demo-{(device == "v2" ? "x" : device)}-{placement}";
-                    await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", $"{name}.html"),
-                        Render(placement, data, device));
-                    var preview = await browser.NewPageAsync(new()
-                    {
-                        ViewportSize = new() { Width = width, Height = height }
-                    });
-                    var navigation = await preview.GotoAsync($"http://127.0.0.1:{sourcePort}/{name}.html");
-                    Assert.NotNull(navigation);
-                    Assert.Equal(200, navigation.Status);
-                    await preview.EvaluateAsync("document.fonts.ready");
-                    await preview.WaitForFunctionAsync("window.TRMNL_PLUGINS_READY === true");
-                    await preview.WaitForFunctionAsync("document.querySelector('.agenda').dataset.agendaReady === 'true'");
-                    await AdaptiveDisplayTests.VisibleInsideView(
-                        preview.GetByText("Synthetic source meeting", new() { Exact = true }));
-                    foreach (var day in new[] { "primary", "secondary" })
-                        await AdaptiveDisplayTests.VisibleInsideView(
-                            preview.GetByText(data[day]!["label"]!.GetValue<string>(), new() { Exact = true }));
-                    await AdaptiveDisplayTests.VisibleInsideView(preview.Locator("[data-agenda-source]"));
-                    await Assertions.Expect(preview.Locator("[data-agenda-source]"))
-                        .ToHaveAttributeAsync("datetime", data["source_succeeded_at"]!.GetValue<string>());
-                    await preview.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", $"{name}.png") });
-                    await preview.CloseAsync();
-                }
+            await RenderNativePreviews(data, "demo");
 
             var editedBody = Render("polling-body", new
             {
@@ -314,9 +264,89 @@ public sealed class DisplayTests
             using var failedResponse = await client.PostAsync($"http://127.0.0.1:{functionPort}/api/agenda",
                 new StringContent(pollingBody, System.Text.Encoding.UTF8, "application/json"));
             failedResponse.EnsureSuccessStatusCode();
-            var failed = JsonNode.Parse(await failedResponse.Content.ReadAsStringAsync())!;
-            Assert.Equal("error", failed["state"]!.GetValue<string>());
+            var failed = JsonNode.Parse(await failedResponse.Content.ReadAsStringAsync())!.AsObject();
+            Assert.Equal("stale", failed["state"]!.GetValue<string>());
             Assert.Equal("source_unavailable", failed["error"]!["code"]!.GetValue<string>());
+            Assert.Equal(cleared["source_succeeded_at"]!.GetValue<string>(),
+                failed["source_succeeded_at"]!.GetValue<string>());
+
+            functions.Kill(entireProcessTree: true);
+            await functions.WaitForExitAsync();
+            previousDiagnostics = $"{await stdout}\n{await stderr}";
+            Assert.True(functions.Start(), "The local Functions process could not be restarted.");
+            stdout = functions.StandardOutput.ReadToEndAsync();
+            stderr = functions.StandardError.ReadToEndAsync();
+            var reloaded = JsonNode.Parse(await PollRunningHost())!.AsObject();
+            Assert.Equal("stale", reloaded["state"]!.GetValue<string>());
+            Assert.Equal("source_unavailable", reloaded["error"]!["code"]!.GetValue<string>());
+            Assert.Equal(cleared["source_succeeded_at"]!.GetValue<string>(),
+                reloaded["source_succeeded_at"]!.GetValue<string>());
+            await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo-stale-agenda.json"), reloaded.ToJsonString());
+            await RenderNativePreviews(reloaded, "demo-stale");
+
+            async Task<string> PollRunningHost()
+            {
+                var lastFailure = "No response.";
+                var deadline = DateTime.UtcNow.AddSeconds(60);
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (functions.HasExited)
+                        Assert.Fail($"Local Functions host exited.\n{await stdout}\n{await stderr}");
+                    try
+                    {
+                        using var response = await client.PostAsync($"http://127.0.0.1:{functionPort}/api/agenda",
+                            new StringContent(pollingBody, System.Text.Encoding.UTF8, "application/json"));
+                        if (response.IsSuccessStatusCode)
+                            return await response.Content.ReadAsStringAsync();
+                        lastFailure = $"HTTP {(int)response.StatusCode}.";
+                    }
+                    catch (HttpRequestException) { lastFailure = "Local host connection failed."; }
+                    catch (TaskCanceledException) { lastFailure = "Local host response timed out."; }
+                    await Task.Delay(500);
+                }
+                functions.Kill(entireProcessTree: true);
+                await functions.WaitForExitAsync();
+                throw new Xunit.Sdk.XunitException(
+                    $"Local Functions host was not ready: {lastFailure}\n{await stdout}\n{await stderr}");
+            }
+
+            async Task RenderNativePreviews(JsonObject agenda, string prefix)
+            {
+                foreach (var (device, width, height) in new[] { ("og", 800, 480), ("v2", 1872, 1404) })
+                    foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
+                    {
+                        var name = $"{prefix}-{(device == "v2" ? "x" : device)}-{placement}";
+                        await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", $"{name}.html"),
+                            Render(placement, agenda, device));
+                        var preview = await browser.NewPageAsync(new()
+                        {
+                            ViewportSize = new() { Width = width, Height = height }
+                        });
+                        var navigation = await preview.GotoAsync($"http://127.0.0.1:{sourcePort}/{name}.html");
+                        Assert.NotNull(navigation);
+                        Assert.Equal(200, navigation.Status);
+                        await preview.EvaluateAsync("document.fonts.ready");
+                        await preview.WaitForFunctionAsync("window.TRMNL_PLUGINS_READY === true");
+                        await preview.WaitForFunctionAsync("document.querySelector('.agenda').dataset.agendaReady === 'true'");
+                        await AdaptiveDisplayTests.VisibleInsideView(
+                            preview.GetByText("Synthetic source meeting", new() { Exact = true }));
+                        foreach (var day in new[] { "primary", "secondary" })
+                            await AdaptiveDisplayTests.VisibleInsideView(
+                                preview.GetByText(agenda[day]!["label"]!.GetValue<string>(), new() { Exact = true }));
+                        if (agenda["state"]!.GetValue<string>() == "stale")
+                        {
+                            await AdaptiveDisplayTests.VisibleInsideView(
+                                preview.GetByText("Stale agenda", new() { Exact = true }));
+                            await AdaptiveDisplayTests.VisibleInsideView(
+                                preview.GetByText("The calendar source could not be checked.", new() { Exact = true }));
+                        }
+                        await AdaptiveDisplayTests.VisibleInsideView(preview.Locator("[data-agenda-source]"));
+                        await Assertions.Expect(preview.Locator("[data-agenda-source]"))
+                            .ToHaveAttributeAsync("datetime", agenda["source_succeeded_at"]!.GetValue<string>());
+                        await preview.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", $"{name}.png") });
+                        await preview.CloseAsync();
+                    }
+            }
         }
         finally
         {
@@ -325,10 +355,12 @@ public sealed class DisplayTests
             if (functionStarted) await functions.WaitForExitAsync();
             await synthetic.WaitForExitAsync();
             Directory.CreateDirectory(Path.Combine(Root, "artifacts"));
-            var diagnostics = $"{await stdout}\n{await stderr}";
+            var diagnostics = $"{previousDiagnostics}\n{await stdout}\n{await stderr}";
             await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo-host.log"), diagnostics);
             Assert.DoesNotContain("CONFIDENTIAL", diagnostics);
             Assert.DoesNotContain("synthetic-local-only", diagnostics);
+            if (Directory.Exists(cacheDirectory))
+                Directory.Delete(cacheDirectory, recursive: true);
         }
     }
 

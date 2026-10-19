@@ -525,7 +525,7 @@ public sealed class AdaptiveDisplayTests
         return data;
     }
 
-    private static async Task NativeBounds(IPage page, int width, int height, float density, int viewWidth, int viewHeight)
+    internal static async Task NativeBounds(IPage page, int width, int height, float density, int viewWidth, int viewHeight)
     {
         var screen = await page.Locator(".screen").BoundingBoxAsync();
         var view = await page.Locator(".view:has(.agenda)").BoundingBoxAsync();

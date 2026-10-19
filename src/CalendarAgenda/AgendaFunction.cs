@@ -18,12 +18,24 @@ using Microsoft.Extensions.Logging;
 
 namespace CalendarAgenda;
 
-public sealed class AgendaFunction(
-    HttpClient source,
-    IConfiguration configuration,
-    TimeProvider clock,
-    ILogger<AgendaFunction> logger)
+public sealed class AgendaFunction
 {
+    private readonly HttpClient source;
+    private readonly IConfiguration configuration;
+    private readonly TimeProvider clock;
+    private readonly ILogger<AgendaFunction> logger;
+    private readonly SourceCache cache;
+
+    public AgendaFunction(HttpClient source, IConfiguration configuration, TimeProvider clock,
+        ILogger<AgendaFunction> logger)
+    {
+        this.source = source;
+        this.configuration = configuration;
+        this.clock = clock;
+        this.logger = logger;
+        cache = SourceCache.Create(configuration);
+    }
+
     private const string TimeZoneId = "America/Los_Angeles";
     private static readonly TimeZoneInfo AgendaTimeZone = TimeZoneInfo.FindSystemTimeZoneById(TimeZoneId);
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -39,44 +51,92 @@ public sealed class AgendaFunction(
         request.HttpContext.Response.Headers.CacheControl = "no-store";
         var (rules, configurationError) = await ValidateRequest(request);
         if (configurationError is not null)
-            return Fail(configurationError.Code, configurationError.Message);
+            return Respond(Fail(configurationError.Code, configurationError.Message));
 
         if (!Uri.TryCreate(configuration["Agenda:SourceUrl"], UriKind.Absolute, out var sourceUri)
             || sourceUri.UserInfo.Length != 0 || sourceUri.Fragment.Length != 0
             || (sourceUri.Scheme != Uri.UriSchemeHttps
                 && !(sourceUri.Scheme == Uri.UriSchemeHttp && sourceUri.IsLoopback
                     && configuration["AZURE_FUNCTIONS_ENVIRONMENT"] == "Development")))
-            return Fail("source_configuration", "The calendar source is not configured correctly.");
+            return Respond(Fail("source_configuration", "The calendar source is not configured correctly."));
 
-        string ics;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(request.HttpContext.RequestAborted);
+        deadline.CancelAfter(TimeSpan.FromSeconds(9));
+        var (ics, sourceError) = await FetchSource(sourceUri, deadline.Token, request.HttpContext.RequestAborted);
+        var attempted = ics is not null
+            ? Interpret(ics, rules, clock.GetUtcNow())
+            : Fail(sourceError!.Code, sourceError.Message);
+        var sourceKey = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sourceUri.AbsoluteUri)));
+        try
+        {
+            if (attempted.State == AgendaState.Current)
+            {
+                attempted = attempted with { SourceSucceededAt = clock.GetUtcNow() };
+                await cache.Write(new SourceSnapshot(1, sourceKey, attempted.SourceSucceededAt!.Value, ics!),
+                    deadline.Token);
+                return Respond(attempted);
+            }
+
+            var retained = await cache.Read(deadline.Token);
+            if (retained is null || retained.SourceKey != sourceKey)
+                return Respond(attempted);
+            var now = clock.GetUtcNow();
+            var age = now - retained.SucceededAt;
+            if (age < TimeSpan.Zero || age >= TimeSpan.FromHours(1))
+                return Respond(Fail(attempted.Error!.Code, attempted.Error.Message, retained.SucceededAt));
+            var reevaluated = Interpret(retained.Calendar, rules, now);
+            return Respond(reevaluated with
+            {
+                State = reevaluated.State == AgendaState.Current ? AgendaState.Stale : AgendaState.Error,
+                SourceSucceededAt = retained.SucceededAt,
+                Error = reevaluated.Error ?? attempted.Error
+            });
+        }
+        catch (SourceCacheException error)
+        {
+            return Respond(Fail(error.Code, error.Message, attempted.SourceSucceededAt));
+        }
+        catch (OperationCanceledException) when (!request.HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            return Respond(Fail("cache_unavailable", "The retained calendar source could not be accessed.",
+                attempted.SourceSucceededAt));
+        }
+    }
+
+    private async Task<(string? Calendar, AgendaError? Error)> FetchSource(Uri sourceUri,
+        CancellationToken cancellationToken, CancellationToken requestAborted)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(6));
         try
         {
             using var response = await source.GetAsync(sourceUri, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             if (!response.IsSuccessStatusCode)
-                return Fail("source_unavailable", "The calendar source could not be checked.");
+                return (null, new AgendaError("source_unavailable", "The calendar source could not be checked."));
             await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
             const int sourceLimit = 2 * 1024 * 1024;
             var buffer = new byte[sourceLimit + 1];
             var length = await stream.ReadAtLeastAsync(buffer, buffer.Length, false, deadline.Token);
             if (length > sourceLimit)
-                return Fail("source_invalid", "The calendar source exceeds the supported size.");
-            ics = new UTF8Encoding(false, true).GetString(buffer, 0, length);
+                return (null, new AgendaError("source_invalid", "The calendar source exceeds the supported size."));
+            return (new UTF8Encoding(false, true).GetString(buffer, 0, length), null);
         }
-        catch (OperationCanceledException) when (!request.HttpContext.RequestAborted.IsCancellationRequested)
+        catch (OperationCanceledException) when (!requestAborted.IsCancellationRequested)
         {
-            return Fail("source_unavailable", "The calendar source could not be checked.");
+            return (null, new AgendaError("source_unavailable", "The calendar source could not be checked."));
         }
         catch (Exception error) when (error is HttpRequestException or IOException)
         {
-            return Fail("source_unavailable", "The calendar source could not be checked.");
+            return (null, new AgendaError("source_unavailable", "The calendar source could not be checked."));
         }
         catch (DecoderFallbackException)
         {
-            return Fail("source_invalid", "The calendar source is not valid UTF-8.");
+            return (null, new AgendaError("source_invalid", "The calendar source is not valid UTF-8."));
         }
+    }
 
+    private AgendaResult Interpret(string ics, ExclusionRule[] rules, DateTimeOffset now)
+    {
         Calendar calendar;
         try
         {
@@ -138,7 +198,6 @@ public sealed class AgendaFunction(
             .ToDictionary(item => item.Uid!, StringComparer.Ordinal);
         if (calendar.Events.Any(item => item.RecurrenceIdentifier is not null && !masters.ContainsKey(item.Uid!)))
             return Fail("compatibility_unsupported", "The source contains a recurring change without its series.");
-        var now = clock.GetUtcNow();
         var primary = NextWorkingDay(DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, AgendaTimeZone).DateTime));
         var secondary = NextWorkingDay(primary.AddDays(1));
         AgendaOccurrence[] occurrences;
@@ -221,7 +280,7 @@ public sealed class AgendaFunction(
         }
         var result = new AgendaResult(1, AgendaState.Current, TimeZoneId, now, now,
             SelectDay(primary, occurrences), SelectDay(secondary, occurrences), null);
-        return Respond(result);
+        return result;
     }
 
     private static async Task<(ExclusionRule[] Rules, AgendaError? Error)> ValidateRequest(HttpRequest request)
@@ -316,23 +375,24 @@ public sealed class AgendaFunction(
         }
     }
 
-    private ContentResult Fail(string code, string message, DateTimeOffset? sourceSucceededAt = null)
+    private AgendaResult Fail(string code, string message, DateTimeOffset? sourceSucceededAt = null)
     {
-        logger.LogWarning("Agenda failed with code {ErrorCode}.", code);
         var now = clock.GetUtcNow();
         var primary = NextWorkingDay(DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, AgendaTimeZone).DateTime));
         var secondary = NextWorkingDay(primary.AddDays(1));
-        return Respond(new AgendaResult(1, AgendaState.Error, TimeZoneId, now, sourceSucceededAt,
+        return new AgendaResult(1, AgendaState.Error, TimeZoneId, now, sourceSucceededAt,
             SelectDay(primary, []) with { EligibleTotal = null },
-            SelectDay(secondary, []) with { EligibleTotal = null }, new AgendaError(code, message)));
+            SelectDay(secondary, []) with { EligibleTotal = null }, new AgendaError(code, message));
     }
 
     private ContentResult Respond(AgendaResult result)
     {
         var json = JsonSerializer.Serialize(result, JsonOptions);
         if (result.State != AgendaState.Error && Encoding.UTF8.GetByteCount(json) > 95_000)
-            return Fail("agenda_too_large", "The complete agenda exceeds the polling response budget.",
-                result.SourceSucceededAt);
+            return Respond(Fail("agenda_too_large", "The complete agenda exceeds the polling response budget.",
+                result.SourceSucceededAt));
+        if (result.Error is not null)
+            logger.LogWarning("Agenda failed with code {ErrorCode}.", result.Error.Code);
         return new ContentResult
         {
             StatusCode = StatusCodes.Status200OK,

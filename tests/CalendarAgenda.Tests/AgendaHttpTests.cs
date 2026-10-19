@@ -294,18 +294,35 @@ public sealed partial class AgendaHttpTests
         private readonly IHost host;
         private readonly HttpClient source;
         private readonly HttpClient client;
+        private readonly SourceResponse sourceResponse;
+        private readonly string cacheDirectory;
+        private readonly bool ownsCacheDirectory;
+        public FakeTimeProvider Clock { get; }
 
         public AgendaHttp(string now, string ics,
             string? sourceUrl = "https://synthetic.invalid/calendar.ics",
             HttpStatusCode status = HttpStatusCode.OK, bool timeout = false,
-            ILogger<AgendaFunction>? logger = null)
+            ILogger<AgendaFunction>? logger = null, string? cacheDirectory = null,
+            IReadOnlyDictionary<string, string?>? runtimeSettings = null)
         {
-            source = new HttpClient(new SourceResponse(ics, status, timeout));
-            var settings = new ConfigurationBuilder().AddInMemoryCollection(
-                new Dictionary<string, string?> { ["Agenda:SourceUrl"] = sourceUrl })
-                .Build();
+            ownsCacheDirectory = cacheDirectory is null;
+            this.cacheDirectory = cacheDirectory ?? Path.Combine(DisplayTests.Root, "artifacts", "source-cache",
+                Guid.NewGuid().ToString("N"));
+            sourceResponse = new SourceResponse(ics, status, timeout);
+            source = new HttpClient(sourceResponse);
+            Clock = new FakeTimeProvider(DateTimeOffset.Parse(now));
+            var values = new Dictionary<string, string?>
+            {
+                ["Agenda:SourceUrl"] = sourceUrl,
+                ["AZURE_FUNCTIONS_ENVIRONMENT"] = "Development",
+                ["Agenda:DevelopmentCacheDirectory"] = this.cacheDirectory
+            };
+            if (runtimeSettings is not null)
+                foreach (var (key, value) in runtimeSettings)
+                    values[key] = value;
+            var settings = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
             var function = new AgendaFunction(source, settings,
-                new FakeTimeProvider(DateTimeOffset.Parse(now)), logger ?? NullLogger<AgendaFunction>.Instance);
+                Clock, logger ?? NullLogger<AgendaFunction>.Instance);
             host = new HostBuilder().ConfigureWebHost(web => web.UseTestServer()
                 .ConfigureServices(services =>
                 {
@@ -322,6 +339,22 @@ public sealed partial class AgendaHttpTests
             client = host.GetTestClient();
         }
 
+        public void SetSource(string ics, HttpStatusCode status = HttpStatusCode.OK, bool timeout = false,
+            bool transportFailure = false)
+        {
+            sourceResponse.Ics = ics;
+            sourceResponse.Status = status;
+            sourceResponse.Timeout = timeout;
+            sourceResponse.TransportFailure = transportFailure;
+            sourceResponse.Bytes = null;
+        }
+
+        public void SetSourceBytes(byte[] bytes)
+        {
+            SetSource("");
+            sourceResponse.Bytes = bytes;
+        }
+
         public async Task<JsonDocument> Poll(string body = """{"rules_json":"[]"}""")
         {
             using var response = await client.PostAsync("/api/agenda",
@@ -335,19 +368,30 @@ public sealed partial class AgendaHttpTests
             client.Dispose();
             source.Dispose();
             host.Dispose();
+            if (ownsCacheDirectory && Directory.Exists(cacheDirectory))
+                Directory.Delete(cacheDirectory, recursive: true);
         }
     }
 
     private sealed class SourceResponse(string ics, HttpStatusCode status, bool timeout) : HttpMessageHandler
     {
+        public string Ics { get; set; } = ics;
+        public HttpStatusCode Status { get; set; } = status;
+        public bool Timeout { get; set; } = timeout;
+        public bool TransportFailure { get; set; }
+        public byte[]? Bytes { get; set; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            if (timeout)
+            if (Timeout)
                 throw new TaskCanceledException("Synthetic secret timeout.");
-            return Task.FromResult(new HttpResponseMessage(status)
+            if (TransportFailure)
+                throw new HttpRequestException("CONFIDENTIAL source transport failure.");
+            return Task.FromResult(new HttpResponseMessage(Status)
             {
-                Content = new StringContent(ics, System.Text.Encoding.UTF8, "text/calendar")
+                Content = Bytes is not null ? new ByteArrayContent(Bytes)
+                    : new StringContent(Ics, System.Text.Encoding.UTF8, "text/calendar")
             });
         }
     }

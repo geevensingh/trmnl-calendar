@@ -72,7 +72,7 @@ public sealed class DisplayTests
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await Show(page, data);
 
-        await Assertions.Expect(page.GetByText("No remaining events", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator(".agenda-primary").GetByText("No remaining events", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Friday, Oct 23", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Monday, Oct 26", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("0 eligible events", new() { Exact = true })).ToHaveCountAsync(2);
@@ -94,7 +94,7 @@ public sealed class DisplayTests
         await Assertions.Expect(page.GetByText(title, new() { Exact = true })).ToBeVisibleAsync();
         Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
         Assert.Equal(0, await page.Locator(".agenda-primary svg[onload]").CountAsync());
-        Assert.True(await page.Locator(".agenda-primary .title").EvaluateAsync<float>(
+        Assert.True(await page.Locator(".agenda-primary td .title").EvaluateAsync<float>(
             "element => parseFloat(getComputedStyle(element).fontSize)") >= 20);
         await InsideScreen(page, page.Locator(".agenda-source"));
     }
@@ -273,7 +273,7 @@ public sealed class DisplayTests
             && box.Y + box.Height <= screen.Y + screen.Height, "Required content must fit inside the physical screen.");
     }
 
-    internal static string Render(string mode, object variables)
+    internal static string Render(string mode, object variables, string device = "og")
     {
         var localRuby = Path.Combine(Root, ".tools", "ruby", "bin", "ruby.exe");
         var ruby = Environment.GetEnvironmentVariable("TRMNL_RUBY")
@@ -287,6 +287,7 @@ public sealed class DisplayTests
         };
         start.ArgumentList.Add(Path.Combine(Root, "display", "render.rb"));
         start.ArgumentList.Add(mode);
+        start.ArgumentList.Add(device);
         using var process = Process.Start(start)!;
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
@@ -303,9 +304,10 @@ public sealed class DisplayTests
         return output[0];
     }
 
-    private static async Task Show(IPage page, object data)
+    internal static async Task Show(IPage page, object data, string mode = "full", string device = "og")
     {
-        var html = Render("full", data);
+        var html = Render(mode, data, device);
+        await page.UnrouteAsync("http://trmnl.local/**");
         await page.RouteAsync("http://trmnl.local/**", async route =>
         {
             var path = new Uri(route.Request.Url).AbsolutePath;
@@ -331,9 +333,10 @@ public sealed class DisplayTests
         await page.GotoAsync("http://trmnl.local/");
         await page.EvaluateAsync("document.fonts.ready");
         await page.WaitForFunctionAsync("window.TRMNL_PLUGINS_READY === true");
+        await page.WaitForFunctionAsync("document.querySelector('.agenda').dataset.agendaReady === 'true'");
     }
 
-    private static JsonObject CurrentAgenda() => JsonSerializer.SerializeToNode(new
+    internal static JsonObject CurrentAgenda() => JsonSerializer.SerializeToNode(new
     {
         schema_version = 1,
         state = "current",

@@ -13,9 +13,13 @@
             {% for occurrence in primary.occurrences %}
               <tr>
                 <td class="agenda-time">
-                  <span class="label label--large"
-                    data-agenda-start="{{ occurrence.start_at | escape }}"
-                    data-agenda-end="{{ occurrence.end_at | escape }}"></span>
+                  {% if occurrence.time_kind == "all_day" %}
+                    <span class="label label--large">All day</span>
+                  {% else %}
+                    <span class="label label--large"
+                      data-agenda-start="{{ occurrence.start_at | escape }}"
+                      data-agenda-end="{{ occurrence.end_at | escape }}"></span>
+                  {% endif %}
                 </td>
                 <td><span class="title" data-clamp="1">{{ occurrence.title | escape }}</span></td>
               </tr>

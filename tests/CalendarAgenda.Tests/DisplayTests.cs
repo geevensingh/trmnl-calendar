@@ -262,7 +262,7 @@ public sealed class DisplayTests
         return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
-    private static async Task InsideScreen(IPage page, ILocator content)
+    internal static async Task InsideScreen(IPage page, ILocator content)
     {
         var screen = await page.Locator(".screen").BoundingBoxAsync();
         var box = await content.BoundingBoxAsync();
@@ -303,7 +303,7 @@ public sealed class DisplayTests
         return output[0];
     }
 
-    private static async Task Show(IPage page, object data)
+    internal static async Task Show(IPage page, object data)
     {
         var html = Render("full", data);
         await page.RouteAsync("http://trmnl.local/**", async route =>

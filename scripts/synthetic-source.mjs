@@ -31,8 +31,8 @@ function syntheticCalendar() {
     "SUMMARY:Synthetic source meeting", "LOCATION:Demo studio",
     "DESCRIPTION:Synthetic description must not leave the adapter.", "END:VEVENT",
     "BEGIN:VEVENT", "UID:demo-secondary@synthetic.invalid", `DTSTAMP:${instant(now)}`,
-    `DTSTART;TZID=America/Los_Angeles:${day(secondary)}T110000`,
-    `DTEND;TZID=America/Los_Angeles:${day(secondary)}T120000`,
+    `DTSTART;TZID=British Columbia Standard Time:${day(secondary)}T110000`,
+    `DTEND;TZID=British Columbia Standard Time:${day(secondary)}T120000`,
     "SUMMARY:Secondary working-day meeting", "END:VEVENT", "END:VCALENDAR", ""
   ].join("\r\n");
 }

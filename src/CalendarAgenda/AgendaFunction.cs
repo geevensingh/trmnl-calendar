@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using TimeZoneConverter;
 
 namespace CalendarAgenda;
 
@@ -26,6 +27,14 @@ public sealed class AgendaFunction
     private readonly TimeProvider clock;
     private readonly ILogger<AgendaFunction> logger;
     private readonly SourceCache cache;
+
+    static AgendaFunction()
+    {
+        TimeZoneResolvers.TimeZoneResolver = tzId => DefaultTimeZoneResolver.GetZone(tzId)
+            ?? (TZConvert.TryWindowsToIana(tzId, "001", out var iana)
+                ? NodaTime.DateTimeZoneProviders.Tzdb.GetZoneOrNull(iana) : null)
+            ?? throw new ArgumentException("Unsupported calendar time zone.", nameof(tzId));
+    }
 
     public AgendaFunction(HttpClient source, IConfiguration configuration, TimeProvider clock,
         ILogger<AgendaFunction> logger)

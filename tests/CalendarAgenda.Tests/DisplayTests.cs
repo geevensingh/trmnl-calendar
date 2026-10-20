@@ -189,6 +189,9 @@ public sealed class DisplayTests
             var data = JsonNode.Parse(json)!.AsObject();
             Assert.Equal("current", data["state"]!.GetValue<string>());
             Assert.True(data["primary"]!["eligible_total"]!.GetValue<int>() >= 1);
+            Assert.Equal(1, data["secondary"]!["eligible_total"]!.GetValue<int>());
+            Assert.Equal("Secondary working-day meeting",
+                data["secondary"]!["occurrences"]![0]!["title"]!.GetValue<string>());
             Assert.DoesNotContain("description", json, StringComparison.OrdinalIgnoreCase);
             using var definitions = JsonDocument.Parse(
                 await client.GetStringAsync($"http://127.0.0.1:{functionPort}/admin/functions"));

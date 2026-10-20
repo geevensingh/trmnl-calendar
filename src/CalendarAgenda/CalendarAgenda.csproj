@@ -17,5 +17,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json" CopyToOutputDirectory="PreserveNewest" />
+    <InternalsVisibleTo Include="CalendarAgenda.Tests" />
   </ItemGroup>
 </Project>

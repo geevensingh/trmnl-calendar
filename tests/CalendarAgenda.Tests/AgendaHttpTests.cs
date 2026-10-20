@@ -303,13 +303,14 @@ public sealed partial class AgendaHttpTests
             string? sourceUrl = "https://synthetic.invalid/calendar.ics",
             HttpStatusCode status = HttpStatusCode.OK, bool timeout = false,
             ILogger<AgendaFunction>? logger = null, string? cacheDirectory = null,
-            IReadOnlyDictionary<string, string?>? runtimeSettings = null, TimeSpan? sourceDelay = null)
+            IReadOnlyDictionary<string, string?>? runtimeSettings = null, TimeSpan? sourceDelay = null,
+            HttpClient? sourceClient = null, SourceCache? sourceCache = null)
         {
             ownsCacheDirectory = cacheDirectory is null;
             this.cacheDirectory = cacheDirectory ?? Path.Combine(DisplayTests.Root, "artifacts", "source-cache",
                 Guid.NewGuid().ToString("N"));
             sourceResponse = new SourceResponse(ics, status, timeout, sourceDelay);
-            source = new HttpClient(sourceResponse);
+            source = sourceClient ?? new HttpClient(sourceResponse);
             Clock = new FakeTimeProvider(DateTimeOffset.Parse(now));
             var values = new Dictionary<string, string?>
             {
@@ -321,8 +322,9 @@ public sealed partial class AgendaHttpTests
                 foreach (var (key, value) in runtimeSettings)
                     values[key] = value;
             var settings = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
-            var function = new AgendaFunction(source, settings,
-                Clock, logger ?? NullLogger<AgendaFunction>.Instance);
+            var function = sourceCache is null
+                ? new AgendaFunction(source, settings, Clock, logger ?? NullLogger<AgendaFunction>.Instance)
+                : new AgendaFunction(source, settings, Clock, logger ?? NullLogger<AgendaFunction>.Instance, sourceCache);
             host = new HostBuilder().ConfigureWebHost(web => web.UseTestServer()
                 .ConfigureServices(services =>
                 {

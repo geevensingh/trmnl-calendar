@@ -128,6 +128,8 @@ Last-good persistence retains raw source, a version, a binding to the configured
 
 Production storage is a private, pre-existing blob container with explicit system-assigned managed-identity access; a process restart does not erase it. `Agenda__CacheServiceUri` and `Agenda__CacheContainer` are Azure runtime settings, not HTTP/plugin fields. The internal file persistence substitute is Development-only. See [setup and container-scoped permissions](../README.md#persistent-source-and-freshness). Persistence/configuration/decoding errors are explicit and redacted, not silently lost resilience.
 
+Source acquisition has one eight-second deadline covering headers and body together, inside the request's existing nine-second outbound I/O budget. Cache reads/writes use the remaining shared budget without resetting it. A source timeout follows the same strict last-good age policy above; it cannot advance source success or turn expired commitments into a healthy empty agenda. These I/O bounds exclude platform initialization and delivery overhead, so they do not establish ten-second end-to-end cold-path delivery.
+
 Current error codes:
 
 | Code | Meaning |
@@ -161,5 +163,7 @@ Calendar text is escaped as HTML/data attributes and time formatting assigns `te
 ## Activation evidence
 
 The [Azure delivery runbook](azure-delivery.md) defines deployment, secret/identity configuration, key rotation, bounded telemetry/storage, redacted smoke tooling and the live acceptance checklist. The smoke tool measures the complete native single-URL polling object in serialized UTF-8, with a strict 100,000-byte limit and a ten-second deadline per attempt with at most one transport retry. A rescued slow first attempt still fails the latency check. Authorized renderable calendar errors remain different from authentication rejection and fresh source success.
+
+An unexpected state/error remains a failed smoke check, with `activation_complete: false`, and preserves the authorized poll's attempts/status/duration/retry, safe actual state/code, validated source-success timestamp, raw UTF-8 bytes and whole-object serialized bytes before any authentication probes. Calendar fields are extracted only after strict contract/timestamp validation. Evidence permits only known states and the current code allowlist above; unknown codes use a fixed `unknown` marker and cannot be accepted via an arbitrary `--expected-code`. Malformed/unknown contracts retain transport evidence with unknown calendar fields, never raw bodies, labels, commitments, rules, source URLs, keys or exception messages. Missing/wrong-key probes do not run after a failed calendar check.
 
 Synthetic HTTP/results/rendering checks, local Core Tools, compiled infrastructure and ARM what-if are not evidence of Azure key enforcement, production managed-identity access, private-feed compatibility or actual private-device delivery. Missing owner access or a controlled deployed source-failure path remains an explicit live gate, not a healthy fallback.

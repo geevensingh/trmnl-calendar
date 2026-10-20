@@ -9,7 +9,7 @@ builder.ConfigureFunctionsWebApplication();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpClient(Options.DefaultName, client =>
 {
-    client.Timeout = TimeSpan.FromSeconds(6);
+    client.Timeout = AgendaFunction.SourceAcquisitionTimeout;
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {
     AllowAutoRedirect = false

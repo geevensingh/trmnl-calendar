@@ -22,6 +22,8 @@ namespace CalendarAgenda;
 
 public sealed class AgendaFunction
 {
+    internal static readonly TimeSpan SourceAcquisitionTimeout = TimeSpan.FromSeconds(8);
+
     private readonly HttpClient source;
     private readonly IConfiguration configuration;
     private readonly TimeProvider clock;
@@ -38,12 +40,18 @@ public sealed class AgendaFunction
 
     public AgendaFunction(HttpClient source, IConfiguration configuration, TimeProvider clock,
         ILogger<AgendaFunction> logger)
+        : this(source, configuration, clock, logger, SourceCache.Create(configuration))
+    {
+    }
+
+    internal AgendaFunction(HttpClient source, IConfiguration configuration, TimeProvider clock,
+        ILogger<AgendaFunction> logger, SourceCache cache)
     {
         this.source = source;
         this.configuration = configuration;
         this.clock = clock;
         this.logger = logger;
-        cache = SourceCache.Create(configuration);
+        this.cache = cache;
     }
 
     private const string TimeZoneId = "America/Los_Angeles";
@@ -117,7 +125,7 @@ public sealed class AgendaFunction
         CancellationToken cancellationToken, CancellationToken requestAborted)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(6));
+        deadline.CancelAfter(SourceAcquisitionTimeout);
         try
         {
             using var response = await source.GetAsync(sourceUri, HttpCompletionOption.ResponseHeadersRead, deadline.Token);

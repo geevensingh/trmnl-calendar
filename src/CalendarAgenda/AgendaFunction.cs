@@ -197,8 +197,11 @@ public sealed class AgendaFunction
             return Fail("source_invalid", "The source contains duplicate event series identifiers.");
         var masters = calendar.Events.Where(item => item.RecurrenceIdentifier is null)
             .ToDictionary(item => item.Uid!, StringComparer.Ordinal);
-        if (calendar.Events.Any(item => item.RecurrenceIdentifier is not null && !masters.ContainsKey(item.Uid!)))
-            return Fail("compatibility_unsupported", "The source contains a recurring change without its series.");
+        var detached = calendar.Events.Where(item => item.RecurrenceIdentifier is not null
+            && !masters.ContainsKey(item.Uid!)).ToArray();
+        if (detached.Any(item => item.Properties.Any(property => property.Name is "RRULE" or "RDATE" or "EXDATE")
+            || item.DtStart is null || item.DtEnd is null && item.Duration is null))
+            return Fail("compatibility_unsupported", "A detached recurring change must specify a single complete occurrence.");
         var primary = NextWorkingDay(DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, AgendaTimeZone).DateTime));
         var secondary = NextWorkingDay(primary.AddDays(1));
         AgendaOccurrence[] occurrences;
@@ -214,12 +217,13 @@ public sealed class AgendaFunction
                 }
                 if (item.RecurrenceIdentifier is { } identifier)
                 {
-                    var masterStart = masters[item.Uid!].DtStart!;
-                    if (identifier.StartTime.HasTime != masterStart.HasTime)
+                    var referenceStart = masters.TryGetValue(item.Uid!, out var master)
+                        ? master.DtStart! : item.DtStart!;
+                    if (identifier.StartTime.HasTime != referenceStart.HasTime)
                         return Fail("compatibility_unsupported", "A recurring change uses a different identifier date type.");
-                    // Stable 5.2.3 matches wall times, so equivalent identifiers must use the series' zone.
-                    if (masterStart.HasTime)
-                        identifier.StartTime = identifier.StartTime.ToTimeZone(masterStart.TzId!);
+                    // Stable 5.2.3 matches wall times; detached identities use UTC without inventing a series.
+                    if (referenceStart.HasTime)
+                        identifier.StartTime = identifier.StartTime.ToTimeZone(master is null ? "UTC" : referenceStart.TzId!);
                 }
                 if (item.DtStart is null)
                     continue;
@@ -231,6 +235,13 @@ public sealed class AgendaFunction
             if (calendar.Events.GroupBy(item => (item.Uid, item.RecurrenceIdentifier?.StartTime.Value))
                 .Any(group => group.Count() > 1))
                 return Fail("source_invalid", "The source contains duplicate event occurrence identifiers.");
+            if (detached.Where(item => item.IsActive).GroupBy(item =>
+                {
+                    var start = item.DtStart!;
+                    return (item.Uid, start.HasTime, Start: start.HasTime ? start.AsUtc : start.Value);
+                }).Any(group => group.Count() > 1))
+                return Fail("compatibility_unsupported",
+                    "Detached occurrences with the same identifier and actual start are not supported.");
             var windowStart = new CalDateTime(primary.ToDateTime(TimeOnly.MinValue), TimeZoneId);
             var windowEnd = new CalDateTime(secondary.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeZoneId);
             var interpreted = new[] { false, true }.SelectMany(timed =>
@@ -253,7 +264,8 @@ public sealed class AgendaFunction
                             new DateTimeOffset(start.AsUtc), new DateTimeOffset(end.AsUtc))
                         : new AllDayOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
                             DateOnly.FromDateTime(start.Value), DateOnly.FromDateTime(end.Value));
-                    return (Occurrence: occurrence, IsActive: item.IsActive && masters[item.Uid!].IsActive,
+                    return (Occurrence: occurrence,
+                        IsActive: item.IsActive && (!masters.TryGetValue(item.Uid!, out var master) || master.IsActive),
                         SourceTitle: item.Summary);
                 }).ToArray();
             if (interpreted.Any(item => item.Occurrence switch

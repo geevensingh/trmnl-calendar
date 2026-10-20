@@ -220,8 +220,19 @@ public sealed class AgendaFunction
                     var referenceStart = masters.TryGetValue(item.Uid!, out var master)
                         ? master.DtStart! : item.DtStart!;
                     if (identifier.StartTime.HasTime != referenceStart.HasTime)
-                        return Fail("compatibility_unsupported", "A recurring change uses a different identifier date type.");
+                    {
+                        var completeAllDayChange = item.DtStart is { HasTime: false }
+                            && (item.DtEnd is not null || item.Duration is not null);
+                        var startlessCancellation = !item.IsActive && item.DtStart is null
+                            && item.DtEnd is null && item.Duration is null;
+                        if (master is null || referenceStart.HasTime
+                            || identifier.StartTime.Value.TimeOfDay != TimeSpan.Zero
+                            || !completeAllDayChange && !startlessCancellation
+                            || item.Properties.Any(property => property.Name is "RRULE" or "RDATE" or "EXDATE"))
+                            return Fail("compatibility_unsupported", "A recurring change uses a different identifier date type.");
+                    }
                     // Stable 5.2.3 matches wall times; detached identities use UTC without inventing a series.
+                    // DATE masters retain literal midnight identifiers without timezone or date coercion.
                     if (referenceStart.HasTime)
                         identifier.StartTime = identifier.StartTime.ToTimeZone(master is null ? "UTC" : referenceStart.TzId!);
                 }

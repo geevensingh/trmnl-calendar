@@ -6,6 +6,11 @@ import { parseArgs } from "node:util";
 
 const pollingLimit = 100_000;
 const attemptBudgetMs = 10_000;
+const calendarStates = new Set(["current", "stale", "error"]);
+const calendarErrorCodes = new Set([
+  "configuration_invalid", "source_configuration", "source_unavailable", "source_invalid",
+  "compatibility_unsupported", "agenda_too_large", "cache_configuration", "cache_unavailable", "cache_invalid"
+]);
 
 class DeliveryFailure extends Error {
   constructor(code, evidence = {}) {
@@ -25,30 +30,40 @@ function fields(value, required, optional = []) {
     && Object.keys(value).every(name => required.includes(name) || optional.includes(name));
 }
 
-function instant(value) {
-  return typeof value === "string"
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
-    ? Date.parse(value) : NaN;
+function calendarDate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith("0000-"))
+    return false;
+  const parsed = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
 }
 
-function validatePollingContract(data) {
-  const date = value => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+function instant(value) {
+  if (typeof value !== "string"
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    || !calendarDate(value.slice(0, 10)) || Number(value.slice(11, 13)) >= 24)
+    return NaN;
+  return Date.parse(value);
+}
+
+function validatePollingContract(data, evidence) {
   if (!fields(data, ["schema_version", "state", "time_zone", "generated_at",
     "source_succeeded_at", "primary", "secondary", "error"])
+    || data.schema_version !== 1 || !calendarStates.has(data.state)
     || data.time_zone !== "America/Los_Angeles" || !Number.isFinite(instant(data.generated_at)))
-    fail("invalid_polling_contract");
+    fail("invalid_polling_contract", evidence);
   if (data.state === "current" ? data.error !== null
-    : !fields(data.error, ["code", "message"]) || typeof data.error.message !== "string")
-    fail("invalid_polling_contract");
+    : !fields(data.error, ["code", "message"])
+    || typeof data.error.code !== "string" || typeof data.error.message !== "string")
+    fail("invalid_polling_contract", evidence);
   for (const day of [data.primary, data.secondary]) {
-    if (!fields(day, ["date", "label", "eligible_total", "occurrences"]) || !date(day.date)
+    if (!fields(day, ["date", "label", "eligible_total", "occurrences"]) || !calendarDate(day.date)
       || typeof day.label !== "string" || !Array.isArray(day.occurrences)
       || (data.state === "error" ? day.eligible_total !== null || day.occurrences.length !== 0
         : !Number.isSafeInteger(day.eligible_total) || day.eligible_total < day.occurrences.length))
-      fail("invalid_polling_contract");
+      fail("invalid_polling_contract", evidence);
     for (const occurrence of day.occurrences) {
       if (occurrence === null || typeof occurrence !== "object" || Array.isArray(occurrence))
-        fail("invalid_polling_contract");
+        fail("invalid_polling_contract", evidence);
       const allDay = occurrence.time_kind === "all_day";
       const timing = allDay ? ["start_date", "end_date_exclusive"] : ["start_at", "end_at"];
       if (!fields(occurrence, ["time_kind", "id", "title", ...timing], ["location"])
@@ -56,16 +71,44 @@ function validatePollingContract(data) {
         || typeof occurrence.id !== "string" || !occurrence.id.length
         || typeof occurrence.title !== "string"
         || (occurrence.location !== undefined && occurrence.location !== null && typeof occurrence.location !== "string")
-        || (allDay ? !date(occurrence.start_date) || !date(occurrence.end_date_exclusive)
+        || (allDay ? !calendarDate(occurrence.start_date) || !calendarDate(occurrence.end_date_exclusive)
           || occurrence.start_date >= occurrence.end_date_exclusive
           : !Number.isFinite(instant(occurrence.start_at)) || !Number.isFinite(instant(occurrence.end_at))
           || instant(occurrence.end_at) <= instant(occurrence.start_at)))
-        fail("invalid_polling_contract");
+        fail("invalid_polling_contract", evidence);
     }
   }
+  if (data.source_succeeded_at === null ? data.state !== "error"
+    : !Number.isFinite(instant(data.source_succeeded_at)))
+    fail("invalid_source_success_time", evidence);
   const sourceAge = instant(data.generated_at) - instant(data.source_succeeded_at);
   if (data.state === "stale" && !(sourceAge >= 0 && sourceAge < 3_600_000))
-    fail("invalid_source_success_time");
+    fail("invalid_source_success_time", evidence);
+}
+
+function pollingEvidence(response, attempts, data) {
+  const evidence = {
+    http_status: response.status,
+    state: "unknown",
+    error_code: "unknown",
+    source_succeeded_at: null,
+    raw_response_utf8_bytes: response.bytes,
+    measured_before_probes: true,
+    cold_start_confirmed: false,
+    attempts,
+    retry_used: attempts.length > 1
+  };
+  if (data === undefined) return evidence;
+  validatePollingContract(data, evidence);
+  return {
+    ...evidence,
+    state: data.state,
+    error_code: data.error === null ? null
+      : calendarErrorCodes.has(data.error.code) ? data.error.code : "unknown",
+    source_succeeded_at: data.source_succeeded_at === null ? null
+      : new Date(instant(data.source_succeeded_at)).toISOString(),
+    combined_polling_utf8_bytes: Buffer.byteLength(JSON.stringify(data), "utf8")
+  };
 }
 
 export async function smokeDelivery({
@@ -84,8 +127,8 @@ export async function smokeDelivery({
     fail("invalid_endpoint");
   if (typeof key !== "string" || !key.length || key.length > 512 || /[\s\x00-\x1f\x7f]/.test(key))
     fail("function_key_required");
-  if (!["current", "stale", "error"].includes(expectedState)
-    || (expectedCode !== undefined && !/^[a-z_]{1,48}$/.test(expectedCode))
+  if (!calendarStates.has(expectedState)
+    || (expectedCode !== undefined && !calendarErrorCodes.has(expectedCode))
     || (expectedState !== "current" && expectedCode === undefined))
     fail("invalid_expectation");
   if (typeof rulesJson !== "string" || Buffer.byteLength(rulesJson, "utf8") > 16 * 1024)
@@ -156,31 +199,25 @@ export async function smokeDelivery({
   }
   if (attempts.some(attempt => attempt.error === "attempt_over_budget"))
     fail("polling_budget_exceeded", { attempts });
+  const received = pollingEvidence(response, attempts);
   let data;
   try {
     data = JSON.parse(response.body);
   } catch (error) {
-    if (error instanceof SyntaxError) fail("invalid_polling_json");
+    if (error instanceof SyntaxError) fail("invalid_polling_json", received);
     throw error;
   }
-  if (!data || Array.isArray(data) || data.schema_version !== 1 || data.state !== expectedState)
-    fail("unexpected_calendar_state");
-  if (expectedCode !== undefined && data.error?.code !== expectedCode)
-    fail("unexpected_calendar_error");
   if (response.content_type?.split(";")[0].trim().toLowerCase() !== "application/json")
-    fail("invalid_polling_content_type");
-  validatePollingContract(data);
-  if (data.source_succeeded_at !== null && !Number.isFinite(instant(data.source_succeeded_at)))
-    fail("invalid_source_success_time");
-  const sourceTime = data.source_succeeded_at === null ? null : new Date(data.source_succeeded_at);
-  if ((expectedState !== "error" && sourceTime === null)
-    || (sourceTime !== null && !Number.isFinite(sourceTime.getTime())))
-    fail("invalid_source_success_time");
+    fail("invalid_polling_content_type", received);
+  const evidence = pollingEvidence(response, attempts, data);
+  if (data.state !== expectedState)
+    fail("unexpected_calendar_state", evidence);
+  if (expectedCode !== undefined && data.error?.code !== expectedCode)
+    fail("unexpected_calendar_error", evidence);
   // Native single-URL polling exposes the parsed object's fields at the top level.
   // IDX_0 is for multiple URLs; merge_variables is the different webhook contract.
-  const combinedBytes = Buffer.byteLength(JSON.stringify(data), "utf8");
-  if (combinedBytes >= pollingLimit)
-    fail("combined_polling_too_large", { combined_polling_utf8_bytes: combinedBytes });
+  if (evidence.combined_polling_utf8_bytes >= pollingLimit)
+    fail("combined_polling_too_large", evidence);
   const missing = await request(undefined);
   const wrong = await request(`wrong-${randomBytes(24).toString("hex")}`);
   if (![401, 403].includes(missing.status) || ![401, 403].includes(wrong.status))
@@ -192,18 +229,7 @@ export async function smokeDelivery({
     evidence_scope: syntheticLocal ? "local_synthetic" : "deployed_http_only",
     checked_at: new Date().toISOString(),
     authentication: { missing_key_status: missing.status, wrong_key_status: wrong.status },
-    poll: {
-      http_status: response.status,
-      state: data.state,
-      error_code: expectedCode ?? null,
-      source_succeeded_at: sourceTime?.toISOString() ?? null,
-      raw_response_utf8_bytes: response.bytes,
-      combined_polling_utf8_bytes: combinedBytes,
-      measured_before_probes: true,
-      cold_start_confirmed: false,
-      attempts,
-      retry_used: attempts.length > 1
-    }
+    poll: evidence
   };
 }
 

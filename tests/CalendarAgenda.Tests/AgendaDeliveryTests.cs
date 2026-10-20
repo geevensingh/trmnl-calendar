@@ -13,14 +13,14 @@ namespace CalendarAgenda.Tests;
 public sealed partial class AgendaHttpTests
 {
     [Fact]
-    public async Task A_stalled_source_returns_a_renderable_failure_after_six_seconds_within_the_poll_budget()
+    public async Task A_stalled_source_returns_a_renderable_failure_after_eight_seconds_within_the_poll_budget()
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", Fixture("basic.ics"),
             sourceDelay: Timeout.InfiniteTimeSpan);
         var elapsed = Stopwatch.StartNew();
         using var result = await agenda.Poll();
 
-        Assert.InRange(elapsed.Elapsed.TotalSeconds, 5.8, 10);
+        Assert.InRange(elapsed.Elapsed.TotalSeconds, 7.8, 9.999);
         Assert.Equal("error", result.RootElement.GetProperty("state").GetString());
         Assert.Equal("source_unavailable", result.RootElement.GetProperty("error").GetProperty("code").GetString());
         Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("primary").GetProperty("eligible_total").ValueKind);

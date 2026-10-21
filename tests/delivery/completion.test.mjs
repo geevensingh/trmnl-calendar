@@ -223,6 +223,27 @@ test("missing or invalid contract references fail explicitly without echoing uns
   }
 });
 
+test("index flags that hide tracked edits cannot supply clean-checkout evidence", async t => {
+  for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+    await t.test(flag, async t => {
+      const repo = await repository(t);
+      repo.git("switch", "--quiet", "main");
+      repo.git("merge", "--quiet", "--ff-only", "integration");
+      repo.git("update-index", flag, "implementation.txt");
+      await writeFile(join(repo.checkout, "implementation.txt"), "Hidden uncommitted work\n");
+      assert.equal(repo.git("status", "--porcelain"), "");
+      const before = await snapshot(repo.checkout);
+
+      const report = evidence(repo.check(), 1);
+
+      assert.equal(report.git_contract_satisfied, false);
+      assert.equal(report.working_tree_clean, null);
+      assert.deepEqual(report.errors, ["index_visibility_restricted"]);
+      await assertUnchanged(repo.checkout, before);
+    });
+  }
+});
+
 test("unavailable remote evidence fails without leaking credentials from its URL", async t => {
   const repo = await repository(t);
   repo.git("switch", "--quiet", "main");

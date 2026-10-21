@@ -45,6 +45,8 @@ Use the agreed branch/remote names when different. `--target-branch` defaults to
 
 The command emits one JSON report: stdout/exit **0** for satisfied Git conditions, stderr/exit **1** for failure. It records UTC `checked_at`, `reviewed_commit`, `head_commit`, `target_commit`, `remote_commit`, branch/remote names, `working_tree_clean`, `delivery_state`, `git_contract_satisfied`, and fixed `errors`. Unavailable identities remain null. Only full 40- or 64-character commit IDs are accepted; revisions, missing/non-commit objects, invalid/missing branches, uncommitted tracked or untracked work, and unavailable remote evidence fail explicitly.
 
+Index entries marked `assume-unchanged` or `skip-worktree` can hide tracked edits. The check conservatively fails with `index_visibility_restricted` and `working_tree_clean: null` when either flag is present, including sparse checkouts; it leaves those flags unchanged.
+
 Reachability uses Git's commit graph. Remote mode reads the actual advertised branch with `git ls-remote`; it does not fetch objects, refresh tracking refs, or overwrite `FETCH_HEAD`. Each Git command has a ten-second bound and credential prompts are disabled. Git diagnostics and remote URLs are never printed. Optional index locks, filesystem monitoring, Git tracing, lazy object fetches, and replacement objects are disabled for these reads.
 
 The check never edits files, switches branches, commits, merges, rebases, stashes, pushes, deploys, or closes issues. Perform any necessary writes separately, with approval. Proof is a timestamped observation, not a lock on the local or remote branch; rerun it after relevant changes.

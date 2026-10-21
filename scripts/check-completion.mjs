@@ -75,8 +75,12 @@ function inspect(values, report) {
   report.target_commit = commit(targetRef, "target_branch_missing");
   const status = git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"]);
   if (status.status !== 0) fail("working_tree_status_unavailable");
-  report.working_tree_clean = status.stdout.length === 0;
-  if (!report.working_tree_clean) report.errors.push("uncommitted_changes");
+  const index = git(["ls-files", "-v", "-z"]);
+  if (index.status !== 0) fail("working_tree_status_unavailable");
+  const visibilityRestricted = index.stdout.split("\0").some(entry => /^[a-zS] /.test(entry));
+  report.working_tree_clean = visibilityRestricted ? null : status.stdout.length === 0;
+  if (visibilityRestricted) report.errors.push("index_visibility_restricted");
+  if (status.stdout.length !== 0) report.errors.push("uncommitted_changes");
   const ancestry = git(["merge-base", "--is-ancestor", report.reviewed_commit, report.target_commit]);
   if (![0, 1].includes(ancestry.status)) fail("ancestry_unavailable");
   if (ancestry.status === 1) {

@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+**/TestResults/
+node_modules/
+.tools/
+.bundle/
+vendor/
+artifacts/
+playwright-report/
+test-results/
+local.settings.json
+.env
+.env.*
+*.user

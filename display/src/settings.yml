@@ -1,0 +1,39 @@
+---
+name: Working-day agenda
+description: A private calendar agenda backed by an authenticated Azure Function.
+strategy: polling
+polling_verb: post
+polling_url: "{{ agenda_endpoint }}"
+polling_headers: |
+  Content-Type: application/json
+  x-functions-key: {{ function_key }}
+polling_body: |
+  {"rules_json": {{ rules_json | json }}}
+refresh_interval: 15
+framework_version: "3.4.3"
+no_screen_padding: "no"
+dark_mode: "no"
+custom_fields:
+  - keyname: agenda_endpoint
+    field_type: url
+    name: Agenda endpoint
+    description: HTTPS Azure Function URL ending in /api/agenda, without a query string.
+  - keyname: function_key
+    field_type: password
+    name: Function-scoped key
+    description: The key for the Agenda function, not a host or master key.
+  - keyname: rules_json
+    field_type: code
+    name: Exclusion rules JSON
+    rows: 10
+    default: |-
+      [
+        {"field":"title","mode":"whole_word","value":"OOF"},
+        {"field":"title","mode":"whole_word","value":"OOO"},
+        {"field":"title","mode":"starts_with","value":"working from"},
+        {"field":"title","mode":"starts_with","value":"Following: "}
+      ]
+    help_text: >-
+      An array of title rules with modes whole_word, starts_with, or contains.
+      Any match excludes an occurrence; [] intentionally disables exclusions.
+      Values are nonblank literal strings; spaces are significant. Invalid rules show an error.

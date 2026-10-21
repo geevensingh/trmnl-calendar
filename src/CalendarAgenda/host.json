@@ -1,0 +1,31 @@
+{
+  "version": "2.0",
+  "logging": {
+    "fileLoggingMode": "never",
+    "logLevel": {
+      "default": "None",
+      "Function.Agenda.User": "Warning",
+      "Function.RefreshSource.User": "Information",
+      "Host.Aggregator": "Information",
+      "System.Net.Http.HttpClient": "None",
+      "Azure": "None"
+    },
+    "applicationInsights": {
+      "enableDependencyTracking": false,
+      "enableLiveMetrics": false,
+      "enablePerformanceCountersCollection": false,
+      "httpAutoCollectionOptions": {
+        "enableHttpTriggerExtendedInfoCollection": false,
+        "enableW3CDistributedTracing": false,
+        "enableResponseHeaderInjection": false
+      },
+      "snapshotConfiguration": {
+        "isEnabled": false
+      },
+      "samplingSettings": {
+        "isEnabled": true,
+        "maxTelemetryItemsPerSecond": 1
+      }
+    }
+  }
+}

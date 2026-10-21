@@ -2,6 +2,8 @@
 
 This is the repeatable procedure for [ticket #8](https://github.com/geevensingh/trmnl-calendar/issues/8), not a receipt of live activation. Deploy only the reviewed integration commit. Synthetic tests and a successful ARM what-if do not prove Azure authentication, private-source compatibility, managed-identity access, native settings transport, or delivery to a device. Leave #8 and [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2) open until the evidence checklist is complete.
 
+Git landing, publication, completion reporting, and ticket closure follow the [delivery contract](agents/delivery.md). The live activation evidence below is an additional gate, not proof of landing on the target branch.
+
 ## Approved scope and permissions
 
 The owner's private resource plan supplies the subscription, exact resource names, and alert recipient. Do not commit those inputs or put them in issues. The approved location is **West US 2**, the monthly alert budget is **$20**, and always-ready capacity is **zero**. A different region, additional resource/role, increased scale, or paid warming requires renewed approval; a deployment error is not permission to change this plan.
@@ -47,7 +49,7 @@ Use the prerequisites and per-worktree display setup in the [README](../README.m
 
 ```powershell
 .\scripts\deploy-azure.ps1
-node --test .\tests\delivery\deployment.test.mjs .\tests\delivery\deploy-command.test.mjs .\tests\delivery\smoke.test.mjs
+node --test .\tests\delivery\deployment.test.mjs .\tests\delivery\deploy-command.test.mjs .\tests\delivery\smoke.test.mjs .\tests\delivery\completion.test.mjs
 dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restore --nologo --verbosity minimal
 ```
 

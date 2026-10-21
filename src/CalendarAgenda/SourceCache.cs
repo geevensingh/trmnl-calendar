@@ -113,9 +113,14 @@ internal abstract class SourceCache
                 || !Guid.TryParseExact(status.RefreshId, "N", out _) || status.StartedAt == default
                 || status.CompletedAt < status.StartedAt
                 || status.Generation < 0 || status.Generation == 0 && status.ErrorCode != "refresh_missing"
+                || status.CompletedGeneration < 0 || status.CompletedGeneration > status.Generation
+                || status.CompletedGeneration == 0 && status.ErrorCode != "refresh_missing"
+                || status.Pending is null && status.CompletedGeneration != status.Generation
                 || status.Pending is { } pending && (!ValidSourceKey(pending.SourceKey)
                     || !Guid.TryParseExact(pending.RefreshId, "N", out _) || pending.StartedAt == default
-                    || pending.Generation <= 0 || pending.Generation != status.Generation)
+                    || pending.StartedAt < status.CompletedAt
+                    || pending.Generation <= status.CompletedGeneration || pending.Generation != status.Generation
+                    || status.CompletedGeneration > 0 && pending.RefreshId == status.RefreshId)
                 || !RefreshErrors.ValidDetail(status.ErrorCode, status.FailureDetail)
                 || (status.ErrorCode is null ? status.SourceSucceededAt is null
                     || status.SourceSucceededAt < status.StartedAt || status.SourceSucceededAt > status.CompletedAt
@@ -162,10 +167,32 @@ internal abstract class SourceCache
         using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 4 });
         if (document.RootElement.ValueKind != JsonValueKind.Object)
             throw InvalidSnapshot();
-        var names = document.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
-        if (names.Distinct(StringComparer.Ordinal).Count() != names.Length)
+        RejectDuplicateMembers(document.RootElement);
+        if (typeof(T) == typeof(SourceSnapshot)
+            && document.RootElement.TryGetProperty("Version", out var version)
+            && version.ValueKind == JsonValueKind.Number && version.TryGetInt32(out var number) && number == 1
+            && document.RootElement.EnumerateObject().Count() != 4)
             throw InvalidSnapshot();
         return JsonSerializer.Deserialize<T>(bytes.Span, EnvelopeOptions) ?? throw InvalidSnapshot();
+    }
+
+    private static void RejectDuplicateMembers(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in value.EnumerateObject())
+            {
+                if (!names.Add(property.Name))
+                    throw InvalidSnapshot();
+                RejectDuplicateMembers(property.Value);
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in value.EnumerateArray())
+                RejectDuplicateMembers(item);
+        }
     }
 
     protected static SourceCacheException InvalidSnapshot() =>

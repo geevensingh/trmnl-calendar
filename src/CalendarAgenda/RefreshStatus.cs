@@ -8,7 +8,8 @@ internal sealed record RefreshAttempt(string SourceKey, string RefreshId, DateTi
 internal sealed record RefreshStatus(int Version, string SourceKey, string RefreshId,
     DateTimeOffset StartedAt, DateTimeOffset CompletedAt, DateTimeOffset? SourceSucceededAt, string? ErrorCode,
     int? FailureDetail = null, [property: JsonRequired] long Generation = 0,
-    [property: JsonRequired] RefreshAttempt? Pending = null);
+    [property: JsonRequired] RefreshAttempt? Pending = null,
+    [property: JsonRequired] long CompletedGeneration = 0);
 
 internal static class RefreshErrors
 {
@@ -66,19 +67,19 @@ internal static class RefreshErrors
 
     internal static AgendaError For(string code, int? detail = null) => new(code, detail is { } index
         && ValidDetail(code, detail) ? (code == "source_invalid" ? SourceMessages : CompatibilityMessages)[index] : code switch
-    {
-        "source_configuration" => "The calendar source is not configured correctly.",
-        "source_unavailable" => "The calendar source could not be checked.",
-        "source_invalid" => "The calendar source could not be interpreted.",
-        "compatibility_unsupported" => "The source contains unsupported calendar semantics.",
-        "cache_configuration" => "Persistent calendar storage is not configured correctly.",
-        "cache_unavailable" => "The retained calendar source could not be accessed.",
-        "cache_invalid" => "The retained calendar source is not usable.",
-        "refresh_missing" => "No completed source refresh is available.",
-        "refresh_delayed" => "The scheduled source refresh is delayed.",
-        "refresh_incomplete" => "The source refresh could not be committed completely.",
-        _ => throw new ArgumentException("Unknown refresh failure category.", nameof(code))
-    });
+        {
+            "source_configuration" => "The calendar source is not configured correctly.",
+            "source_unavailable" => "The calendar source could not be checked.",
+            "source_invalid" => "The calendar source could not be interpreted.",
+            "compatibility_unsupported" => "The source contains unsupported calendar semantics.",
+            "cache_configuration" => "Persistent calendar storage is not configured correctly.",
+            "cache_unavailable" => "The retained calendar source could not be accessed.",
+            "cache_invalid" => "The retained calendar source is not usable.",
+            "refresh_missing" => "No completed source refresh is available.",
+            "refresh_delayed" => "The scheduled source refresh is delayed.",
+            "refresh_incomplete" => "The source refresh could not be committed completely.",
+            _ => throw new ArgumentException("Unknown refresh failure category.", nameof(code))
+        });
 
     internal static bool IsKnown(string code) => code is "source_configuration" or "source_unavailable"
         or "source_invalid" or "compatibility_unsupported" or "cache_configuration" or "cache_unavailable"

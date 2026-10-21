@@ -105,7 +105,8 @@ public sealed class AgendaFunction
             deadline.Token.ThrowIfCancellationRequested();
             var succeededAt = error is null ? clock.GetUtcNow() : (DateTimeOffset?)null;
             var status = new RefreshStatus(1, SourceKey(sourceUri!), refreshId, startedAt, clock.GetUtcNow(),
-                succeededAt, error?.Code, error is null ? null : RefreshErrors.Detail(error), attempt.Generation);
+                succeededAt, error?.Code, error is null ? null : RefreshErrors.Detail(error), attempt.Generation,
+                CompletedGeneration: attempt.Generation);
             await cache.Complete(status, succeededAt is { } success
                 ? new SourceSnapshot(2, status.SourceKey, success, ics!, startedAt, refreshId, attempt.Generation) : null,
                 deadline.Token);
@@ -170,9 +171,11 @@ public sealed class AgendaFunction
             var age = now - retained.SucceededAt;
             if (status is not null && (status.StartedAt > now || status.CompletedAt > now || pending?.StartedAt > now))
                 return Respond(Fail("cache_invalid", "The retained calendar source is not usable.", retained.SucceededAt));
-            if (error is null && (status!.RefreshId != retained.RefreshId
+            if (error is null && (retained.Version != 2
+                || status!.RefreshId != retained.RefreshId
+                || status.StartedAt != retained.RefreshStartedAt
                 || status.SourceSucceededAt != retained.SucceededAt
-                || status.Pending is null && status.Generation != retained.Generation))
+                || status.CompletedGeneration != retained.Generation))
                 error = RefreshErrors.For("refresh_incomplete");
             if (error is null && age >= TimeSpan.FromMinutes(15))
                 error = RefreshErrors.For("refresh_delayed");

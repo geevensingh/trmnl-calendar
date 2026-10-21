@@ -1,11 +1,214 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace CalendarAgenda.Tests;
 
 public sealed class AgendaRefreshPersistenceTests
 {
+    [Theory]
+    [InlineData("none", false, "current", null)]
+    [InlineData("none", true, "current", null)]
+    [InlineData("source_generation_future", true, "stale", "refresh_incomplete")]
+    [InlineData("source_generation_pending", true, "stale", "refresh_incomplete")]
+    [InlineData("source_generation_older", true, "stale", "refresh_incomplete")]
+    [InlineData("source_start", false, "stale", "refresh_incomplete")]
+    [InlineData("source_start", true, "stale", "refresh_incomplete")]
+    [InlineData("source_identity", true, "stale", "refresh_incomplete")]
+    [InlineData("source_success_time", true, "stale", "refresh_incomplete")]
+    [InlineData("legacy_with_v2_metadata", false, "error", "cache_invalid")]
+    [InlineData("legacy_with_v2_metadata", true, "error", "cache_invalid")]
+    [InlineData("legacy_with_default_v2_field", true, "error", "cache_invalid")]
+    [InlineData("legacy", false, "stale", "refresh_incomplete")]
+    [InlineData("legacy", true, "stale", "refresh_incomplete")]
+    [InlineData("status_completed_generation_missing", true, "error", "cache_invalid")]
+    [InlineData("status_completed_generation_zero", true, "error", "cache_invalid")]
+    [InlineData("status_completed_generation_pending", true, "error", "cache_invalid")]
+    [InlineData("status_completed_generation_future", true, "error", "cache_invalid")]
+    [InlineData("status_allocated_generation_without_pending", false, "error", "cache_invalid")]
+    [InlineData("status_pending_reuses_completed_id", true, "error", "cache_invalid")]
+    [InlineData("status_pending_before_completion", true, "error", "cache_invalid")]
+    [InlineData("status_pending_allocation_mismatch", true, "error", "cache_invalid")]
+    [InlineData("status_pending_allocation_gap", true, "current", null)]
+    public async Task Only_a_complete_matching_source_identity_remains_current_during_pending_refresh(
+        string corruption, bool inFlight, string expectedState, string? expectedCode)
+    {
+        var directory = Path.Combine(DisplayTests.Root, "artifacts", "source-cache", Guid.NewGuid().ToString("N"));
+        var ioClock = new FakeTimeProvider();
+        using var completed = new AgendaHttpTests.AgendaHttp("2026-10-19T18:00:00Z", Basic(), cacheDirectory: directory);
+        using var worker = new AgendaHttpTests.AgendaHttp("2026-10-19T18:05:00Z", "CONFIDENTIAL_PENDING_SOURCE",
+            cacheDirectory: directory, sourceDelay: Timeout.InfiniteTimeSpan, ioClock: ioClock);
+        Task? pending = null;
+        try
+        {
+            await completed.Tick();
+            if (corruption == "source_generation_older")
+                await completed.Tick();
+            if (inFlight)
+            {
+                pending = worker.Tick();
+                await worker.SourceRequested.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            var path = Path.Combine(directory, corruption.StartsWith("status_", StringComparison.Ordinal)
+                ? "source-refresh-status.json" : "last-good-source.json");
+            var data = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+            switch (corruption)
+            {
+                case "source_generation_future":
+                    data["Generation"] = 99;
+                    break;
+                case "source_generation_pending":
+                    data["Generation"] = 2;
+                    break;
+                case "source_generation_older":
+                    data["Generation"] = 1;
+                    break;
+                case "source_start":
+                    data["RefreshStartedAt"] = "2026-10-19T17:59:59Z";
+                    break;
+                case "source_identity":
+                    data["RefreshId"] = Guid.NewGuid().ToString("N");
+                    break;
+                case "source_success_time":
+                    data["SucceededAt"] = "2026-10-19T18:00:00.0000001Z";
+                    break;
+                case "legacy_with_v2_metadata":
+                    data["Version"] = 1;
+                    break;
+                case "legacy":
+                case "legacy_with_default_v2_field":
+                    data["Version"] = 1;
+                    data.Remove("RefreshStartedAt");
+                    data.Remove("RefreshId");
+                    data.Remove("Generation");
+                    if (corruption == "legacy_with_default_v2_field")
+                        data["Generation"] = 0;
+                    break;
+                case "status_completed_generation_missing":
+                    data.Remove("CompletedGeneration");
+                    break;
+                case "status_completed_generation_zero":
+                    data["CompletedGeneration"] = 0;
+                    break;
+                case "status_completed_generation_pending":
+                    data["CompletedGeneration"] = 2;
+                    break;
+                case "status_completed_generation_future":
+                    data["CompletedGeneration"] = 99;
+                    break;
+                case "status_allocated_generation_without_pending":
+                case "status_pending_allocation_mismatch":
+                    data["Generation"] = 99;
+                    break;
+                case "status_pending_reuses_completed_id":
+                    data["Pending"]!["RefreshId"] = data["RefreshId"]!.DeepClone();
+                    break;
+                case "status_pending_before_completion":
+                    data["Pending"]!["StartedAt"] = "2026-10-19T17:59:59Z";
+                    break;
+                case "status_pending_allocation_gap":
+                    data["Generation"] = 7;
+                    data["Pending"]!["Generation"] = 7;
+                    break;
+            }
+            await File.WriteAllTextAsync(path, data.ToJsonString());
+
+            using var result = await worker.PollOnly();
+
+            var body = result.RootElement;
+            Assert.Equal(expectedState, body.GetProperty("state").GetString());
+            Assert.Equal(expectedCode, body.GetProperty("error").ValueKind == JsonValueKind.Null
+                ? null : body.GetProperty("error").GetProperty("code").GetString());
+            if (expectedState == "error")
+            {
+                Assert.Equal(JsonValueKind.Null, body.GetProperty("source_succeeded_at").ValueKind);
+                foreach (var day in new[] { "primary", "secondary" })
+                {
+                    Assert.Equal(JsonValueKind.Null, body.GetProperty(day).GetProperty("eligible_total").ValueKind);
+                    Assert.Empty(body.GetProperty(day).GetProperty("occurrences").EnumerateArray());
+                }
+            }
+            else
+            {
+                Assert.Equal(DateTimeOffset.Parse(corruption == "source_success_time"
+                    ? "2026-10-19T18:00:00.0000001Z" : "2026-10-19T18:00:00Z"),
+                    body.GetProperty("source_succeeded_at").GetDateTimeOffset());
+                Assert.Equal(2, body.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+                Assert.Contains("Design review", body.GetRawText());
+            }
+            Assert.DoesNotContain("CONFIDENTIAL", body.GetRawText());
+            Assert.Equal(inFlight ? 1 : 0, worker.SourceRequests);
+        }
+        finally
+        {
+            if (pending is not null)
+            {
+                ioClock.Advance(TimeSpan.FromSeconds(30));
+                await pending.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("committing_true_then_false")]
+    [InlineData("committing_false_then_true")]
+    [InlineData("generation")]
+    [InlineData("identity")]
+    [InlineData("unknown")]
+    [InlineData("nested_unknown")]
+    public async Task Corrupt_pending_metadata_cannot_mask_a_committing_refresh_as_current(string corruption)
+    {
+        var directory = Path.Combine(DisplayTests.Root, "artifacts", "source-cache", Guid.NewGuid().ToString("N"));
+        using var agenda = new AgendaHttpTests.AgendaHttp("2026-10-19T18:00:00Z", Basic(), cacheDirectory: directory);
+        try
+        {
+            await agenda.Tick();
+            var path = Path.Combine(directory, "source-refresh-status.json");
+            var status = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+            status["Generation"] = 2;
+            status["Pending"] = new JsonObject
+            {
+                ["SourceKey"] = status["SourceKey"]!.DeepClone(),
+                ["RefreshId"] = Guid.NewGuid().ToString("N"),
+                ["StartedAt"] = "2026-10-19T18:00:00Z",
+                ["Generation"] = 2,
+                ["Committing"] = corruption == "committing_false_then_true"
+            };
+            var duplicate = corruption switch
+            {
+                "committing_true_then_false" => "\"Committing\":true,",
+                "committing_false_then_true" => "\"Committing\":false,",
+                "generation" => "\"Generation\":99,",
+                "identity" => "\"RefreshId\":\"CONFIDENTIAL_INVALID_IDENTITY\",",
+                "unknown" => "\"private_source_url\":\"CONFIDENTIAL_SOURCE_AND_RULES\",",
+                "nested_unknown" => "\"private_metadata\":{\"Committing\":true,\"Committing\":false},",
+                _ => throw new ArgumentOutOfRangeException(nameof(corruption))
+            };
+            await File.WriteAllTextAsync(path, status.ToJsonString().Replace(
+                "\"Pending\":{", "\"Pending\":{" + duplicate, StringComparison.Ordinal));
+
+            using var result = await agenda.PollOnly();
+
+            Assert.Equal("error", result.RootElement.GetProperty("state").GetString());
+            Assert.Equal("cache_invalid", result.RootElement.GetProperty("error").GetProperty("code").GetString());
+            foreach (var day in new[] { "primary", "secondary" })
+            {
+                Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty(day).GetProperty("eligible_total").ValueKind);
+                Assert.Empty(result.RootElement.GetProperty(day).GetProperty("occurrences").EnumerateArray());
+            }
+            Assert.DoesNotContain("CONFIDENTIAL", result.RootElement.GetRawText());
+            Assert.Equal(1, agenda.SourceRequests);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("status_extra")]
     [InlineData("status_duplicate")]
@@ -167,7 +370,7 @@ public sealed class AgendaRefreshPersistenceTests
             using var status = JsonDocument.Parse(text);
             Assert.Equal(
                 ["Version", "SourceKey", "RefreshId", "StartedAt", "CompletedAt", "SourceSucceededAt", "ErrorCode",
-                        "FailureDetail", "Generation", "Pending"],
+                        "FailureDetail", "Generation", "Pending", "CompletedGeneration"],
                 status.RootElement.EnumerateObject().Select(property => property.Name));
             Assert.InRange(System.Text.Encoding.UTF8.GetByteCount(text), 1, 4096);
             Assert.DoesNotContain("CONFIDENTIAL", text);

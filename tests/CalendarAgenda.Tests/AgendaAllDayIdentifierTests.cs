@@ -349,7 +349,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(0, edited.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
             Assert.Contains("OOF reservation", edited.RootElement.GetRawText());
             Assert.DoesNotContain("Proofreading", edited.RootElement.GetRawText());
-            await Show(edited.RootElement, "edited", "Oct 19, 2026, 11:05 AM PDT", 2, 0);
+            await Show(edited.RootElement, "edited", "Oct 19, 2026, 11:00 AM PDT", 2, 0);
             await Assertions.Expect(page.GetByText("OOF reservation", new() { Exact = true })).ToBeVisibleAsync();
         }
 
@@ -363,22 +363,22 @@ public sealed partial class AgendaHttpTests
         Assert.Equal(1, stale.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
         Assert.Equal(movedId, Assert.Single(stale.RootElement.GetProperty("secondary").GetProperty("occurrences")
             .EnumerateArray()).GetProperty("id").GetString());
-        await Show(stale.RootElement, "stale", "Oct 19, 2026, 11:05 AM PDT", 1, 1);
+        await Show(stale.RootElement, "stale", "Oct 19, 2026, 11:00 AM PDT", 1, 1);
         await Assertions.Expect(page.GetByText("Stale agenda", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Proofreading moved workshop", new() { Exact = true })).ToBeVisibleAsync();
 
-        recreated.Clock.Advance(TimeSpan.FromMinutes(45) - TimeSpan.FromTicks(1));
+        recreated.Clock.Advance(TimeSpan.FromMinutes(40) - TimeSpan.FromTicks(1));
         using var beforeExpiry = await recreated.Poll(DisplayTests.Render("polling-body", new { rules_json = "[]" }));
         Assert.Equal("stale", beforeExpiry.RootElement.GetProperty("state").GetString());
         Assert.Equal(2, beforeExpiry.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
         Assert.Equal(1, beforeExpiry.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
-        Assert.Equal(DateTimeOffset.Parse("2026-10-19T18:05:00Z"),
+        Assert.Equal(DateTimeOffset.Parse("2026-10-19T18:00:00Z"),
             beforeExpiry.RootElement.GetProperty("source_succeeded_at").GetDateTimeOffset());
         recreated.Clock.Advance(TimeSpan.FromTicks(1));
         using var expired = await recreated.Poll();
         var error = expired.RootElement;
         Assert.Equal("error", error.GetProperty("state").GetString());
-        Assert.Equal(DateTimeOffset.Parse("2026-10-19T18:05:00Z"),
+        Assert.Equal(DateTimeOffset.Parse("2026-10-19T18:00:00Z"),
             error.GetProperty("source_succeeded_at").GetDateTimeOffset());
         foreach (var day in new[] { "primary", "secondary" })
         {
@@ -389,7 +389,7 @@ public sealed partial class AgendaHttpTests
         await AdaptiveDisplayTests.NativeBounds(page, view);
         await AdaptiveDisplayTests.VisibleInk(page, "midnight-all-day-og-full-expired", view,
             new[] { "Agenda unavailable", "Compatibility error", "compatibility_unsupported",
-                "A recurring change uses a different identifier date type.", "Oct 19, 2026, 11:05 AM PDT" }
+                "A recurring change uses a different identifier date type.", "Oct 19, 2026, 11:00 AM PDT" }
                 .Select(text => page.GetByText(text, new() { Exact = true })));
         Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());
 
@@ -426,7 +426,7 @@ public sealed partial class AgendaHttpTests
             }
             if (body.GetProperty("state").GetString() == "stale")
             {
-                Assert.Equal(DateTimeOffset.Parse("2026-10-19T18:05:00Z"),
+                Assert.Equal(DateTimeOffset.Parse("2026-10-19T18:00:00Z"),
                     body.GetProperty("source_succeeded_at").GetDateTimeOffset());
                 required.Add(page.GetByText("Stale agenda", new() { Exact = true }));
                 required.Add(page.GetByText("A recurring change uses a different identifier date type.",

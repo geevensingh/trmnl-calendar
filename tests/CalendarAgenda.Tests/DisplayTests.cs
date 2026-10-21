@@ -5,6 +5,11 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
+using CalendarAgenda;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace CalendarAgenda.Tests;
@@ -185,6 +190,8 @@ public sealed class DisplayTests
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
             client.DefaultRequestHeaders.Add("x-functions-key", "synthetic-local-only");
             var pollingBody = Render("polling-body", new { rules_json = "[]" });
+            await WaitForHost();
+            await RefreshSyntheticSource();
             var json = await PollRunningHost();
             var data = JsonNode.Parse(json)!.AsObject();
             Assert.Equal("current", data["state"]!.GetValue<string>());
@@ -195,7 +202,16 @@ public sealed class DisplayTests
             Assert.DoesNotContain("description", json, StringComparison.OrdinalIgnoreCase);
             using var definitions = JsonDocument.Parse(
                 await client.GetStringAsync($"http://127.0.0.1:{functionPort}/admin/functions"));
-            var definition = Assert.Single(definitions.RootElement.EnumerateArray());
+            Assert.Equal(2, definitions.RootElement.GetArrayLength());
+            var definition = definitions.RootElement.EnumerateArray()
+                .Single(item => item.GetProperty("name").GetString() == "Agenda");
+            var refreshDefinition = definitions.RootElement.EnumerateArray()
+                .Single(item => item.GetProperty("name").GetString() == "RefreshSource");
+            var timerBinding = Assert.Single(refreshDefinition.GetProperty("config").GetProperty("bindings")
+                .EnumerateArray(), binding => binding.GetProperty("type").GetString() == "timerTrigger");
+            Assert.Equal("0 */5 * * * *", timerBinding.GetProperty("schedule").GetString());
+            Assert.False(timerBinding.GetProperty("runOnStartup").GetBoolean());
+            Assert.True(timerBinding.GetProperty("useMonitor").GetBoolean());
             Assert.Equal("Agenda", definition.GetProperty("name").GetString());
             var trigger = definition.GetProperty("config").GetProperty("bindings").EnumerateArray()
                 .Single(binding => binding.GetProperty("type").GetString() == "httpTrigger");
@@ -264,10 +280,8 @@ public sealed class DisplayTests
 
             using var failSource = await client.PostAsync($"http://127.0.0.1:{sourcePort}/fail-source", null);
             failSource.EnsureSuccessStatusCode();
-            using var failedResponse = await client.PostAsync($"http://127.0.0.1:{functionPort}/api/agenda",
-                new StringContent(pollingBody, System.Text.Encoding.UTF8, "application/json"));
-            failedResponse.EnsureSuccessStatusCode();
-            var failed = JsonNode.Parse(await failedResponse.Content.ReadAsStringAsync())!.AsObject();
+            await RefreshSyntheticSource();
+            var failed = JsonNode.Parse(await PollRunningHost("stale"))!.AsObject();
             Assert.Equal("stale", failed["state"]!.GetValue<string>());
             Assert.Equal("source_unavailable", failed["error"]!["code"]!.GetValue<string>());
             Assert.Equal(cleared["source_succeeded_at"]!.GetValue<string>(),
@@ -279,7 +293,7 @@ public sealed class DisplayTests
             Assert.True(functions.Start(), "The local Functions process could not be restarted.");
             stdout = functions.StandardOutput.ReadToEndAsync();
             stderr = functions.StandardError.ReadToEndAsync();
-            var reloaded = JsonNode.Parse(await PollRunningHost())!.AsObject();
+            var reloaded = JsonNode.Parse(await PollRunningHost("stale"))!.AsObject();
             Assert.Equal("stale", reloaded["state"]!.GetValue<string>());
             Assert.Equal("source_unavailable", reloaded["error"]!["code"]!.GetValue<string>());
             Assert.Equal(cleared["source_succeeded_at"]!.GetValue<string>(),
@@ -287,7 +301,47 @@ public sealed class DisplayTests
             await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo-stale-agenda.json"), reloaded.ToJsonString());
             await RenderNativePreviews(reloaded, "demo-stale");
 
-            async Task<string> PollRunningHost()
+            async Task WaitForHost()
+            {
+                using var ready = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                while (true)
+                {
+                    try
+                    {
+                        using var response = await client.GetAsync($"http://127.0.0.1:{functionPort}/admin/functions",
+                            ready.Token);
+                        if (response.IsSuccessStatusCode)
+                        {
+                            using var indexed = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ready.Token));
+                            if (indexed.RootElement.GetArrayLength() == 2)
+                                return;
+                        }
+                    }
+                    catch (HttpRequestException) { }
+                    await Task.Delay(100, ready.Token);
+                }
+            }
+
+            async Task RefreshSyntheticSource()
+            {
+                var services = new ServiceCollection();
+                AgendaHosting.AddSourceClient(services);
+                await using var provider = services.BuildServiceProvider();
+                using var source = provider.GetRequiredService<IHttpClientFactory>().CreateClient();
+                var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["AZURE_FUNCTIONS_ENVIRONMENT"] = "Development",
+                    ["Agenda:SourceUrl"] = functionStart.Environment["Agenda__SourceUrl"],
+                    ["Agenda:DevelopmentCacheDirectory"] = cacheDirectory
+                }).Build();
+                var worker = new AgendaFunction(source, configuration, TimeProvider.System,
+                    NullLogger<AgendaFunction>.Instance);
+                var now = DateTime.UtcNow;
+                var scheduled = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute / 15 * 15, 0, DateTimeKind.Utc);
+                await worker.Refresh(new TimerInfo { ScheduleStatus = new ScheduleStatus { Next = scheduled } });
+            }
+
+            async Task<string> PollRunningHost(string expectedState = "current")
             {
                 var lastFailure = "No response.";
                 var deadline = DateTime.UtcNow.AddSeconds(60);
@@ -300,7 +354,12 @@ public sealed class DisplayTests
                         using var response = await client.PostAsync($"http://127.0.0.1:{functionPort}/api/agenda",
                             new StringContent(pollingBody, System.Text.Encoding.UTF8, "application/json"));
                         if (response.IsSuccessStatusCode)
-                            return await response.Content.ReadAsStringAsync();
+                        {
+                            var body = await response.Content.ReadAsStringAsync();
+                            using var result = JsonDocument.Parse(body);
+                            if (result.RootElement.GetProperty("state").GetString() == expectedState)
+                                return body;
+                        }
                         lastFailure = $"HTTP {(int)response.StatusCode}.";
                     }
                     catch (HttpRequestException) { lastFailure = "Local host connection failed."; }

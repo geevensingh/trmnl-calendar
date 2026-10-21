@@ -13,6 +13,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
+using Microsoft.Azure.Functions.Worker;
 using Xunit;
 
 namespace CalendarAgenda.Tests;
@@ -297,14 +298,18 @@ public sealed partial class AgendaHttpTests
         private readonly SourceResponse sourceResponse;
         private readonly string cacheDirectory;
         private readonly bool ownsCacheDirectory;
+        private readonly AgendaFunction function;
+        private bool refreshPending = true;
         public FakeTimeProvider Clock { get; }
+        public int SourceRequests => sourceResponse.Requests;
+        public Task SourceRequested => sourceResponse.Entered.Task;
 
         public AgendaHttp(string now, string ics,
             string? sourceUrl = "https://synthetic.invalid/calendar.ics",
             HttpStatusCode status = HttpStatusCode.OK, bool timeout = false,
             ILogger<AgendaFunction>? logger = null, string? cacheDirectory = null,
             IReadOnlyDictionary<string, string?>? runtimeSettings = null, TimeSpan? sourceDelay = null,
-            HttpClient? sourceClient = null, SourceCache? sourceCache = null)
+            HttpClient? sourceClient = null, SourceCache? sourceCache = null, TimeProvider? ioClock = null)
         {
             ownsCacheDirectory = cacheDirectory is null;
             this.cacheDirectory = cacheDirectory ?? Path.Combine(DisplayTests.Root, "artifacts", "source-cache",
@@ -322,9 +327,10 @@ public sealed partial class AgendaHttpTests
                 foreach (var (key, value) in runtimeSettings)
                     values[key] = value;
             var settings = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
-            var function = sourceCache is null
+            function = sourceCache is null && ioClock is null
                 ? new AgendaFunction(source, settings, Clock, logger ?? NullLogger<AgendaFunction>.Instance)
-                : new AgendaFunction(source, settings, Clock, logger ?? NullLogger<AgendaFunction>.Instance, sourceCache);
+                : new AgendaFunction(source, settings, Clock, logger ?? NullLogger<AgendaFunction>.Instance,
+                    sourceCache ?? SourceCache.Create(settings), ioClock);
             host = new HostBuilder().ConfigureWebHost(web => web.UseTestServer()
                 .ConfigureServices(services =>
                 {
@@ -349,6 +355,7 @@ public sealed partial class AgendaHttpTests
             sourceResponse.Timeout = timeout;
             sourceResponse.TransportFailure = transportFailure;
             sourceResponse.Bytes = null;
+            refreshPending = true;
         }
 
         public void SetSourceBytes(byte[] bytes)
@@ -359,10 +366,36 @@ public sealed partial class AgendaHttpTests
 
         public async Task<JsonDocument> Poll(string body = """{"rules_json":"[]"}""")
         {
+            // Fixture changes represent scheduled refreshes; repeated HTTP/rule polls never fetch.
+            if (refreshPending)
+                await Refresh();
+            return await PollOnly(body);
+        }
+
+        public async Task<JsonDocument> PollOnly(string body = """{"rules_json":"[]"}""")
+        {
             using var response = await client.PostAsync("/api/agenda",
                 new StringContent(body, System.Text.Encoding.UTF8, "application/json"));
             response.EnsureSuccessStatusCode();
             return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        }
+
+        public async Task Tick(string? scheduledAt = null)
+        {
+            refreshPending = false;
+            await function.Refresh(new TimerInfo
+            {
+                ScheduleStatus = scheduledAt is null ? null : new ScheduleStatus
+                {
+                    Next = DateTime.Parse(scheduledAt, null, System.Globalization.DateTimeStyles.RoundtripKind)
+                }
+            });
+        }
+
+        public async Task Refresh()
+        {
+            refreshPending = false;
+            await function.RefreshSource();
         }
 
         public void Dispose()
@@ -382,10 +415,14 @@ public sealed partial class AgendaHttpTests
         public bool Timeout { get; set; } = timeout;
         public bool TransportFailure { get; set; }
         public byte[]? Bytes { get; set; }
+        public int Requests { get; private set; }
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            Requests++;
+            Entered.TrySetResult();
             if (delay is { } duration)
                 await Task.Delay(duration, cancellationToken);
             if (Timeout)

@@ -86,7 +86,7 @@
     <span class="title">Agenda unavailable</span>
     {% if error %}
       {% assign error_family = error.code | split: "_" | first %}
-      <span class="label">{% case error_family %}{% when "configuration" %}Configuration error{% when "source" %}Source error{% when "compatibility" %}Compatibility error{% else %}Agenda error{% endcase %}</span>
+      <span class="label">{% case error_family %}{% when "configuration" %}Configuration error{% when "source" %}Source error{% when "refresh" %}Source refresh error{% when "compatibility" %}Compatibility error{% else %}Agenda error{% endcase %}</span>
       <span class="description">{{ error.message | escape }}</span>
       <span class="label">{{ error.code | escape }}</span>
     {% endif %}

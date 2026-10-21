@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace CalendarAgenda.Tests;
@@ -13,17 +14,22 @@ namespace CalendarAgenda.Tests;
 public sealed partial class AgendaHttpTests
 {
     [Fact]
-    public async Task A_stalled_source_returns_a_renderable_failure_after_eight_seconds_within_the_poll_budget()
+    public async Task A_stalled_scheduled_source_does_not_delay_the_HTTP_poll_or_manufacture_empty_success()
     {
+        var ioClock = new FakeTimeProvider();
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", Fixture("basic.ics"),
-            sourceDelay: Timeout.InfiniteTimeSpan);
+            sourceDelay: Timeout.InfiniteTimeSpan, ioClock: ioClock);
+        var pending = agenda.Refresh();
+        await agenda.SourceRequested.WaitAsync(TimeSpan.FromSeconds(5));
         var elapsed = Stopwatch.StartNew();
-        using var result = await agenda.Poll();
+        using var result = await agenda.PollOnly();
 
-        Assert.InRange(elapsed.Elapsed.TotalSeconds, 7.8, 9.999);
+        Assert.InRange(elapsed.Elapsed.TotalSeconds, 0, 9.999);
         Assert.Equal("error", result.RootElement.GetProperty("state").GetString());
-        Assert.Equal("source_unavailable", result.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal("refresh_missing", result.RootElement.GetProperty("error").GetProperty("code").GetString());
         Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("primary").GetProperty("eligible_total").ValueKind);
+        ioClock.Advance(TimeSpan.FromSeconds(30));
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Theory]
@@ -35,6 +41,7 @@ public sealed partial class AgendaHttpTests
         var title = string.Concat(Enumerable.Repeat(character, titleLength));
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z",
             CalendarWithEvent("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:" + title));
+        await agenda.Refresh();
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
@@ -49,7 +56,7 @@ public sealed partial class AgendaHttpTests
                 return;
             }
             using var reader = new StreamReader(context.Request.Body);
-            using var result = await agenda.Poll(await reader.ReadToEndAsync());
+            using var result = await agenda.PollOnly(await reader.ReadToEndAsync());
             context.Response.ContentType = "application/json";
             await context.Response.WriteAsync(result.RootElement.GetRawText());
         });
@@ -94,6 +101,7 @@ public sealed partial class AgendaHttpTests
             }
             Assert.DoesNotContain(key, reportText);
             Assert.DoesNotContain(character == "\u754c" ? character : new string('X', 100), reportText);
+            Assert.Equal(1, agenda.SourceRequests);
         }
         finally
         {
@@ -148,8 +156,11 @@ public sealed partial class AgendaHttpTests
         }));
 
         Assert.Equal(code, result.RootElement.GetProperty("error").GetProperty("code").GetString());
-        Assert.Equal($"Agenda failed with code {code}.", Assert.Single(diagnostics.Messages));
+        Assert.Equal($"Agenda failed with code {code}.", diagnostics.Messages.Last());
+        if (code != "configuration_invalid")
+            Assert.Equal($"Agenda refresh failed with code {(code == "cache_invalid" ? "source_unavailable" : code)}.",
+                diagnostics.Messages.First());
         Assert.DoesNotContain("CONFIDENTIAL", result.RootElement.GetRawText());
-        Assert.True(Encoding.UTF8.GetByteCount(diagnostics.Messages.Single()) < 100);
+        Assert.All(diagnostics.Messages, message => Assert.True(Encoding.UTF8.GetByteCount(message) < 100));
     }
 }

@@ -9,7 +9,8 @@ const attemptBudgetMs = 10_000;
 const calendarStates = new Set(["current", "stale", "error"]);
 const calendarErrorCodes = new Set([
   "configuration_invalid", "source_configuration", "source_unavailable", "source_invalid",
-  "compatibility_unsupported", "agenda_too_large", "cache_configuration", "cache_unavailable", "cache_invalid"
+  "compatibility_unsupported", "agenda_too_large", "cache_configuration", "cache_unavailable", "cache_invalid",
+  "refresh_missing", "refresh_delayed", "refresh_incomplete"
 ]);
 
 class DeliveryFailure extends Error {
@@ -43,6 +44,11 @@ function instant(value) {
     || !calendarDate(value.slice(0, 10)) || Number(value.slice(11, 13)) >= 24)
     return NaN;
   return Date.parse(value);
+}
+
+function instantTicks(value) {
+  const fraction = (/\.(\d{1,7})/.exec(value)?.[1] ?? "").padEnd(7, "0");
+  return BigInt(instant(value)) * 10_000n + BigInt(fraction.slice(3));
 }
 
 function validatePollingContract(data, evidence) {
@@ -81,8 +87,11 @@ function validatePollingContract(data, evidence) {
   if (data.source_succeeded_at === null ? data.state !== "error"
     : !Number.isFinite(instant(data.source_succeeded_at)))
     fail("invalid_source_success_time", evidence);
-  const sourceAge = instant(data.generated_at) - instant(data.source_succeeded_at);
-  if (data.state === "stale" && !(sourceAge >= 0 && sourceAge < 3_600_000))
+  const sourceAge = data.source_succeeded_at === null ? null
+    : instantTicks(data.generated_at) - instantTicks(data.source_succeeded_at);
+  if (data.state === "current" && !(sourceAge >= 0n && sourceAge < 9_000_000_000n))
+    fail("invalid_source_success_time", evidence);
+  if (data.state === "stale" && !(sourceAge >= 0n && sourceAge < 36_000_000_000n))
     fail("invalid_source_success_time", evidence);
 }
 

@@ -241,8 +241,7 @@ public sealed partial class AgendaHttpTests
 
         Assert.Equal("error", body.GetProperty("state").GetString());
         Assert.Equal("cache_configuration", body.GetProperty("error").GetProperty("code").GetString());
-        Assert.Equal(DateTimeOffset.Parse("2026-10-19T18:00:00Z"),
-            body.GetProperty("source_succeeded_at").GetDateTimeOffset());
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("source_succeeded_at").ValueKind);
         Assert.Equal(JsonValueKind.Null, body.GetProperty("primary").GetProperty("eligible_total").ValueKind);
         Assert.Empty(body.GetProperty("primary").GetProperty("occurrences").EnumerateArray());
         Assert.DoesNotContain("CONFIDENTIAL", body.GetRawText());
@@ -320,8 +319,7 @@ public sealed partial class AgendaHttpTests
 
         Assert.Equal("error", body.GetProperty("state").GetString());
         Assert.Equal("cache_unavailable", body.GetProperty("error").GetProperty("code").GetString());
-        Assert.Equal(DateTimeOffset.Parse("2026-10-19T18:00:00Z"),
-            body.GetProperty("source_succeeded_at").GetDateTimeOffset());
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("source_succeeded_at").ValueKind);
         Assert.Equal(JsonValueKind.Null, body.GetProperty("primary").GetProperty("eligible_total").ValueKind);
         Assert.Empty(body.GetProperty("primary").GetProperty("occurrences").EnumerateArray());
         Assert.DoesNotContain("CONFIDENTIAL", body.GetRawText());

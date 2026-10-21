@@ -128,7 +128,7 @@ public sealed class ExclusionTests
     [InlineData("""[{"field":"title","mode":"contains","value":"\ud800"}]""")]
     [InlineData("""[{"field":"\ud800","mode":"contains","value":"OOF"}]""")]
     [InlineData("""[{"field":"title","mode":"\udc00","value":"OOF"}]""")]
-    public async Task Complete_rule_validation_returns_an_explicit_error_before_source_or_matching(string rules)
+    public async Task Complete_rule_validation_returns_an_explicit_error_before_cache_or_matching(string rules)
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", CalendarWithTitle("OOF"),
             status: HttpStatusCode.ServiceUnavailable);
@@ -245,13 +245,15 @@ public sealed class ExclusionTests
             """[{"field":"title","mode":"contains","value":"CONFIDENTIAL_RULE_LITERAL"}]"""));
         Assert.Equal("current", current.RootElement.GetProperty("state").GetString());
         Assert.DoesNotContain("CONFIDENTIAL", current.RootElement.GetRawText());
-        Assert.Empty(diagnostics.Messages);
+        Assert.Equal(["Agenda refresh finished with code source_checked."], diagnostics.Messages);
 
         using var invalid = await agenda.Poll(Request(
             """[{"field":"description","mode":"contains","value":"CONFIDENTIAL_RULE_LITERAL"}]"""));
         Assert.Equal("error", invalid.RootElement.GetProperty("state").GetString());
         Assert.DoesNotContain("CONFIDENTIAL", invalid.RootElement.GetRawText());
-        Assert.Equal("Agenda failed with code configuration_invalid.", Assert.Single(diagnostics.Messages));
+        Assert.Equal(
+            ["Agenda refresh finished with code source_checked.", "Agenda failed with code configuration_invalid."],
+            diagnostics.Messages);
     }
 
     private static string Request(string rules) => JsonSerializer.Serialize(new { rules_json = rules });

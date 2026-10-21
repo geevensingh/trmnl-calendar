@@ -297,6 +297,82 @@ test("an unexpected calendar error after one HTTP retry retains both attempts an
   assert.doesNotMatch(result.stderr, /CONFIDENTIAL|SYNTHETIC_FUNCTION_SCOPED_KEY/);
 });
 
+test("scheduled-refresh failures preserve allowlisted first evidence and cannot be mislabeled current", async t => {
+  let code;
+  const seenKeys = [];
+  const endpoint = await serve(t, (request, response) => {
+    seenKeys.push(request.headers["x-functions-key"]);
+    const agenda = unavailable();
+    agenda.error.code = code;
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(agenda));
+  });
+  for (code of ["refresh_missing", "refresh_delayed", "refresh_incomplete"]) {
+    const result = await smokeCli(t, endpoint);
+    const report = JSON.parse(result.stderr);
+    assert.equal(result.status, 1);
+    assert.equal(report.error, "unexpected_calendar_state");
+    assert.equal(report.checks_passed, false);
+    assert.equal(report.activation_complete, false);
+    assert.equal(report.evidence.error_code, code);
+    assert.equal(report.evidence.attempts.length, 1);
+    assert.equal(report.evidence.measured_before_probes, true);
+    assert.doesNotMatch(result.stderr, /CONFIDENTIAL|SYNTHETIC_FUNCTION_SCOPED_KEY/);
+  }
+  assert.deepEqual(seenKeys, [key, key, key]);
+});
+
+test("the smoke contract rejects current at exactly fifteen minutes without warming auth probes", async t => {
+  const agenda = structuredClone(current);
+  agenda.generated_at = "2026-10-19T18:15:00Z";
+  const seenKeys = [];
+  const endpoint = await serve(t, (request, response) => {
+    seenKeys.push(request.headers["x-functions-key"]);
+    if (request.headers["x-functions-key"] !== key) {
+      response.writeHead(401).end();
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(agenda));
+  });
+
+  const result = await smokeCli(t, endpoint);
+  const report = JSON.parse(result.stderr);
+
+  assert.equal(result.status, 1);
+  assert.equal(report.error, "invalid_source_success_time");
+  assert.equal(report.evidence.state, "unknown");
+  assert.equal(report.evidence.source_succeeded_at, null);
+  assert.deepEqual(seenKeys, [key]);
+});
+
+test("freshness validation preserves native seven-digit timestamp boundaries rather than rounding to milliseconds", async t => {
+  const { smokeDelivery } = await import("../../scripts/smoke-delivery.mjs");
+  const agenda = structuredClone(current);
+  agenda.source_succeeded_at = "2026-10-19T18:00:00.0000001Z";
+  const endpoint = await serve(t, (request, response) => {
+    if (request.headers["x-functions-key"] !== key) {
+      response.writeHead(401).end();
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(agenda));
+  });
+
+  agenda.generated_at = "2026-10-19T18:15:00.0000000Z";
+  const currentReport = await smokeDelivery({ endpoint, key, syntheticLocal: true });
+  assert.equal(currentReport.poll.state, "current");
+  agenda.state = "stale";
+  agenda.error = { code: "source_unavailable", message: "Safe synthetic failure." };
+  agenda.generated_at = "2026-10-19T19:00:00.0000000Z";
+  const staleReport = await smokeDelivery({
+    endpoint, key, syntheticLocal: true, expectedState: "stale", expectedCode: "source_unavailable"
+  });
+  assert.equal(staleReport.poll.state, "stale");
+  agenda.state = "current";
+  agenda.error = null;
+  agenda.generated_at = "2026-10-19T18:00:00.0000000Z";
+  await assert.rejects(smokeDelivery({ endpoint, key, syntheticLocal: true }),
+    { code: "invalid_source_success_time" });
+});
+
 test("smoke checks absent, wrong and function-scoped headers without claiming live activation", async t => {
   const { smokeDelivery } = await import("../../scripts/smoke-delivery.mjs");
   const seenKeys = new Set();

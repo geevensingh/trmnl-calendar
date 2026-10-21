@@ -11,6 +11,56 @@ public sealed class SourceFallbackDisplayTests
 {
     [Theory]
     [MemberData(nameof(AdaptiveDisplayTests.Views), MemberType = typeof(AdaptiveDisplayTests))]
+    public async Task Scheduled_source_freshness_remains_visible_in_every_production_native_view(NativeView view)
+    {
+        using var agenda = new AgendaHttp("2026-10-19T18:00:00Z",
+            File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "basic.ics")));
+        await agenda.Tick();
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        agenda.Clock.Advance(TimeSpan.FromMinutes(15));
+        using var stale = await agenda.PollOnly();
+        Assert.Equal("stale", stale.RootElement.GetProperty("state").GetString());
+        Assert.Equal(2, stale.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.Equal(1, stale.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
+        await DisplayTests.Show(page, stale.RootElement, view.Placement, view.Device);
+        await AdaptiveDisplayTests.NativeBounds(page, view);
+        await AdaptiveDisplayTests.VisibleInk(page, $"scheduled-{view.Device}-{view.Placement}-stale", view,
+            new[]
+            {
+                page.GetByText("Stale agenda", new() { Exact = true }),
+                page.GetByText("The scheduled source refresh is delayed.", new() { Exact = true }),
+                page.GetByText("Monday, Oct 19", new() { Exact = true }),
+                page.GetByText("Tuesday, Oct 20", new() { Exact = true }),
+                page.GetByText("2 eligible events", new() { Exact = true }),
+                page.GetByText("1 eligible event", new() { Exact = true }),
+                page.GetByText("Oct 19, 2026, 11:00 AM PDT", new() { Exact = true })
+            });
+        agenda.Clock.Advance(TimeSpan.FromMinutes(45));
+        using var expired = await agenda.PollOnly();
+        Assert.Equal("error", expired.RootElement.GetProperty("state").GetString());
+        await DisplayTests.Show(page, expired.RootElement, view.Placement, view.Device);
+        await AdaptiveDisplayTests.NativeBounds(page, view);
+        await AdaptiveDisplayTests.VisibleInk(page, $"scheduled-{view.Device}-{view.Placement}-expired", view,
+            new[]
+            {
+                page.GetByText("Agenda unavailable", new() { Exact = true }),
+                page.GetByText("Source refresh error", new() { Exact = true }),
+                page.GetByText("refresh_delayed", new() { Exact = true }),
+                page.GetByText("The scheduled source refresh is delayed.", new() { Exact = true }),
+                page.GetByText("Oct 19, 2026, 11:00 AM PDT", new() { Exact = true })
+            });
+        Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());
+        Assert.DoesNotContain("No remaining events", await page.Locator("body").InnerTextAsync());
+        Assert.Equal(1, agenda.SourceRequests);
+    }
+
+    [Theory]
+    [MemberData(nameof(AdaptiveDisplayTests.Views), MemberType = typeof(AdaptiveDisplayTests))]
     public async Task Production_views_display_HTTP_fresh_stale_empty_and_failed_source_states(
         NativeView view)
     {

@@ -78,6 +78,7 @@ public sealed partial class AgendaHttpTests
         Assert.DoesNotContain("Out-of-window detached day", body.GetRawText());
 
         agenda.Clock.Advance(TimeSpan.FromDays(2));
+        await agenda.Refresh();
         using var later = await agenda.Poll();
         Assert.Equal("current", later.RootElement.GetProperty("state").GetString());
         Assert.Equal("2026-10-21", later.RootElement.GetProperty("primary").GetProperty("date").GetString());
@@ -113,6 +114,7 @@ public sealed partial class AgendaHttpTests
         Assert.NotEqual(occurrences[0].GetProperty("id").GetString(), occurrences[1].GetProperty("id").GetString());
 
         agenda.Clock.Advance(TimeSpan.FromMinutes(90));
+        await agenda.Refresh();
         using var atEnd = await agenda.Poll();
         Assert.Equal("current", atEnd.RootElement.GetProperty("state").GetString());
         Assert.Equal(1, atEnd.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
@@ -377,7 +379,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal("current", edited.RootElement.GetProperty("state").GetString());
             Assert.Equal(2, edited.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
             Assert.DoesNotContain("Proofreading", edited.RootElement.GetRawText());
-            await Show(edited.RootElement, "edited", "Oct 19, 2026, 9:35 AM PDT",
+            await Show(edited.RootElement, "edited", "Oct 19, 2026, 9:30 AM PDT",
                 "2 eligible events", "0 eligible events", "Detached workshop", "All day",
                 "OOF detached planning", "10:00 AM - 11:00 AM");
         }
@@ -392,16 +394,16 @@ public sealed partial class AgendaHttpTests
         Assert.Equal(["Detached workshop", "OOF detached planning", "Proofreading detached session"],
             stale.RootElement.GetProperty("primary").GetProperty("occurrences").EnumerateArray()
                 .Select(item => item.GetProperty("title").GetString()));
-        await Show(stale.RootElement, "stale", "Oct 19, 2026, 9:35 AM PDT",
+        await Show(stale.RootElement, "stale", "Oct 19, 2026, 9:30 AM PDT",
             "3 eligible events", "0 eligible events", "Stale agenda", "Detached workshop", "All day",
             "A detached recurring change must specify a single complete occurrence.");
 
-        recreated.Clock.Advance(TimeSpan.FromMinutes(45) - TimeSpan.FromTicks(1));
+        recreated.Clock.Advance(TimeSpan.FromMinutes(40) - TimeSpan.FromTicks(1));
         using var beforeExpiry = await recreated.Poll(DisplayTests.Render("polling-body", new { rules_json = excludeOof }));
         Assert.Equal("stale", beforeExpiry.RootElement.GetProperty("state").GetString());
         Assert.Equal(2, beforeExpiry.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
         Assert.DoesNotContain("OOF", beforeExpiry.RootElement.GetRawText());
-        Assert.Equal(DateTimeOffset.Parse("2026-10-19T16:35:00Z"),
+        Assert.Equal(DateTimeOffset.Parse("2026-10-19T16:30:00Z"),
             beforeExpiry.RootElement.GetProperty("source_succeeded_at").GetDateTimeOffset());
         recreated.Clock.Advance(TimeSpan.FromTicks(1));
         using var expired = await recreated.Poll();
@@ -412,7 +414,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(JsonValueKind.Null, error.GetProperty(day).GetProperty("eligible_total").ValueKind);
             Assert.Empty(error.GetProperty(day).GetProperty("occurrences").EnumerateArray());
         }
-        await Show(error, "expired", "Oct 19, 2026, 9:35 AM PDT",
+        await Show(error, "expired", "Oct 19, 2026, 9:30 AM PDT",
             "Agenda unavailable", "Compatibility error", "compatibility_unsupported",
             "A detached recurring change must specify a single complete occurrence.");
         Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());

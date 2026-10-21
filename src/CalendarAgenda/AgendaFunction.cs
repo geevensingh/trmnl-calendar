@@ -22,13 +22,15 @@ namespace CalendarAgenda;
 
 public sealed class AgendaFunction
 {
-    internal static readonly TimeSpan SourceAcquisitionTimeout = TimeSpan.FromSeconds(8);
+    internal static readonly TimeSpan SourceAcquisitionTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(35);
 
     private readonly HttpClient source;
     private readonly IConfiguration configuration;
     private readonly TimeProvider clock;
     private readonly ILogger<AgendaFunction> logger;
     private readonly SourceCache cache;
+    private readonly TimeProvider ioClock;
 
     static AgendaFunction()
     {
@@ -45,13 +47,14 @@ public sealed class AgendaFunction
     }
 
     internal AgendaFunction(HttpClient source, IConfiguration configuration, TimeProvider clock,
-        ILogger<AgendaFunction> logger, SourceCache cache)
+        ILogger<AgendaFunction> logger, SourceCache cache, TimeProvider? ioClock = null)
     {
         this.source = source;
         this.configuration = configuration;
         this.clock = clock;
         this.logger = logger;
         this.cache = cache;
+        this.ioClock = ioClock ?? TimeProvider.System;
     }
 
     private const string TimeZoneId = "America/Los_Angeles";
@@ -62,6 +65,75 @@ public sealed class AgendaFunction
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) }
     };
 
+    [Function("RefreshSource")]
+    public async Task Refresh([TimerTrigger("0 */5 * * * *", RunOnStartup = false, UseMonitor = true)] TimerInfo timer,
+        CancellationToken cancellationToken = default)
+    {
+        var scheduledAt = timer.ScheduleStatus is { Next: var next } && next != default
+            ? new DateTimeOffset(DateTime.SpecifyKind(next, DateTimeKind.Utc)) : clock.GetUtcNow();
+        var local = NodaTime.Instant.FromDateTimeOffset(scheduledAt)
+            .InZone(NodaTime.DateTimeZoneProviders.Tzdb[TimeZoneId]);
+        var businessHours = local.DayOfWeek is >= NodaTime.IsoDayOfWeek.Monday and <= NodaTime.IsoDayOfWeek.Friday
+            && local.Hour is >= 9 and < 18;
+        if (local.Minute % (businessHours ? 5 : 15) != 0)
+            return;
+        await RefreshSource(cancellationToken);
+    }
+
+    internal async Task RefreshSource(CancellationToken cancellationToken = default)
+    {
+        if (!TrySource(out var sourceUri))
+        {
+            logger.LogWarning("Agenda refresh failed with code {ErrorCode}.", "source_configuration");
+            return;
+        }
+        var startedAt = clock.GetUtcNow();
+        var refreshId = Guid.NewGuid().ToString("N");
+        using var budget = new CancellationTokenSource(RefreshTimeout, ioClock);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.Token);
+        try
+        {
+            var attempt = await cache.Begin(new RefreshAttempt(SourceKey(sourceUri!), refreshId, startedAt), deadline.Token);
+            if (attempt.Generation == 0)
+            {
+                logger.LogInformation("Agenda refresh finished with code {OutcomeCode}.", "refresh_superseded");
+                return;
+            }
+            var (ics, error) = await FetchSource(sourceUri!, deadline.Token, cancellationToken);
+            var interpreted = ics is not null ? Interpret(ics, [], clock.GetUtcNow(), deadline.Token) : null;
+            error ??= interpreted?.Error;
+            deadline.Token.ThrowIfCancellationRequested();
+            var succeededAt = error is null ? clock.GetUtcNow() : (DateTimeOffset?)null;
+            var status = new RefreshStatus(1, SourceKey(sourceUri!), refreshId, startedAt, clock.GetUtcNow(),
+                succeededAt, error?.Code, error is null ? null : RefreshErrors.Detail(error), attempt.Generation);
+            await cache.Complete(status, succeededAt is { } success
+                ? new SourceSnapshot(2, status.SourceKey, success, ics!, startedAt, refreshId, attempt.Generation) : null,
+                deadline.Token);
+            if (error is not null)
+                logger.LogWarning("Agenda refresh failed with code {ErrorCode}.", error.Code);
+            else
+                logger.LogInformation("Agenda refresh finished with code {OutcomeCode}.", "source_checked");
+        }
+        catch (SourceCacheException error)
+        {
+            logger.LogWarning("Agenda refresh failed with code {ErrorCode}.", error.Code);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning("Agenda refresh failed with code {ErrorCode}.", "cache_unavailable");
+        }
+    }
+
+    private bool TrySource(out Uri? sourceUri) =>
+        Uri.TryCreate(configuration["Agenda:SourceUrl"], UriKind.Absolute, out sourceUri)
+        && sourceUri.UserInfo.Length == 0 && sourceUri.Fragment.Length == 0
+        && (sourceUri.Scheme == Uri.UriSchemeHttps
+            || sourceUri.Scheme == Uri.UriSchemeHttp && sourceUri.IsLoopback
+            && configuration["AZURE_FUNCTIONS_ENVIRONMENT"] == "Development");
+
+    private static string SourceKey(Uri sourceUri) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sourceUri.AbsoluteUri)));
+
     [Function("Agenda")]
     public async Task<IActionResult> Run(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "agenda")] HttpRequest request)
@@ -71,61 +143,67 @@ public sealed class AgendaFunction
         if (configurationError is not null)
             return Respond(Fail(configurationError.Code, configurationError.Message));
 
-        if (!Uri.TryCreate(configuration["Agenda:SourceUrl"], UriKind.Absolute, out var sourceUri)
-            || sourceUri.UserInfo.Length != 0 || sourceUri.Fragment.Length != 0
-            || (sourceUri.Scheme != Uri.UriSchemeHttps
-                && !(sourceUri.Scheme == Uri.UriSchemeHttp && sourceUri.IsLoopback
-                    && configuration["AZURE_FUNCTIONS_ENVIRONMENT"] == "Development")))
+        if (!TrySource(out var sourceUri))
             return Respond(Fail("source_configuration", "The calendar source is not configured correctly."));
 
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(request.HttpContext.RequestAborted);
-        deadline.CancelAfter(TimeSpan.FromSeconds(9));
-        var (ics, sourceError) = await FetchSource(sourceUri, deadline.Token, request.HttpContext.RequestAborted);
-        var attempted = ics is not null
-            ? Interpret(ics, rules, clock.GetUtcNow())
-            : Fail(sourceError!.Code, sourceError.Message);
-        var sourceKey = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(sourceUri.AbsoluteUri)));
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(9), ioClock);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(request.HttpContext.RequestAborted, budget.Token);
+        var sourceKey = SourceKey(sourceUri!);
         try
         {
-            if (attempted.State == AgendaState.Current)
-            {
-                attempted = attempted with { SourceSucceededAt = clock.GetUtcNow() };
-                await cache.Write(new SourceSnapshot(1, sourceKey, attempted.SourceSucceededAt!.Value, ics!),
-                    deadline.Token);
-                return Respond(attempted);
-            }
-
+            var status = await cache.ReadStatus(deadline.Token);
             var retained = await cache.Read(deadline.Token);
+            var after = await cache.ReadStatus(deadline.Token);
+            var error = status != after ? RefreshErrors.For("refresh_incomplete")
+                : status is null || status.SourceKey != sourceKey ? RefreshErrors.For("refresh_missing")
+                : status.ErrorCode is { } code ? RefreshErrors.For(code, status.FailureDetail) : null;
+            var pending = after?.Pending;
+            if (pending is not null)
+                error = pending.SourceKey != sourceKey ? RefreshErrors.For("refresh_missing")
+                    : pending.Committing ? RefreshErrors.For("refresh_incomplete")
+                    : clock.GetUtcNow() - pending.StartedAt >= RefreshTimeout
+                        ? RefreshErrors.For("refresh_delayed") : error;
             if (retained is null || retained.SourceKey != sourceKey)
-                return Respond(attempted);
+                return Respond(Fail((error ?? RefreshErrors.For("refresh_missing")).Code,
+                    (error ?? RefreshErrors.For("refresh_missing")).Message));
             var now = clock.GetUtcNow();
             var age = now - retained.SucceededAt;
+            if (status is not null && (status.StartedAt > now || status.CompletedAt > now || pending?.StartedAt > now))
+                return Respond(Fail("cache_invalid", "The retained calendar source is not usable.", retained.SucceededAt));
+            if (error is null && (status!.RefreshId != retained.RefreshId
+                || status.SourceSucceededAt != retained.SucceededAt
+                || status.Pending is null && status.Generation != retained.Generation))
+                error = RefreshErrors.For("refresh_incomplete");
+            if (error is null && age >= TimeSpan.FromMinutes(15))
+                error = RefreshErrors.For("refresh_delayed");
             if (age < TimeSpan.Zero || age >= TimeSpan.FromHours(1))
-                return Respond(Fail(attempted.Error!.Code, attempted.Error.Message, retained.SucceededAt));
-            var reevaluated = Interpret(retained.Calendar, rules, now);
+                return Respond(Fail((error ?? RefreshErrors.For("refresh_delayed")).Code,
+                    (error ?? RefreshErrors.For("refresh_delayed")).Message, retained.SucceededAt));
+            var reevaluated = Interpret(retained.Calendar, rules, now, deadline.Token);
             return Respond(reevaluated with
             {
-                State = reevaluated.State == AgendaState.Current ? AgendaState.Stale : AgendaState.Error,
+                State = reevaluated.State == AgendaState.Current
+                    ? error is null ? AgendaState.Current : AgendaState.Stale : AgendaState.Error,
                 SourceSucceededAt = retained.SucceededAt,
-                Error = reevaluated.Error ?? attempted.Error
+                Error = reevaluated.Error ?? error
             });
         }
         catch (SourceCacheException error)
         {
-            return Respond(Fail(error.Code, error.Message, attempted.SourceSucceededAt));
+            var failure = RefreshErrors.For(error.Code);
+            return Respond(Fail(failure.Code, failure.Message));
         }
         catch (OperationCanceledException) when (!request.HttpContext.RequestAborted.IsCancellationRequested)
         {
-            return Respond(Fail("cache_unavailable", "The retained calendar source could not be accessed.",
-                attempted.SourceSucceededAt));
+            return Respond(Fail("cache_unavailable", "The retained calendar source could not be accessed."));
         }
     }
 
     private async Task<(string? Calendar, AgendaError? Error)> FetchSource(Uri sourceUri,
         CancellationToken cancellationToken, CancellationToken requestAborted)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(SourceAcquisitionTimeout);
+        using var budget = new CancellationTokenSource(SourceAcquisitionTimeout, ioClock);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.Token);
         try
         {
             using var response = await source.GetAsync(sourceUri, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
@@ -153,12 +231,15 @@ public sealed class AgendaFunction
         }
     }
 
-    private AgendaResult Interpret(string ics, ExclusionRule[] rules, DateTimeOffset now)
+    private AgendaResult Interpret(string ics, ExclusionRule[] rules, DateTimeOffset now,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         Calendar calendar;
         try
         {
             var components = SimpleDeserializer.Default.Deserialize(new StringReader(ics)).ToArray();
+            cancellationToken.ThrowIfCancellationRequested();
             if (components.Length != 1 || components[0] is not Calendar parsed)
                 return Fail("source_invalid", "The source must contain exactly one calendar.");
             calendar = parsed;
@@ -175,6 +256,7 @@ public sealed class AgendaFunction
             return Fail("compatibility_unsupported", "The source uses an unsupported calendar method or scale.");
         foreach (var item in calendar.Events)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(item.Uid))
                 return Fail("source_invalid", "The source contains an event without an identifier.");
             if (new[] { "UID", "DTSTART", "DTEND", "DURATION", "SUMMARY", "LOCATION", "STATUS", "RECURRENCE-ID" }
@@ -226,6 +308,7 @@ public sealed class AgendaFunction
         {
             foreach (var item in calendar.Events)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 foreach (var date in SourceDates(item).Where(date => date.HasTime))
                 {
                     if (date.IsFloating)
@@ -278,6 +361,7 @@ public sealed class AgendaFunction
                     .TakeWhileBefore(windowEnd))
                 .Select(instance =>
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var item = (CalendarEvent)instance.Source;
                     var start = instance.Period.StartTime;
                     var end = instance.Period.EffectiveEndTime
@@ -322,6 +406,7 @@ public sealed class AgendaFunction
         }
         var result = new AgendaResult(1, AgendaState.Current, TimeZoneId, now, now,
             SelectDay(primary, occurrences), SelectDay(secondary, occurrences), null);
+        cancellationToken.ThrowIfCancellationRequested();
         return result;
     }
 

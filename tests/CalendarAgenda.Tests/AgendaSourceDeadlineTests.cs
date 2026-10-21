@@ -1,12 +1,11 @@
 using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -33,18 +32,20 @@ public sealed class AgendaSourceDeadlineTests(ITestOutputHelper output)
     [InlineData(7, 0)]
     [InlineData(0, 7)]
     [InlineData(4, 3)]
-    public async Task A_source_arriving_after_six_seconds_is_current_through_the_registered_Functions_client(
+    public async Task Slow_scheduled_source_acquisition_does_not_consume_the_HTTP_poll_budget(
         int headerSeconds, int bodySeconds)
     {
         await using var source = await SyntheticSource.Start();
         source.HeaderDelay = TimeSpan.FromSeconds(headerSeconds);
         source.BodyDelay = TimeSpan.FromSeconds(bodySeconds);
-        await using var functions = await FunctionsHttp.Start(source.Url);
+        using var agenda = new AgendaHttpTests.AgendaHttp("2026-10-19T18:00:00Z", "",
+            sourceUrl: source.Url, sourceClient: new HttpClient());
+        var refresh = Stopwatch.StartNew();
+        await agenda.Tick();
         var elapsed = Stopwatch.StartNew();
-
-        using var result = await functions.Poll();
-
-        output.WriteLine($"Headers {headerSeconds}s, body {bodySeconds}s: {elapsed.Elapsed.TotalMilliseconds:F0} ms.");
+        using var result = await agenda.PollOnly();
+        output.WriteLine($"Refresh headers {headerSeconds}s, body {bodySeconds}s: "
+            + $"{refresh.Elapsed.TotalMilliseconds:F0} ms; HTTP: {elapsed.Elapsed.TotalMilliseconds:F0} ms.");
         var body = result.RootElement;
         Assert.Equal("current", body.GetProperty("state").GetString());
         Assert.Equal(JsonValueKind.Null, body.GetProperty("error").ValueKind);
@@ -56,34 +57,88 @@ public sealed class AgendaSourceDeadlineTests(ITestOutputHelper output)
             Assert.Equal("all_day", occurrence.GetProperty("time_kind").GetString());
             Assert.Equal("Synthetic delayed commitment", occurrence.GetProperty("title").GetString());
         }
-        Assert.InRange(elapsed.Elapsed.TotalSeconds, 6.8, 9.999);
+        Assert.InRange(refresh.Elapsed.TotalSeconds, 6.8, 34.999);
+        Assert.InRange(elapsed.Elapsed.TotalSeconds, 0, 9.999);
+        Assert.Equal(1, source.Requests);
+    }
+
+    [Fact]
+    public async Task The_actual_timer_with_the_production_registered_client_acquires_a_source_taking_more_than_ten_seconds()
+    {
+        await using var source = await SyntheticSource.Start();
+        source.HeaderDelay = TimeSpan.FromSeconds(11);
+        var services = new ServiceCollection();
+        AgendaHosting.AddSourceClient(services);
+        await using var provider = services.BuildServiceProvider();
+        using var agenda = new AgendaHttpTests.AgendaHttp("2026-10-19T18:00:00Z", "",
+            sourceUrl: source.Url, sourceClient: provider.GetRequiredService<IHttpClientFactory>().CreateClient());
+        var elapsed = Stopwatch.StartNew();
+
+        var refresh = agenda.Tick();
+        await source.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var firstPoll = Stopwatch.StartNew();
+        using var inFlight = await agenda.PollOnly();
+        Assert.Equal("error", inFlight.RootElement.GetProperty("state").GetString());
+        Assert.Equal("refresh_missing", inFlight.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.InRange(firstPoll.Elapsed.TotalSeconds, 0, 9.999);
+        var firstPollMs = firstPoll.Elapsed.TotalMilliseconds;
+        await refresh.WaitAsync(TimeSpan.FromSeconds(35));
+        var refreshMs = elapsed.Elapsed.TotalMilliseconds;
+        var pollElapsed = Stopwatch.StartNew();
+        using var current = await agenda.PollOnly();
+
+        Assert.Equal("current", current.RootElement.GetProperty("state").GetString());
+        Assert.Equal(1, current.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.InRange(refreshMs, 10_900, 34_999);
+        Assert.InRange(pollElapsed.Elapsed.TotalSeconds, 0, 9.999);
+        Assert.Equal(1, source.Requests);
+        output.WriteLine($"Real registered refresh: {refreshMs:F0} ms; first in-flight HTTP: "
+            + $"{firstPollMs:F0} ms (error, not rescued); current HTTP: "
+            + $"{pollElapsed.Elapsed.TotalMilliseconds:F0} ms.");
     }
 
     [Theory]
-    [InlineData(30, 0)]
-    [InlineData(0, 30)]
-    [InlineData(5, 5)]
-    public async Task The_eight_second_headers_and_body_deadline_preserves_stale_source_and_exact_expiry(
+    [InlineData(60, 0)]
+    [InlineData(0, 60)]
+    [InlineData(20, 20)]
+    public async Task The_thirty_second_headers_and_body_deadline_preserves_stale_source_and_exact_expiry(
         int headerSeconds, int bodySeconds)
     {
-        await using var source = await SyntheticSource.Start();
+        var ioClock = new FakeTimeProvider();
+        await using var source = await SyntheticSource.Start(ioClock);
         using var agenda = new AgendaHttpTests.AgendaHttp("2026-10-19T18:00:00Z", "",
-            sourceUrl: source.Url, sourceClient: new HttpClient());
+            sourceUrl: source.Url, sourceClient: new HttpClient(), ioClock: ioClock);
         using var current = await agenda.Poll();
         Assert.Equal("current", current.RootElement.GetProperty("state").GetString());
         var succeededAt = current.RootElement.GetProperty("source_succeeded_at").GetDateTimeOffset();
         source.HeaderDelay = TimeSpan.FromSeconds(headerSeconds);
         source.BodyDelay = TimeSpan.FromSeconds(bodySeconds);
+        source.ResetSignals();
         agenda.Clock.Advance(TimeSpan.FromHours(1) - TimeSpan.FromTicks(1));
+        var pending = agenda.Refresh();
+        await source.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (headerSeconds == 20)
+        {
+            ioClock.Advance(TimeSpan.FromSeconds(20));
+            await source.HeadersSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            ioClock.Advance(TimeSpan.FromSeconds(10));
+        }
+        else
+        {
+            if (headerSeconds == 0)
+                await source.HeadersSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            ioClock.Advance(TimeSpan.FromSeconds(30));
+        }
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
 
         foreach (var expectedState in new[] { "stale", "error" })
         {
             var elapsed = Stopwatch.StartNew();
-            using var result = await agenda.Poll().WaitAsync(TimeSpan.FromSeconds(10));
+            using var result = await agenda.PollOnly().WaitAsync(TimeSpan.FromSeconds(10));
             output.WriteLine($"{expectedState}, headers {headerSeconds}s, body {bodySeconds}s: "
                 + $"{elapsed.Elapsed.TotalMilliseconds:F0} ms.");
             var body = result.RootElement;
-            Assert.InRange(elapsed.Elapsed.TotalSeconds, 7.8, 9.999);
+            Assert.InRange(elapsed.Elapsed.TotalSeconds, 0, 9.999);
             Assert.Equal(expectedState, body.GetProperty("state").GetString());
             Assert.Equal("source_unavailable", body.GetProperty("error").GetProperty("code").GetString());
             Assert.Equal(succeededAt, body.GetProperty("source_succeeded_at").GetDateTimeOffset());
@@ -107,54 +162,95 @@ public sealed class AgendaSourceDeadlineTests(ITestOutputHelper output)
         }
     }
 
-    [Theory]
-    [InlineData("write")]
-    [InlineData("read")]
-    public async Task Cache_IO_keeps_the_original_nine_second_budget_after_a_slow_source(string operation)
+    [Fact]
+    public async Task Cache_persistence_cannot_reset_the_thirty_five_second_overall_refresh_budget()
     {
-        await using var source = await SyntheticSource.Start();
-        source.HeaderDelay = TimeSpan.FromSeconds(operation == "write" ? 7 : 30);
+        var ioClock = new FakeTimeProvider();
+        await using var source = await SyntheticSource.Start(ioClock);
+        source.HeaderDelay = TimeSpan.FromSeconds(25);
+        var cache = new StalledCache();
         using var agenda = new AgendaHttpTests.AgendaHttp("2026-10-19T18:00:00Z", "",
-            sourceUrl: source.Url, sourceClient: new HttpClient(), sourceCache: new StalledCache());
-        var elapsed = Stopwatch.StartNew();
+            sourceUrl: source.Url, sourceClient: new HttpClient(), sourceCache: cache, ioClock: ioClock);
+        var pending = agenda.Tick();
+        await source.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        ioClock.Advance(TimeSpan.FromSeconds(25));
+        await cache.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        ioClock.Advance(TimeSpan.FromSeconds(9));
+        Assert.False(pending.IsCompleted);
+        ioClock.Advance(TimeSpan.FromSeconds(1));
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(cache.Cancelled);
+        Assert.Equal(1, source.Requests);
+    }
 
-        using var result = await agenda.Poll().WaitAsync(TimeSpan.FromSeconds(11));
-
-        output.WriteLine($"Source plus cache {operation}: {elapsed.Elapsed.TotalMilliseconds:F0} ms.");
-        var body = result.RootElement;
-        Assert.InRange(elapsed.Elapsed.TotalSeconds, 8.8, 9.999);
-        Assert.Equal("error", body.GetProperty("state").GetString());
-        Assert.Equal("cache_unavailable", body.GetProperty("error").GetProperty("code").GetString());
-        if (operation == "write")
-            Assert.Equal(agenda.Clock.GetUtcNow(), body.GetProperty("source_succeeded_at").GetDateTimeOffset());
-        else
-            Assert.Equal(JsonValueKind.Null, body.GetProperty("source_succeeded_at").ValueKind);
-        foreach (var day in new[] { "primary", "secondary" })
-        {
-            Assert.Equal(JsonValueKind.Null, body.GetProperty(day).GetProperty("eligible_total").ValueKind);
-            Assert.Empty(body.GetProperty(day).GetProperty("occurrences").EnumerateArray());
-        }
+    [Fact]
+    public async Task Cache_only_HTTP_keeps_the_nine_second_IO_deadline_without_fetching_source()
+    {
+        var ioClock = new FakeTimeProvider();
+        var cache = new StalledCache();
+        using var agenda = new AgendaHttpTests.AgendaHttp("2026-10-19T18:00:00Z", Calendar,
+            sourceCache: cache, ioClock: ioClock);
+        var pending = agenda.PollOnly();
+        await cache.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        ioClock.Advance(TimeSpan.FromSeconds(8));
+        Assert.False(pending.IsCompleted);
+        ioClock.Advance(TimeSpan.FromSeconds(1));
+        using var result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("error", result.RootElement.GetProperty("state").GetString());
+        Assert.Equal("cache_unavailable", result.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal(0, agenda.SourceRequests);
     }
 
     private sealed class StalledCache : SourceCache
     {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Cancelled { get; private set; }
+
+        internal override Task<RefreshAttempt> Begin(RefreshAttempt attempt, CancellationToken cancellationToken) =>
+            Task.FromResult(attempt with { Generation = 1 });
+
         internal override async Task<SourceSnapshot?> Read(CancellationToken cancellationToken)
         {
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            await Stall(cancellationToken);
             return null;
         }
 
+        internal override Task Complete(RefreshStatus status, SourceSnapshot? snapshot,
+            CancellationToken cancellationToken) => Stall(cancellationToken);
+
         internal override Task Write(SourceSnapshot snapshot, CancellationToken cancellationToken) =>
-            Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            Stall(cancellationToken);
+
+        private async Task Stall(CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            finally
+            {
+                Cancelled = cancellationToken.IsCancellationRequested;
+            }
+        }
     }
 
     private sealed class SyntheticSource(WebApplication app) : IAsyncDisposable
     {
         public TimeSpan HeaderDelay { get; set; }
         public TimeSpan BodyDelay { get; set; }
+        public int Requests { get; private set; }
+        public TaskCompletionSource Entered { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource HeadersSent { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string Url => app.Urls.Single() + "/calendar.ics?key=CONFIDENTIAL_SYNTHETIC_SOURCE";
 
-        public static async Task<SyntheticSource> Start()
+        public void ResetSignals()
+        {
+            Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            HeadersSent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public static async Task<SyntheticSource> Start(TimeProvider? clock = null)
         {
             var builder = WebApplication.CreateBuilder();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -163,10 +259,15 @@ public sealed class AgendaSourceDeadlineTests(ITestOutputHelper output)
             var source = new SyntheticSource(app);
             app.MapGet("/calendar.ics", async context =>
             {
-                await Task.Delay(source.HeaderDelay, context.RequestAborted);
+                source.Requests++;
+                var headers = Task.Delay(source.HeaderDelay, clock ?? TimeProvider.System, context.RequestAborted);
+                source.Entered.TrySetResult();
+                await headers;
                 context.Response.ContentType = "text/calendar";
                 await context.Response.StartAsync(context.RequestAborted);
-                await Task.Delay(source.BodyDelay, context.RequestAborted);
+                var body = Task.Delay(source.BodyDelay, clock ?? TimeProvider.System, context.RequestAborted);
+                source.HeadersSent.TrySetResult();
+                await body;
                 await context.Response.WriteAsync(Calendar, context.RequestAborted);
             });
             await app.StartAsync();
@@ -180,103 +281,4 @@ public sealed class AgendaSourceDeadlineTests(ITestOutputHelper output)
         }
     }
 
-    private sealed class FunctionsHttp : IAsyncDisposable
-    {
-        private readonly Process process;
-        private readonly HttpClient client;
-        private readonly Task<string> stdout;
-        private readonly Task<string> stderr;
-        private readonly string cacheDirectory = Path.Combine(DisplayTests.Root, "artifacts", "source-cache",
-            Guid.NewGuid().ToString("N"));
-
-        private FunctionsHttp(string sourceUrl)
-        {
-            using var listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            listener.Stop();
-            var start = new ProcessStartInfo(OperatingSystem.IsWindows() ? "pwsh" : "func")
-            {
-                WorkingDirectory = Path.Combine(DisplayTests.Root, "src", "CalendarAgenda", "bin",
-                    new DirectoryInfo(AppContext.BaseDirectory).Parent!.Name, "net10.0"),
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            var arguments = OperatingSystem.IsWindows()
-                ? new[] { "-NoProfile", "-NonInteractive", "-Command", $"func start --no-build --port {port}" }
-                : new[] { "start", "--no-build", "--port", port.ToString() };
-            foreach (var argument in arguments)
-                start.ArgumentList.Add(argument);
-            start.Environment["FUNCTIONS_WORKER_RUNTIME"] = "dotnet-isolated";
-            start.Environment["AZURE_FUNCTIONS_ENVIRONMENT"] = "Development";
-            start.Environment["Agenda__SourceUrl"] = sourceUrl;
-            start.Environment["Agenda__DevelopmentCacheDirectory"] = cacheDirectory;
-            start.Environment["AzureWebJobsSecretStorageType"] = "files";
-            start.Environment["AzureWebJobsStorage"] = "";
-            start.Environment.Remove("APPLICATIONINSIGHTS_CONNECTION_STRING");
-            start.Environment.Remove("APPINSIGHTS_INSTRUMENTATIONKEY");
-            process = Process.Start(start)!;
-            stdout = process.StandardOutput.ReadToEndAsync();
-            stderr = process.StandardError.ReadToEndAsync();
-            client = new HttpClient
-            {
-                BaseAddress = new Uri($"http://127.0.0.1:{port}"),
-                Timeout = TimeSpan.FromSeconds(12)
-            };
-            client.DefaultRequestHeaders.Add("x-functions-key", "synthetic-local-only");
-        }
-
-        public static async Task<FunctionsHttp> Start(string sourceUrl)
-        {
-            var functions = new FunctionsHttp(sourceUrl);
-            try
-            {
-                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-                while (true)
-                {
-                    Assert.False(functions.process.HasExited, "The local Functions host exited before readiness.");
-                    try
-                    {
-                        using var response = await functions.client.GetAsync("/admin/functions", deadline.Token);
-                        if (response.IsSuccessStatusCode)
-                        {
-                            using var definitions = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
-                            if (definitions.RootElement.EnumerateArray().Any())
-                                return functions;
-                        }
-                    }
-                    catch (HttpRequestException) { }
-                    await Task.Delay(100, deadline.Token);
-                }
-            }
-            catch
-            {
-                await functions.DisposeAsync();
-                throw;
-            }
-        }
-
-        public async Task<JsonDocument> Poll()
-        {
-            using var response = await client.PostAsync("/api/agenda",
-                new StringContent("""{"rules_json":"[]"}""", Encoding.UTF8, "application/json"));
-            response.EnsureSuccessStatusCode();
-            Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
-            return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync();
-            var diagnostics = $"{await stdout}\n{await stderr}";
-            process.Dispose();
-            client.Dispose();
-            if (Directory.Exists(cacheDirectory))
-                Directory.Delete(cacheDirectory, recursive: true);
-            Assert.DoesNotContain("CONFIDENTIAL", diagnostics);
-            Assert.DoesNotContain("synthetic-local-only", diagnostics);
-        }
-    }
 }

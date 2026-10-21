@@ -512,10 +512,12 @@ public sealed class SourcePreflightTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [InlineData("calendar_error")]
+    [InlineData("timeout")]
+    [InlineData("http_rejected")]
+    [InlineData("transport_failed")]
     public async Task A_failed_first_cache_poll_retains_smoke_evidence_without_becoming_source_or_delivery_success(
-        bool timeoutBeforeSuccess)
+        string firstFailure)
     {
         var calendar = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "basic.ics"));
         await using var source = await SyntheticSource.Start(async context =>
@@ -525,7 +527,7 @@ public sealed class SourcePreflightTests
         });
         using var agenda = new AgendaHttpTests.AgendaHttp("2026-10-19T18:00:00Z", "",
             sourceUrl: source.Url, sourceClient: new HttpClient());
-        if (timeoutBeforeSuccess)
+        if (firstFailure != "calendar_error")
             await agenda.Tick();
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -535,9 +537,27 @@ public sealed class SourcePreflightTests
         var polls = 0;
         boundary.MapPost("/api/agenda", async context =>
         {
-            Assert.Equal(key, context.Request.Headers["x-functions-key"].ToString());
-            if (Interlocked.Increment(ref polls) == 1 && timeoutBeforeSuccess)
-                await Task.Delay(Timeout.InfiniteTimeSpan, context.RequestAborted);
+            if (context.Request.Headers["x-functions-key"].ToString() != key)
+            {
+                context.Response.StatusCode = 401;
+                return;
+            }
+            if (Interlocked.Increment(ref polls) == 1)
+            {
+                if (firstFailure == "timeout")
+                    await Task.Delay(Timeout.InfiniteTimeSpan, context.RequestAborted);
+                if (firstFailure == "http_rejected")
+                {
+                    context.Response.StatusCode = 503;
+                    await context.Response.WriteAsync(Sentinel, context.RequestAborted);
+                    return;
+                }
+                if (firstFailure == "transport_failed")
+                {
+                    context.Abort();
+                    return;
+                }
+            }
             using var reader = new StreamReader(context.Request.Body);
             using var response = await agenda.PollOnly(await reader.ReadToEndAsync());
             context.Response.ContentType = "application/json";
@@ -559,14 +579,24 @@ public sealed class SourcePreflightTests
                 .GetProperty("interpretation").GetProperty("code").GetString());
             var poll = body.GetProperty("cache_only_poll");
             Assert.False(poll.GetProperty("checks_passed").GetBoolean());
-            Assert.Equal(timeoutBeforeSuccess ? "polling_budget_exceeded" : "unexpected_calendar_state",
-                poll.GetProperty("failure_code").GetString());
-            var attempts = poll.GetProperty("attempts").EnumerateArray().ToArray();
-            Assert.Equal(timeoutBeforeSuccess ? 2 : 1, attempts.Length);
-            if (timeoutBeforeSuccess)
+            Assert.Equal(firstFailure switch
             {
-                Assert.Equal("attempt_over_budget", attempts[0].GetProperty("error").GetString());
-                Assert.InRange(attempts[0].GetProperty("elapsed_ms").GetInt64(), 9_900, 15_000);
+                "timeout" => "polling_budget_exceeded",
+                "http_rejected" => "authorized_poll_rejected",
+                "transport_failed" => "transport_failed",
+                _ => "unexpected_calendar_state"
+            }, poll.GetProperty("failure_code").GetString());
+            var attempts = poll.GetProperty("attempts").EnumerateArray().ToArray();
+            Assert.Equal(firstFailure == "calendar_error" ? 1 : 2, attempts.Length);
+            if (firstFailure != "calendar_error")
+            {
+                if (firstFailure == "http_rejected")
+                    Assert.Equal(503, attempts[0].GetProperty("http_status").GetInt32());
+                else
+                    Assert.Equal(firstFailure == "timeout" ? "attempt_over_budget" : "transport_failed",
+                        attempts[0].GetProperty("error").GetString());
+                Assert.InRange(attempts[0].GetProperty("elapsed_ms").GetInt64(),
+                    firstFailure == "timeout" ? 9_900 : 0, 15_000);
                 Assert.Equal(200, attempts[1].GetProperty("http_status").GetInt32());
             }
             else
@@ -575,7 +605,7 @@ public sealed class SourcePreflightTests
                 Assert.Equal("refresh_missing", poll.GetProperty("error_code").GetString());
             }
             Assert.Equal(attempts.Length, polls);
-            Assert.Equal(timeoutBeforeSuccess ? 2 : 1, source.Requests);
+            Assert.Equal(firstFailure == "calendar_error" ? 1 : 2, source.Requests);
         }
         finally
         {

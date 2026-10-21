@@ -107,8 +107,12 @@ internal static class SourcePreflightPolling
             }
             var state = Text(evidence, "state");
             var code = Text(evidence, "error_code");
-            return new SourcePollReport(true, succeeded ? "passed" : "polling_smoke_failed", succeeded,
-                succeeded ? null : SafeFailure(Text(root, "error")),
+            var firstFailure = attempts.FirstOrDefault(attempt => attempt.Error is not null
+                || attempt.HttpStatus is not (null or 200));
+            var passed = succeeded && firstFailure is null;
+            return new SourcePollReport(true, passed ? "passed" : "polling_smoke_failed", passed,
+                succeeded ? firstFailure is null ? null : firstFailure.Error ?? "authorized_poll_rejected"
+                    : SafeFailure(Text(root, "error")),
                 succeeded ? Text(root, "evidence_scope") is "local_synthetic" ? "local_synthetic" : "deployed_http_only" : null,
                 authenticated, Boolean(evidence, "measured_before_probes"), Boolean(evidence, "cold_start_confirmed"),
                 Boolean(evidence, "retry_used"), (int?)Number(evidence, "http_status", 100, 599),

@@ -11,3 +11,7 @@ Triage uses the default five-role label vocabulary. Before triaging issues, see 
 ### Domain docs
 
 Domain docs use a single-context layout. Before exploring the codebase, see `docs/agents/domain.md`.
+
+### Local validation
+
+For code validation or Git-hook setup/removal, follow [Local validation](README.md#local-validation). `scripts\validate.ps1` is the authoritative entrypoint.

@@ -43,26 +43,83 @@ Native polling remains **15 minutes**, independently of internal source refresh.
 
 ## Local prerequisites
 
-- .NET 10 SDK and Azure Functions Core Tools v4 with .NET 10 support.
-- PowerShell 7 and Node.js (used only for the synthetic local feed/preview).
-- Ruby 4 with Bundler and native-extension build tools. On Windows, use RubyInstaller **with Devkit**; `redcarpet`, a dependency of TRMNL's own Liquid environment, has a native extension.
+- .NET 10 SDK selected by `global.json`, PowerShell 7, and Node.js 22 or newer. Node uses its built-in test runner; no npm packages or hook manager are needed.
+- Git for Windows for the opt-in hooks; it supplies their shell launcher.
+- For Full validation: Azure Functions Core Tools v4 with .NET 10 support, the .NET/ASP.NET Core 10 runtimes, and Azure CLI with Bicep on PATH. Only local compilation is used; no Azure login is needed.
+- For Full rendering coverage: Ruby 4 with Bundler and native-extension build tools. On Windows, use RubyInstaller **with Devkit**; `redcarpet`, a dependency of TRMNL's own Liquid environment, has a native extension.
 
 `TRMNL_RUBY` can select a Ruby executable. Otherwise the scripts use `.tools\ruby\bin\ruby.exe` when present, then `ruby` on PATH. No private feed, Azure credentials, or TRMNL account is needed.
 
-## Repeatable run
+## Local validation
 
-From the repository root:
+**`scripts\validate.ps1` is the authoritative validation procedure**, for manual use, the opt-in hooks, and any future CI. Run the shared entrypoint rather than maintaining another list of checks. No CI workflow, PR requirement, or branch-protection change is introduced.
+
+### Setup once per worktree
+
+For Fast-only work, restore .NET dependencies with `dotnet restore .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj`. Fast does not need Ruby, Chromium, framework assets, Core Tools, or Azure CLI.
+
+For Full validation, install the prerequisites above and run from the repository root:
 
 ```powershell
 .\scripts\setup-display.ps1
-dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restore --nologo --verbosity minimal
 ```
 
 Setup restores the locked Ruby gems into ignored `vendor`, downloads the pinned native framework and its real fonts into ignored `.tools`, builds the .NET harness, and installs its Chromium browser. Application and test package references pin the verified parser version. Assets and tool installations are not committed.
 
+Check `az bicep version` and, only if missing, install the local compiler once with `az bicep install`. Repeat display setup when dependencies or the selected Ruby/browser cache change. Validation itself never runs setup or reinstalls these toolchains.
+
+### Fast and Full scopes
+
+```powershell
+.\scripts\validate.ps1 -Scope Fast
+.\scripts\validate.ps1 -Scope Full
+```
+
+| Scope | Checks | Intended use |
+|---|---|---|
+| Fast (default) | Read-only C# whitespace formatting, production and test-project compilation with existing warnings-as-errors settings, PowerShell parsing, and Node syntax | Inexpensive commit-time feedback |
+| Full | Complete read-only C# formatting, the Fast build/syntax checks, the unfiltered production .NET suite (real Functions host, Liquid, framework/fonts and Chromium), and every delivery/guardrail `*.test.mjs` through Node's existing runner | Local publication gate |
+
+The command resolves its own checkout root and reports each component as **PASSED**, **FAILED**, or **BLOCKED**, with elapsed time. Exit **0** means every selected component passed; any failure or blocked component exits **1**. Missing tools, SDKs/runtimes, restored packages, gems or browser/framework assets are failures with setup guidance, never successful skips. Formatting uses `--verify-no-changes`; build/format/.NET test commands use `--no-restore`. Bicep update checks are disabled for validation subprocesses without changing Azure CLI configuration.
+
+Manual validation checks the current working tree, including unstaged edits. Full uses synthetic fixtures, local HTTP/storage substitutes, and disposable Git repositories/local bare remotes. Delivery checks compile Bicep and publish a local Release package; external mutating Azure commands are substituted. Validation does not fetch the owner's calendar, require private inputs, change Azure resources, deploy, or change application behavior.
+
+### Opt-in Git guardrails
+
+Nothing installs hooks automatically. Inspect, then explicitly opt in:
+
+```powershell
+.\scripts\git-hooks.ps1
+.\scripts\git-hooks.ps1 -Action Install
+```
+
+| Operation | Hook | Scope |
+|---|---|---|
+| `git commit` | `pre-commit` | Fast |
+| Automatic non-fast-forward `git merge` commit | `pre-merge-commit` | Fast |
+| `git push` | `pre-push` | Full |
+
+The hooks invoke the shared entrypoint and propagate its failure. Direct merges remain supported; fast-forward merges create no commit, and publication still passes through pre-push. The pre-push guard additionally requires a **clean checkout, including untracked files**, and every newly published branch/tag must resolve to the checked-out **HEAD**. Annotated tags of HEAD and ref deletions are supported; mixed pushes containing other revisions are rejected. Check out the desired revision and push it separately. Checkout cleanliness and HEAD are checked again after Full succeeds, so edits or commits during validation block publication. Deletion-only pushes still run Full.
+
+Installation is repeatable and uses Git's **common default hooks directory**, shared by linked worktrees. Each operation validates the checkout performing it, not the checkout that installed the hooks. Installation/removal therefore affects every linked worktree using default hooks; a checkout missing the entrypoint fails with recovery guidance.
+
+The installer reports and preserves any effective `core.hooksPath` (including global/worktree settings), refusing installation rather than replacing configuration. It checks all target hooks before writing any and refuses foreign or edited hooks and linked hook files/directories. Other hooks are untouched. If you already manage hooks, integrate the shared entrypoint explicitly into that arrangement instead. No Git configuration is changed, locally or globally.
+
+Remove only this tooling's unchanged generated hooks with:
+
+```powershell
+.\scripts\git-hooks.ps1 -Action Remove
+```
+
+Removal is repeatable, preserves edited/foreign hooks, and reports a partial removal as failure when such files remain. It only considers the common default directory, even if `core.hooksPath` has since changed; the configured destination remains untouched. Removing from one worktree removes the shared managed hooks for the others. Hooks are local conveniences, not branch protection: Git's `--no-verify` or clients that do not run hooks can bypass them.
+
+### Synthetic test coverage
+
+Tooling tests exercise the public PowerShell process interface with controlled external-command substitutes, and real commit/merge/push operations in disposable repositories. They cover scope selection, summaries/exit propagation, prerequisites, opt-in setup, hook/configuration preservation, removal, worktree resolution, and publication of the actual validated revision.
+
 Count labels use standard Liquid conditionals: the standalone `trmnl-liquid` environment does not provide the Rails helper required by its `pluralize` filter. The rendering harness drains stdout/stderr concurrently and bounds rendering time, so template exceptions are reported rather than hanging a test run.
 
-The tests cross the two agreed outer interfaces:
+The application tests cross the two agreed outer interfaces:
 
 - **Refresh plus HTTP results:** the actual timer handler/cadence gate and cache-only production HTTP handler, real Ical.Net parser/title matching, controlled external HTTP/time/storage and persistent local source/outcome recreation. A common fixture helper refreshes on fixture changes, never on repeated HTTP/rule polls. Tests include real registered-client acquisition above ten seconds, exact 15-minute/hour boundaries, overlapping/equal-clock generations, partial publication, and 30/35/9-second deadlines. No private parser/matcher/scheduling-helper tests.
 - **Rendered output:** the production `display\src` Liquid templates rendered by `TRMNL::Liquid`, with the real framework, fonts, JavaScript, and all six native placements. Assertions check text ranges against clipping ancestors and physical view bounds, non-overlapping essential rows, physical PNG dimensions and actual raster ink at required-text positions, readable font sizes, truthful overflow, escaping, and fitting at the native capture-readiness signal itself. Raster inspection uses the already-locked ChunkyPNG gem; it does not render or fit the agenda.

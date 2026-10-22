@@ -56,7 +56,14 @@ Native polling remains **15 minutes**, independently of internal source refresh.
 
 ### Setup once per worktree
 
-For Fast-only work, restore .NET dependencies with `dotnet restore .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj`. Fast does not need Ruby, Chromium, framework assets, Core Tools, or Azure CLI.
+For Fast-only work, restore .NET dependencies:
+
+```powershell
+$env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
+dotnet restore .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj
+```
+
+Fast does not need Ruby, Chromium, framework assets, Core Tools, or Azure CLI.
 
 For Full validation, install the prerequisites above and run from the repository root:
 
@@ -65,6 +72,8 @@ For Full validation, install the prerequisites above and run from the repository
 ```
 
 Setup restores the locked Ruby gems into ignored `vendor`, downloads the pinned native framework and its real fonts into ignored `.tools`, builds the .NET harness, and installs its Chromium browser. Application and test package references pin the verified parser version. Assets and tool installations are not committed.
+
+Display setup automatically sets `DOTNET_GENERATE_ASPNET_CERTIFICATE=false` before any SDK invocation, overriding an inherited enabling value even with a fresh SDK home. The Fast-only block sets the same process-local value; it remains in the current PowerShell process and is inherited by child processes, without changing user/machine environment settings. This disables SDK development-certificate generation; neither flow inspects, trusts, removes, or replaces existing certificates, and any remediation needs separate authorization. Other tool caches and side effects are not necessarily confined to the worktree.
 
 Check `az bicep version` and, only if missing, install the local compiler once with `az bicep install`. Repeat display setup when dependencies or the selected Ruby/browser cache change. Validation itself never runs setup or reinstalls these toolchains.
 

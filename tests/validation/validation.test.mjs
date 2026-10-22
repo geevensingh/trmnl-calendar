@@ -143,7 +143,8 @@ test("full validation runs the production .NET rendering suite and every local N
   assert.ok(!tests.arguments.includes("--filter"));
   const nodeTests = calls.find(call => call.tool === "node" && call.arguments[0] === "--test");
   for (const name of [
-    "deployment.test.mjs", "deploy-command.test.mjs", "smoke.test.mjs", "validation.test.mjs", "hooks.test.mjs"
+    "deployment.test.mjs", "deploy-command.test.mjs", "smoke.test.mjs", "validation.test.mjs", "hooks.test.mjs",
+    "setup-display.test.mjs"
   ])
     assert.ok(nodeTests.arguments.some(argument => argument.endsWith(name)), `Missing ${name}`);
   const format = calls.find(call => call.tool === "dotnet" && call.arguments[0] === "format");

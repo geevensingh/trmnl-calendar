@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+$env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 

@@ -2,6 +2,8 @@
 
 Issues and specs live in GitHub Issues for `geevensingh/trmnl-calendar`.
 
+Before accepting implementation dependencies, reporting delivery, or closing delivery issues, follow the [delivery contract](delivery.md).
+
 Use the agent host's dedicated issue-creation tool when available; otherwise use `gh issue create`. Use the `gh` CLI for the other operations below. Run commands from this clone, or pass `--repo geevensingh/trmnl-calendar`.
 
 ## Conventions
@@ -37,6 +39,6 @@ Used by `/wayfinder`. The map is a single issue with child issues as tickets.
 - **Map**: an issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body.
 - **Child ticket**: link it to the map as a sub-issue, using the fallback above when necessary. Use `wayfinder:<type>` labels: `research`, `prototype`, `grilling`, or `task`.
 - **Blocking**: use native issue dependencies: `gh api --method POST repos/geevensingh/trmnl-calendar/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`. Obtain the blocker's database ID with `gh api repos/geevensingh/trmnl-calendar/issues/<blocker> --jq .id`; use the database ID, not the issue number or node ID. Where dependencies are unavailable, put `Blocked by: #<number>, #<number>` at the top of the child body.
-- **Frontier**: list the map's open children, exclude assigned tickets and tickets with open blockers, and choose the first remaining ticket in map order. Native dependencies expose the open-blocker count as `issue_dependencies_summary.blocked_by`; for fallback references, check whether each blocker is closed.
+- **Frontier**: list the map's open children, exclude assigned tickets and tickets with unsatisfied dependencies, and choose the first remaining ticket in map order. Apply the [delivery contract's acceptance procedure](delivery.md#acceptance-can-advance-the-frontier) before using native `issue_dependencies_summary.blocked_by` counts or fallback body dependencies.
 - **Claim**: `gh issue edit <number> --add-assignee @me`, as the session's first write.
-- **Resolve**: comment with the answer, close the ticket, and append a brief result and issue link to the map's Decisions-so-far.
+- **Resolve**: for answered decision tickets, comment with the answer, close the ticket, and append a brief result and issue link to the map's Decisions-so-far. Execution/delivery tickets follow the [delivery closure gate](delivery.md#closure-and-final-reporting).

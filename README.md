@@ -83,6 +83,10 @@ The command optionally compares an exact hidden reference, measures the same pro
 
 Synthetic `SourcePreflightTests` cross the agreed operator-command and existing HTTP-smoke seams, including real header/body deadlines, exact/mismatched representations, maintained calendar fixtures, independent cache-only polling, first-red evidence, and stdout/stderr/saved-report redaction. Local source results are not Azure cold-start, identity, native TRMNL, or physical-device evidence.
 
+## Delivery completion
+
+The [Git delivery contract](docs/agents/delivery.md) governs implementation acceptance, landing on `main`, publication to GitHub, and ticket closure. It includes the executable read-only `scripts\check-completion.mjs` proof and the evidence to record before reporting delivery. Accepted integration work can unblock implementation dependencies without closing its delivery ticket; successful tests or Azure deployment do not establish Git delivery.
+
 ## Adaptive production views
 
 TRMNL prepends `shared.liquid` to each matching view template: `full.liquid`, `half_horizontal.liquid`, or `half_vertical.liquid`. All three use the same production markup and fitter under the platform's native view wrapper; `display\render.rb` adds only a local preview shell, not another layout algorithm.

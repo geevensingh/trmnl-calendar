@@ -4,6 +4,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
+if (args.FirstOrDefault() == "--source-preflight")
+{
+    Environment.ExitCode = await SourcePreflightCommand.Run(args[1..]);
+    return;
+}
+
 var builder = FunctionsApplication.CreateBuilder(args);
 builder.ConfigureFunctionsWebApplication();
 builder.Services.AddSingleton(TimeProvider.System);

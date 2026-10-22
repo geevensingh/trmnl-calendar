@@ -64,6 +64,64 @@ $reviewedCommit = (git rev-parse HEAD).Trim()
 
 This publishes portable Release .NET 10 output with no Windows apphost, zips **contents**, including hidden `.azurefunctions`, and records the commit, checkout cleanliness, SHA-256 and archive size beside the ZIP. This SDK uses **worker indexing**, not a fabricated legacy `functions.metadata` file. `host.json` and `worker.config.json` remain at the archive root. Local settings and `.env` files are rejected, and archives over 100 MiB are rejected. A dirty package can be inspected locally but cannot be deployed with `DeployCode`.
 
+## Protected source preflight before design approval
+
+Run this [#11](https://github.com/geevensingh/trmnl-calendar/issues/11) preflight **after the owner has authorized access to the actual source and before accepting its acquisition strategy**. For the already approved scheduled-refresh revision, use it to check the actual source against that allowance, not to reopen permission or resource decisions. It is an owner/operator command, not a public diagnostic function or an HTTP caller-selected source feature.
+
+Use a protected owner terminal with transcripts, shell tracing, keystroke capture and external HTTP diagnostic capture disabled. Privately obtain the **currently configured value** through the approved owner secret workflow, not an old secret version, and enter it at `source_input_required`. The command never reads the clipboard, a secret history, app settings or an owner-specific subscription/resource plan. It does not establish which value a deployed Key Vault reference currently has cached; that remains the owner's separate effective-configuration check.
+
+From the repository root, build without fetching any calendar:
+
+```powershell
+dotnet build .\src\CalendarAgenda\CalendarAgenda.csproj --nologo --verbosity minimal
+New-Item -ItemType Directory -Force .\artifacts | Out-Null
+$sourceReport = Join-Path $PWD ("artifacts\source-preflight-" + [Guid]::NewGuid().ToString('N') + ".json")
+```
+
+Only when access is explicitly authorized:
+
+```powershell
+dotnet .\src\CalendarAgenda\bin\Debug\net10.0\CalendarAgenda.dll --source-preflight `
+  --authorize-source-access --compare-reference --report-file $sourceReport
+```
+
+`source_input_required` and optional `reference_input_required` are fixed stderr prompt codes. Input is hidden, including when pasted; Enter submits, Backspace edits, and Escape cancels. Enter the effective source and independently known working reference exactly, without adding quotes or trimming spaces. These are single-line entries: a stored multi-line value is invalid configuration, not permission to paste separate records, silently trim it, or replace the secret. Never put either value in arguments, chat, a shell pipeline, an environment variable, a ticket or a screenshot. Omit `--compare-reference` when no protected reference is available; the report then explicitly marks comparison unperformed.
+
+Comparison is ordinal exact equality. `same_after_trimming`, `same_uri_representation`, and the source/reference structural booleans distinguish surrounding whitespace, controls, quotes, credentials/fragments and URI representation changes without printing either value. Normalized comparisons are **diagnostic only**: a mismatch stops source acquisition, even when normalized forms match. No token is guessed, no HTML/publication link is converted into an ICS URL, and no stored secret is changed. URL validation rejects whitespace/controls, embedded credentials, fragments and non-HTTPS live inputs. Production's own fixed-source policy and no-redirect HTTP client still perform the real acquisition.
+
+Each attempt reads at most the production **2 MiB** source limit with strict UTF-8. It uses the production **30-second combined headers/body** deadline and the same actual `Interpret` path, installed Ical.Net and maintained timezone resolver, with a **35-second overall source-check** deadline. It does not create another parser, change recurrence/timezone semantics, accept partial agendas, apply rule fallbacks, or persist a last-good source. `calendar_media_type`/`html_media_type` are booleans only; content type is not substituted for actual production interpretation.
+
+The JSON report separates acquisition (`received`, `redirect_refused`, `http_rejected`, `transport_failed`, `headers_timeout`, `body_timeout`, `source_too_large`, `invalid_utf8`) from actual interpretation (`supported`, production invalid/unsupported codes, or an interpretation timeout). HTTP status, bounded phase durations and aggregate body size are safe metadata. A received HTML page is not a supported calendar. Absent headers, unread bodies, unperformed interpretation and unrequested polling are explicit null/unperformed evidence, never assumed successes.
+
+There is **one attempt by default**, no preliminary warmup and no automatic source retry. `--attempts 2` explicitly requests one additional measurement, retaining both in order; any failed attempt keeps the command unsuccessful. Design-budget assessments always identify **attempt 1**, so a warm second success cannot rescue its failure. A saved report is created exclusively and never overwrites an existing file; use a new report name for every later invocation and preserve the original red evidence.
+
+| Assessment | Meaning |
+| --- | --- |
+| `synchronous_polling` | Observed source acquisition and interpretation must fit the existing **nine-second application budget**, inside the separate **ten-second delivery attempt**. Exceeding it cannot qualify a proposed synchronous source-fetch design. |
+| `scheduled_refresh` | Observed acquisition must fit **30 seconds** and the source check must fit **35 seconds**. A source above the synchronous limit can still fit this background allowance. |
+| `cache_only_poll` | Unperformed unless separately requested; assessed by the existing HTTP smoke, not inferred from source speed. |
+
+`checks_passed` means only that every requested source check fits the background allowance and any requested polling smoke passed. It does **not** mean a delivery design was approved or activation completed; both corresponding flags remain false. Secret entry, process initialization, Azure initialization, refresh coordination/storage/publication and platform overhead are outside the measured source phases. A local source check below 35 seconds leaves persistence unmeasured, not automatically within the deployed overall refresh budget.
+
+To assess the **independent cache-only HTTP path**, supply the nonsecret deployed endpoint obtained by the procedure below:
+
+```powershell
+$combinedReport = Join-Path $PWD ("artifacts\source-and-poll-" + [Guid]::NewGuid().ToString('N') + ".json")
+dotnet .\src\CalendarAgenda\bin\Debug\net10.0\CalendarAgenda.dll --source-preflight `
+  --authorize-source-access --compare-reference --agenda-endpoint $agendaEndpoint `
+  --report-file $combinedReport
+```
+
+The additional `function_key_input_required` prompt reads the function-scoped key without echo. The command invokes unchanged `scripts\smoke-delivery.mjs` once, using its protected child-process environment for the key, default per-request `[]` rules, first authorized poll before auth probes, ten-second attempts, one permitted transport retry, and complete serialized polling-size check. This does not change the native rule editor or stored configuration. Only allowlisted smoke status/state/code, aggregate sizes, attempt timings and auth flags enter the combined report; response bodies, source/event dates, titles, IDs, locations, participants, rules, keys, endpoints and raw exceptions do not. The source's first failure remains red even if independent cached polling succeeds. Preflight also remains unsuccessful after any failed first polling attempt, including a transport failure or retryable HTTP rejection rescued by a later 200; both attempts remain in its report.
+
+All source measurements are explicitly **operator-machine** evidence. They are not proof of Azure cold-start latency, host authentication, managed-identity access, actual timer coordination/persistence, native TRMNL polling or physical-device delivery. The optional deployed HTTP smoke has only its existing HTTP scope, not those remaining owner gates. No secret, app setting, cache snapshot, refresh outcome, publication permission, resource, role, polling interface or freshness threshold is changed by preflight. The current-source, deployed schedule/cache/authentication and native/device evidence below remain required.
+
+Only synthetic tests use `--synthetic-local`, bounded redirected JSON and loopback HTTP; that mode rejects nonlocal source access. It is not a private-source input workaround. Run the synthetic command coverage through the existing test project:
+
+```powershell
+dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restore --nologo --verbosity minimal --filter FullyQualifiedName~SourcePreflightTests
+```
+
 ## Runtime inputs and read-only preflight
 
 Copy `infra\parameters.example.json` into ignored runtime storage, fill its empty values from the approved private plan, and protect that file. Keep `budgetAlertEmail` a runtime input; it is also a secure ARM parameter. The subscription is a command parameter, never a committed default.
@@ -107,6 +165,8 @@ Only nonsecret target identifiers are saved to that ignored env file. The URL mu
 The repeatable manual alternative is owner-only: privately inspect **Outlook Settings > Calendar > Shared calendars > Publish a calendar**, confirm the existing publication is authorized and supplies titles/timing (availability-only is insufficient), then use the approved **Key Vault > Secrets > Generate/Import**, manual secret `calendar-source-url`, and paste the published HTTPS ICS URL into its secret-value field. Do not broaden publication permissions without approval. No agent needs to see the value.
 
 Allow managed-identity role propagation. Verify the Function's Key Vault reference resolves using its system identity. Versionless references can cache a secret for up to 24 hours; use the documented [reference refresh API](https://learn.microsoft.com/en-us/azure/app-service/app-service-key-vault-references#understand-rotation), not a plaintext app-setting replacement, when immediate refresh is needed.
+
+Once source access and the effective configured value are confirmed, run the [protected source preflight](#protected-source-preflight-before-design-approval) before accepting an acquisition strategy or interpreting a later warm request as acceptance. Preflight is read-only; it does not authorize a secret/reference refresh or broaden Outlook publication.
 
 For an authorized immediate refresh, without printing secret values:
 

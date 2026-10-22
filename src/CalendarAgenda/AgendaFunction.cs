@@ -20,10 +20,11 @@ using TimeZoneConverter;
 
 namespace CalendarAgenda;
 
-public sealed class AgendaFunction
+public sealed partial class AgendaFunction
 {
     internal static readonly TimeSpan SourceAcquisitionTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(35);
+    internal static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(35);
+    internal static readonly TimeSpan HttpPollTimeout = TimeSpan.FromSeconds(9);
 
     private readonly HttpClient source;
     private readonly IConfiguration configuration;
@@ -99,7 +100,7 @@ public sealed class AgendaFunction
                 logger.LogInformation("Agenda refresh finished with code {OutcomeCode}.", "refresh_superseded");
                 return;
             }
-            var (ics, error) = await FetchSource(sourceUri!, deadline.Token, cancellationToken);
+            var (ics, error, _) = await FetchSource(sourceUri!, deadline.Token, cancellationToken);
             var interpreted = ics is not null ? Interpret(ics, [], clock.GetUtcNow(), deadline.Token) : null;
             error ??= interpreted?.Error;
             deadline.Token.ThrowIfCancellationRequested();
@@ -147,7 +148,7 @@ public sealed class AgendaFunction
         if (!TrySource(out var sourceUri))
             return Respond(Fail("source_configuration", "The calendar source is not configured correctly."));
 
-        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(9), ioClock);
+        using var budget = new CancellationTokenSource(HttpPollTimeout, ioClock);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(request.HttpContext.RequestAborted, budget.Token);
         var sourceKey = SourceKey(sourceUri!);
         try
@@ -202,35 +203,64 @@ public sealed class AgendaFunction
         }
     }
 
-    private async Task<(string? Calendar, AgendaError? Error)> FetchSource(Uri sourceUri,
+    private async Task<SourceAcquisition> FetchSource(Uri sourceUri,
         CancellationToken cancellationToken, CancellationToken requestAborted)
     {
         using var budget = new CancellationTokenSource(SourceAcquisitionTimeout, ioClock);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.Token);
+        var started = ioClock.GetTimestamp();
+        long? headersReceived = null;
+        long? bodyStarted = null;
+        int? status = null;
+        int? bytes = null;
+        bool? calendarMediaType = null;
+        bool? htmlMediaType = null;
         try
         {
             using var response = await source.GetAsync(sourceUri, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+            headersReceived = ioClock.GetTimestamp();
+            status = (int)response.StatusCode;
+            var mediaType = response.Content.Headers.ContentType?.MediaType;
+            calendarMediaType = string.Equals(mediaType, "text/calendar", StringComparison.OrdinalIgnoreCase);
+            htmlMediaType = string.Equals(mediaType, "text/html", StringComparison.OrdinalIgnoreCase);
             if (!response.IsSuccessStatusCode)
-                return (null, new AgendaError("source_unavailable", "The calendar source could not be checked."));
+                return Finish(null, new AgendaError("source_unavailable", "The calendar source could not be checked."),
+                    status is >= 300 and < 400 ? "redirect_refused" : "http_rejected");
+            bodyStarted = ioClock.GetTimestamp();
             await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
             const int sourceLimit = 2 * 1024 * 1024;
             var buffer = new byte[sourceLimit + 1];
             var length = await stream.ReadAtLeastAsync(buffer, buffer.Length, false, deadline.Token);
+            bytes = length;
             if (length > sourceLimit)
-                return (null, new AgendaError("source_invalid", "The calendar source exceeds the supported size."));
-            return (new UTF8Encoding(false, true).GetString(buffer, 0, length), null);
+                return Finish(null, new AgendaError("source_invalid", "The calendar source exceeds the supported size."),
+                    "source_too_large");
+            return Finish(new UTF8Encoding(false, true).GetString(buffer, 0, length), null, "received");
         }
         catch (OperationCanceledException) when (!requestAborted.IsCancellationRequested)
         {
-            return (null, new AgendaError("source_unavailable", "The calendar source could not be checked."));
+            return Finish(null, new AgendaError("source_unavailable", "The calendar source could not be checked."),
+                headersReceived is null ? "headers_timeout" : "body_timeout");
         }
         catch (Exception error) when (error is HttpRequestException or IOException)
         {
-            return (null, new AgendaError("source_unavailable", "The calendar source could not be checked."));
+            return Finish(null, new AgendaError("source_unavailable", "The calendar source could not be checked."),
+                "transport_failed");
         }
         catch (DecoderFallbackException)
         {
-            return (null, new AgendaError("source_invalid", "The calendar source is not valid UTF-8."));
+            return Finish(null, new AgendaError("source_invalid", "The calendar source is not valid UTF-8."),
+                "invalid_utf8");
+        }
+
+        SourceAcquisition Finish(string? calendar, AgendaError? error, string code)
+        {
+            var finished = ioClock.GetTimestamp();
+            return new SourceAcquisition(calendar, error, new SourceAcquisitionReport(true, code, status,
+                calendarMediaType, htmlMediaType, bytes,
+                ElapsedMilliseconds(started, headersReceived ?? finished),
+                bodyStarted is { } body ? ElapsedMilliseconds(body, finished) : null,
+                ElapsedMilliseconds(started, finished)));
         }
     }
 

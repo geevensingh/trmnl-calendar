@@ -46,9 +46,32 @@ Native polling remains **15 minutes**, independently of internal source refresh.
 - .NET 10 SDK selected by `global.json`, PowerShell 7, and Node.js 22 or newer. Node uses its built-in test runner; no npm packages or hook manager are needed.
 - Git for Windows for the opt-in hooks; it supplies their shell launcher.
 - For Full validation: Azure Functions Core Tools v4 with .NET 10 support, the .NET/ASP.NET Core 10 runtimes, and Azure CLI with Bicep on PATH. Only local compilation is used; no Azure login is needed.
-- For Full rendering coverage: Ruby 4 with Bundler and native-extension build tools. On Windows, use RubyInstaller **with Devkit**; `redcarpet`, a dependency of TRMNL's own Liquid environment, has a native extension.
+- For display setup: Ruby 4, the lockfile's Bundler **4.0.20**, and compatible native-extension compiler/linker/make tools. On Windows, use RubyInstaller **with Devkit**; `redcarpet` and other locked gems have native extensions. Full validation needs the restored native gems to load, not a compiler merely to render them.
 
-`TRMNL_RUBY` can select a Ruby executable. Otherwise the scripts use `.tools\ruby\bin\ruby.exe` when present, then `ruby` on PATH. No private feed, Azure credentials, or TRMNL account is needed.
+No private feed, Azure credentials, or TRMNL account is needed.
+
+### One-time shared Ruby installation and selection
+
+Install shared tools explicitly, separately from project setup. On Windows, choose a supported Ruby+Devkit **4.x** installer for your architecture from the [official RubyInstaller downloads](https://rubyinstaller.org/downloads/). Compare the installer's SHA-256 with the corresponding official release and/or verify its PGP signature using the [official signing-key and verification guidance](https://github.com/oneclick/rubyinstaller2/wiki/FAQ#user-content-verify-signatures). For example, `Get-FileHash .\rubyinstaller-devkit-4.0.7-2-x64.exe -Algorithm SHA256` computes a hash; computing it without comparing against the official value does not verify the download.
+
+Review the installer's persistent PATH and file-association choices. PATH changes and associations can affect other shells/apps through environment or registry settings; deselect them when you want explicit side-by-side selection. That does not make the installer itself portable or side-effect-free. Use a separate installation directory for a different Ruby stable branch rather than overwriting an existing Ruby 3 installation. Complete the compatible MSYS2/Devkit installation explicitly; [RubyInstaller's Devkit/ridk guidance](https://github.com/oneclick/rubyinstaller2#the-ridk-command) describes installation and repair. `ridk install` and MSYS2 package updates can download/change shared packages; project scripts never invoke them.
+
+Select an existing installation in the current PowerShell process; no persistent PATH change is necessary:
+
+```powershell
+$env:TRMNL_RUBY = 'C:\Ruby40-x64\bin\ruby.exe'
+& $env:TRMNL_RUBY -e 'puts RUBY_VERSION'
+```
+
+The selection order is explicit `TRMNL_RUBY`, an existing `.tools\ruby\bin\ruby.exe` in the **current worktree**, then `ruby` on PATH. An invalid/unusable explicit or existing local selection fails without falling back or searching other checkouts. Working installations are not replaced or downgraded.
+
+Bundler **4.0.20** must already be available to the selected Ruby. If the prerequisite check reports it missing, explicitly install that version once with the selected interpreter:
+
+```powershell
+& $env:TRMNL_RUBY -rrubygems/gem_runner -e 'Gem::GemRunner.new.run(ARGV)' -- install bundler --version 4.0.20 --no-document
+```
+
+This is the RubyGems `install bundler` operation, independent of another installation's `gem` on PATH or a missing binstub. It accesses RubyGems and writes the selected installation's normal gem location; obtain permission for shared installation/repair as appropriate. Neither setup nor validation installs/upgrades Ruby, Bundler, Devkit or other shared tools. A later shared runtime/Devkit upgrade affects every worktree selecting it and can require rebuilding worktree-local native gems; use side-by-side selection when those effects are unwanted.
 
 ## Local validation
 
@@ -56,7 +79,14 @@ Native polling remains **15 minutes**, independently of internal source refresh.
 
 ### Setup once per worktree
 
-For Fast-only work, restore .NET dependencies with `dotnet restore .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj`. Fast does not need Ruby, Chromium, framework assets, Core Tools, or Azure CLI.
+For Fast-only work, restore .NET dependencies without requesting an SDK development certificate:
+
+```powershell
+$env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
+dotnet restore .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj
+```
+
+Fast does not need Ruby, Chromium, framework assets, Core Tools, or Azure CLI.
 
 For Full validation, install the prerequisites above and run from the repository root:
 
@@ -64,9 +94,15 @@ For Full validation, install the prerequisites above and run from the repository
 .\scripts\setup-display.ps1
 ```
 
-Setup restores the locked Ruby gems into ignored `vendor`, downloads the pinned native framework and its real fonts into ignored `.tools`, builds the .NET harness, and installs its Chromium browser. Application and test package references pin the verified parser version. Assets and tool installations are not committed.
+Setup reports the selected Ruby and locked Bundler, compiles/loads a small disposable native extension using that Ruby's build configuration, and checks the SDK before restoring dependencies. It freezes `Gemfile.lock` (including `trmnl-liquid` **0.8.2**), keeps Bundler configuration in `.bundle` and project gems in `vendor\bundle`, acquires framework **3.4.3** and all fonts referenced by its CSS in `.tools\framework`, and builds the .NET harness. The installed Microsoft.Playwright **1.56.0** runtime selects the required Chromium revision. A local blank-page launch verifies usability; only explicit setup installs Chromium when that check fails.
 
-Check `az bicep version` and, only if missing, install the local compiler once with `az bicep install`. Repeat display setup when dependencies or the selected Ruby/browser cache change. Validation itself never runs setup or reinstalls these toolchains.
+Repeat the same command safely. Usable locked gems, nonempty versioned framework assets, complete fonts, and a usable selected Chromium installation are reused. Downloads and font extraction are staged before publication, so interrupted work cannot become a successful cached asset on the next run. Setup fails nonzero with recovery guidance rather than changing lockfiles, upgrading shared tools, skipping rendering tests or claiming partial success.
+
+Project configuration, restored gems, framework assets and build output stay in the current worktree, including when inherited Bundler settings point elsewhere. Setup and Full use controlled project Bundler settings; normal Bundler user-cache selection, SDK/NuGet caches and versioned Playwright caches remain shared. An explicit `PLAYWRIGHT_BROWSERS_PATH` is honored. This is **not** a hermetic or guaranteed-offline bootstrap: downloads, shared caches, installer choices and later shared upgrades have external effects. Assets, dependency installations and generated output are not committed.
+
+Both setup and validation suppress SDK certificate generation before their **first** SDK invocation, including version checks. They never generate, trust or delete certificates, and restore process environment changes after success or failure; project scripts make no persistent PATH/registry/global-configuration changes.
+
+Check `az bicep version` and, only if missing, install the local compiler once with `az bicep install`. Repeat display setup when dependencies or the selected Ruby/browser cache change. Validation itself never runs setup, installs tools or restores dependencies.
 
 ### Fast and Full scopes
 
@@ -80,9 +116,21 @@ Check `az bicep version` and, only if missing, install the local compiler once w
 | Fast (default) | Read-only C# whitespace formatting, production and test-project compilation with existing warnings-as-errors settings, PowerShell parsing, and Node syntax | Inexpensive commit-time feedback |
 | Full | Complete read-only C# formatting, the Fast build/syntax checks, the unfiltered production .NET suite (real Functions host, Liquid, framework/fonts and Chromium), and every delivery/guardrail `*.test.mjs` through Node's existing runner | Local publication gate |
 
-The command resolves its own checkout root and reports each component as **PASSED**, **FAILED**, or **BLOCKED**, with elapsed time. Exit **0** means every selected component passed; any failure or blocked component exits **1**. Missing tools, SDKs/runtimes, restored packages, gems or browser/framework assets are failures with setup guidance, never successful skips. Formatting uses `--verify-no-changes`; build/format/.NET test commands use `--no-restore`. Bicep update checks are disabled for validation subprocesses without changing Azure CLI configuration.
+The command resolves its own checkout root and reports each component as **PASSED**, **FAILED**, or **BLOCKED**, with elapsed time. Exit **0** means every selected component passed; any failure or blocked component exits **1**. Full diagnoses Ruby/Bundler, locked native-gem loading and framework/font readiness before expensive checks, then launches pinned Chromium after the existing build and before production tests. Failed readiness blocks dependent tests, never successful skips. Formatting uses `--verify-no-changes`; build/format/.NET test commands use `--no-restore`. Bicep update checks are disabled for validation subprocesses without changing Azure CLI configuration.
 
 Manual validation checks the current working tree, including unstaged edits. Full uses synthetic fixtures, local HTTP/storage substitutes, and disposable Git repositories/local bare remotes. Delivery checks compile Bicep and publish a local Release package; external mutating Azure commands are substituted. Validation does not fetch the owner's calendar, require private inputs, change Azure resources, deploy, or change application behavior.
+
+### Display setup troubleshooting
+
+| Failure | Recovery |
+|---|---|
+| Ruby missing, unusable or not major 4 | Set `TRMNL_RUBY` to a working existing Ruby 4 executable, or explicitly install Ruby+Devkit as above. An invalid explicit/local selection never silently falls back. |
+| Locked Bundler missing/incompatible | Use the exact selected-Ruby Bundler installation command above; do not update `Gemfile.lock` or run an unqualified `bundle update`. |
+| Native compile/link/make probe fails | Repair/install the compatible Devkit explicitly, or select an existing compatible installation, then rerun setup. The probe uses disposable worktree-local files and has a 45-second build deadline. |
+| Locked Liquid/raster/native gems cannot load | Rerun setup with the same selected Ruby. If a damaged local bundle still passes Bundler's presence check but cannot load, remove/repair only this worktree's ignored `vendor\bundle`, then rerun setup; do not copy gems from another checkout. |
+| Framework/font download or extraction fails | Check access to `trmnl.com` and rerun setup. If pre-existing versioned CSS/JS is damaged, remove only that reported ignored asset before retrying. |
+| Pinned Chromium missing or cannot launch | Check the selected `PLAYWRIGHT_BROWSERS_PATH`, platform browser dependencies and network access, then rerun setup. Full never installs a browser as a fallback. |
+| SDK or .NET restore/build fails | Install the SDK selected by `global.json`, or fix the reported package/compiler error and rerun setup. Missing tools/dependencies remain failures, not skipped tests. |
 
 ### Opt-in Git guardrails
 
@@ -115,7 +163,7 @@ Removal is repeatable, preserves edited/foreign hooks, and reports a partial rem
 
 ### Synthetic test coverage
 
-Tooling tests exercise the public PowerShell process interface with controlled external-command substitutes, and real commit/merge/push operations in disposable repositories. They cover scope selection, summaries/exit propagation, prerequisites, opt-in setup, hook/configuration preservation, removal, worktree resolution, and publication of the actual validated revision.
+Tooling tests exercise the public PowerShell process interface with controlled external-command substitutes, and real commit/merge/push operations in disposable repositories. They cover scope selection, summaries/exit propagation, toolchain selection/readiness, repeatable display setup and partial-failure recovery, local project state/shared-cache selection, exact environment restoration and certificate suppression, opt-in hooks, hook/configuration preservation, removal, worktree resolution, and publication of the actual validated revision.
 
 Count labels use standard Liquid conditionals: the standalone `trmnl-liquid` environment does not provide the Rails helper required by its `pluralize` filter. The rendering harness drains stdout/stderr concurrently and bounds rendering time, so template exceptions are reported rather than hanging a test run.
 

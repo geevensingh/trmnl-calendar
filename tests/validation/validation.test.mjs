@@ -12,6 +12,8 @@ async function checkout(t) {
   const directory = await mkdtemp(join(tmpdir(), "agenda validation "));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await cp(join(root, "scripts"), join(directory, "scripts"), { recursive: true });
+  for (const name of ["Gemfile", "Gemfile.lock"])
+    await cp(join(root, name), join(directory, name));
   for (const name of ["delivery", "validation"]) {
     await cp(join(root, "tests", name), join(directory, "tests", name), { recursive: true });
   }
@@ -24,8 +26,19 @@ async function checkout(t) {
   ]) {
     const path = join(directory, ".tools", "framework", ...asset);
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, "synthetic local asset");
+    await writeFile(path, asset[0] === "css"
+      ? '@font-face{src:url("/fonts/synthetic.woff2")}' : "synthetic local asset");
   }
+  const browser = join(directory, "tests", "CalendarAgenda.Tests", "bin", "Debug", "net10.0", "playwright.ps1");
+  await mkdir(dirname(browser), { recursive: true });
+  await writeFile(browser, String.raw`
+@{ tool = 'playwright'; arguments = @($args) } | ConvertTo-Json -Compress |
+  Add-Content -LiteralPath $env:VALIDATION_CALLS
+if ($env:VALIDATION_BROWSER_FAIL) { exit 43 }
+if ($env:VALIDATION_BROWSER_THROW) { throw 'Synthetic unusable Playwright driver' }
+'synthetic screenshot' | Set-Content -LiteralPath $args[-1]
+exit 0
+`);
   const calls = join(directory, "calls.jsonl");
   const run = (scope = "Fast", environment = {}) => spawnSync("pwsh", [
     "-NoProfile", "-NonInteractive", "-Command", `
@@ -33,10 +46,14 @@ async function checkout(t) {
         [CmdletBinding()]
         param([Parameter(Position = 0)][string]$Name)
         if ($Name -eq $env:VALIDATION_MISSING) { return }
+        if ($Name -eq 'ruby' -and $env:VALIDATION_SELECTED_RUBY) {
+          return [pscustomobject]@{ Source = $env:VALIDATION_SELECTED_RUBY }
+        }
         Microsoft.PowerShell.Core\\Get-Command @PSBoundParameters
       }
       function global:dotnet {
-        @{ tool = 'dotnet'; arguments = @($args) } | ConvertTo-Json -Compress |
+        @{ tool = 'dotnet'; arguments = @($args); certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE;
+           ruby = $env:TRMNL_RUBY; bundlePath = $env:BUNDLE_PATH } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
         if ($args[0] -eq '--version') { '10.0.100' }
         if ($args[0] -eq '--list-runtimes' -and !$env:VALIDATION_NO_RUNTIME) {
@@ -46,7 +63,8 @@ async function checkout(t) {
         $global:LASTEXITCODE = if ($env:VALIDATION_FAIL -eq "dotnet:$($args[0])") { 23 } else { 0 }
       }
       function global:node {
-        @{ tool = 'node'; arguments = @($args); bicepCheck = $env:AZURE_BICEP_CHECK_VERSION } | ConvertTo-Json -Compress |
+        @{ tool = 'node'; arguments = @($args); bicepCheck = $env:AZURE_BICEP_CHECK_VERSION;
+           certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
         if ($args[0] -eq '--version') { 'v24.0.0' }
         $global:LASTEXITCODE = if ($env:VALIDATION_FAIL -eq "node:$($args[0])") { 29 } else { 0 }
@@ -54,8 +72,14 @@ async function checkout(t) {
       function global:ruby {
         @{ tool = 'ruby'; arguments = @($args) } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
-        '4.0.0'
-        $global:LASTEXITCODE = if ($env:VALIDATION_FAIL -eq 'ruby') { 31 } else { 0 }
+        $global:LASTEXITCODE = 0
+        if (($args -join ' ') -match 'Bundler::VERSION') {
+          if ($env:VALIDATION_FAIL -eq 'bundler') { $global:LASTEXITCODE = 31 } else { '4.0.20' }
+        } elseif (($args -join ' ') -match 'trmnl/liquid') {
+          if ($env:VALIDATION_FAIL -eq 'ruby') { $global:LASTEXITCODE = 31 } else { '4.0.0' }
+        } else {
+          if ($env:VALIDATION_RUBY_VERSION) { $env:VALIDATION_RUBY_VERSION } else { '4.0.0' }
+        }
       }
       function global:func {
         '4.0.0'
@@ -67,17 +91,34 @@ async function checkout(t) {
         'Bicep CLI version 0.38.0'
         $global:LASTEXITCODE = if ($env:VALIDATION_FAIL -eq 'az:bicep') { 41 } else { 0 }
       }
+      if ($env:VALIDATION_SELECTED_RUBY) {
+        Set-Alias -Name $env:VALIDATION_SELECTED_RUBY -Value ruby -Scope Global
+      }
+      $before = @{}
+      Get-ChildItem Env: | Where-Object {
+        $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE')
+      } | ForEach-Object { $before[$_.Name] = $_.Value }
       & $env:VALIDATION_SCRIPT -Scope $env:VALIDATION_SCOPE
+      $code = $LASTEXITCODE
+      $after = @{}
+      Get-ChildItem Env: | Where-Object {
+        $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE')
+      } | ForEach-Object { $after[$_.Name] = $_.Value }
+      @{ before = $before; after = $after } | ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath $env:VALIDATION_ENVIRONMENT
+      exit $code
     `
   ], {
     cwd: directory, encoding: "utf8", timeout: 30_000,
     env: {
       ...process.env, VALIDATION_SCRIPT: join(directory, "scripts", "validate.ps1"),
-      VALIDATION_SCOPE: scope, VALIDATION_CALLS: calls, TRMNL_RUBY: "ruby", ...environment
+      VALIDATION_SCOPE: scope, VALIDATION_CALLS: calls, TRMNL_RUBY: "ruby",
+      VALIDATION_ENVIRONMENT: join(directory, "environment.json"), ...environment
     }
   });
   return {
     directory, run,
+    environment: async () => JSON.parse(await readFile(join(directory, "environment.json"), "utf8")),
     calls: async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/).map(JSON.parse)
   };
 }
@@ -196,4 +237,78 @@ test("Bicep version lookup and downstream delivery checks stay offline", async t
   const calls = await fixture.calls();
   for (const call of calls.filter(call => call.tool === "az" || call.arguments[0] === "--test"))
     assert.equal(call.bicepCheck, "false");
+});
+
+test("Full diagnoses missing or unusable pinned Chromium before running production tests", async t => {
+  const fixture = await checkout(t);
+  for (const environment of [{ VALIDATION_BROWSER_FAIL: "1" }, { VALIDATION_BROWSER_THROW: "1" }]) {
+    const result = fixture.run("Full", environment);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /Chromium.*FAILED/s);
+    assert.match(result.stdout, /Chromium.*setup-display/s);
+    assert.match(result.stdout, /\.NET tests \(production rendering\)\s+BLOCKED/);
+  }
+  const calls = await fixture.calls();
+  assert.ok(!calls.some(call => call.tool === "dotnet" && call.arguments[0] === "test"));
+  assert.ok(!calls.some(call => call.arguments.includes("install") || call.arguments.includes("restore")));
+});
+
+test("Full requires the selected Ruby major and locked Bundler but never invokes native build tools", async t => {
+  const fixture = await checkout(t);
+  for (const [environment, guidance] of [
+    [{ VALIDATION_FAIL: "bundler" }, /Bundler 4\.0\.20.*gem install bundler/s],
+    [{ VALIDATION_RUBY_VERSION: "3.4.5" }, /Ruby 4 is required.*3\.4\.5/s]
+  ]) {
+    const result = fixture.run("Full", environment);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, guidance);
+    assert.match(result.stdout, /\.NET tests \(production rendering\)\s+BLOCKED/);
+  }
+  const fast = fixture.run("Fast", { VALIDATION_MISSING: "ruby", VALIDATION_BROWSER_FAIL: "1" });
+  assert.equal(fast.status, 0, fast.stdout + fast.stderr);
+  const calls = await fixture.calls();
+  assert.ok(!calls.some(call => call.tool === "dotnet" && call.arguments[0] === "test"));
+  assert.ok(!calls.some(call => (call.arguments.join(" ")).includes("mkmf")));
+});
+
+test("validation scopes certificate and project environments and restores caller values on success or failure", async t => {
+  const fixture = await checkout(t);
+  const selected = join(fixture.directory, "shared Ruby with spaces", "ruby.exe");
+  for (const scope of ["Fast", "Full"]) {
+    for (const failure of ["", "dotnet:--version"]) {
+      const result = fixture.run(scope, {
+        DOTNET_GENERATE_ASPNET_CERTIFICATE: "true", VALIDATION_FAIL: failure,
+        VALIDATION_SELECTED_RUBY: selected,
+        BUNDLE_PATH: join(fixture.directory, "peer", "gems"),
+        BUNDLE_APP_CONFIG: join(fixture.directory, "peer", "config"),
+        BUNDLE_GEMFILE: join(fixture.directory, "peer", "Gemfile"),
+        BUNDLE_WITHOUT: "display", BUNDLE_FROZEN: "false"
+      });
+
+      assert.equal(result.status, failure ? 1 : 0, result.stdout + result.stderr);
+      const { before, after } = await fixture.environment();
+      assert.deepEqual(after, before);
+    }
+  }
+  const calls = await fixture.calls();
+  for (const call of calls.filter(call => call.tool === "dotnet" || call.tool === "node"))
+    assert.equal(call.certificate, "false", `Certificate generation enabled in ${call.tool} ${call.arguments[0]}`);
+  const production = calls.find(call => call.tool === "dotnet" && call.arguments[0] === "test");
+  assert.equal(production.ruby, selected);
+  assert.equal(production.bundlePath, join(fixture.directory, "vendor", "bundle"));
+});
+
+test("Full rejects incomplete pinned assets even when an unrelated font is present", async t => {
+  const fixture = await checkout(t);
+  const css = join(fixture.directory, ".tools", "framework", "css", "3.4.3", "plugins.css");
+  await writeFile(css, '@font-face{src:url("/fonts/synthetic.woff2")} @font-face{src:url("/fonts/missing.ttf")}');
+  const missingFont = fixture.run("Full");
+  assert.equal(missingFont.status, 1, missingFont.stdout + missingFont.stderr);
+  assert.match(missingFont.stdout, /fonts.*setup-display/s);
+  await writeFile(css, '@font-face{src:url("/fonts/synthetic.woff2")}');
+  await writeFile(join(fixture.directory, ".tools", "framework", "js", "3.4.3", "plugins.js"), "");
+  const emptyAsset = fixture.run("Full");
+  assert.equal(emptyAsset.status, 1, emptyAsset.stdout + emptyAsset.stderr);
+  assert.match(emptyAsset.stdout, /pinned TRMNL framework asset.*setup-display/s);
+  assert.ok(!(await fixture.calls()).some(call => ["test", "--test"].includes(call.arguments[0])));
 });

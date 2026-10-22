@@ -16,13 +16,7 @@ try {
     $toolchain = Get-DisplayToolchain $root
     $env:TRMNL_RUBY = $toolchain.Ruby
     Test-DisplayNativeTools $root $toolchain
-    if (!(Get-Command dotnet -ErrorAction SilentlyContinue)) {
-        throw 'Install the .NET 10 SDK selected by global.json and add dotnet to PATH.'
-    }
-    $sdk = & dotnet --version
-    if ($LASTEXITCODE -ne 0 -or "$sdk" -notmatch '^10\.') {
-        throw 'Install the .NET 10 SDK selected by global.json before display setup.'
-    }
+    Assert-DisplaySdk
 
     $lockfile = Join-Path $root 'Gemfile.lock'
     $lockHash = (Get-FileHash -LiteralPath $lockfile -Algorithm SHA256).Hash

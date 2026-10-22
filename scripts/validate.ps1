@@ -55,13 +55,7 @@ try {
     if ($Scope -eq 'Full') { Set-DisplayEnvironment $root }
 
     $ready = Invoke-Check 'Prerequisites' {
-        if (!(Get-Command dotnet -ErrorAction SilentlyContinue)) {
-            throw 'Install the .NET 10 SDK selected by global.json and add dotnet to PATH.'
-        }
-        $sdk = & dotnet --version
-        if ($LASTEXITCODE -ne 0 -or "$sdk" -notmatch '^10\.') {
-            throw 'The .NET 10 SDK selected by global.json is unavailable. Install it before validation.'
-        }
+        Assert-DisplaySdk
         if (!(Get-Command node -ErrorAction SilentlyContinue)) {
             throw 'Install Node.js 22 or newer and add node to PATH. No npm install is needed.'
         }

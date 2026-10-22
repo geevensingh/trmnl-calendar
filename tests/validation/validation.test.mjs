@@ -55,7 +55,10 @@ exit 0
         @{ tool = 'dotnet'; arguments = @($args); certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE;
            ruby = $env:TRMNL_RUBY; bundlePath = $env:BUNDLE_PATH } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
-        if ($args[0] -eq '--version') { '10.0.100' }
+        if ($env:VALIDATION_FAIL -eq 'dotnet:throw') { throw 'Synthetic unusable SDK executable' }
+        if ($args[0] -eq '--version') {
+          if ($env:VALIDATION_SDK_VERSION) { $env:VALIDATION_SDK_VERSION } else { '10.0.100' }
+        }
         if ($args[0] -eq '--list-runtimes' -and !$env:VALIDATION_NO_RUNTIME) {
           'Microsoft.NETCore.App 10.0.0 [synthetic]'
           'Microsoft.AspNetCore.App 10.0.0 [synthetic]'
@@ -311,4 +314,21 @@ test("Full rejects incomplete pinned assets even when an unrelated font is prese
   assert.equal(emptyAsset.status, 1, emptyAsset.stdout + emptyAsset.stderr);
   assert.match(emptyAsset.stdout, /pinned TRMNL framework asset.*setup-display/s);
   assert.ok(!(await fixture.calls()).some(call => ["test", "--test"].includes(call.arguments[0])));
+});
+
+test("validation diagnoses missing, unsupported and unusable SDKs before dependent checks", async t => {
+  const fixture = await checkout(t);
+  for (const environment of [
+    { VALIDATION_MISSING: "dotnet" }, { VALIDATION_SDK_VERSION: "9.0.100" },
+    { VALIDATION_FAIL: "dotnet:--version" }, { VALIDATION_FAIL: "dotnet:throw" }
+  ]) {
+    const result = fixture.run("Fast", { DOTNET_GENERATE_ASPNET_CERTIFICATE: "true", ...environment });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /Install.*\.NET 10 SDK|\.NET 10 SDK.*Install/s);
+    assert.match(result.stdout, /BLOCKED/);
+    assert.match(result.stdout, /Fast validation FAILED/);
+    const { before, after } = await fixture.environment();
+    assert.deepEqual(after, before);
+  }
+  assert.ok(!(await fixture.calls()).some(call => ["format", "build", "test", "--check", "--test"].includes(call.arguments[0])));
 });

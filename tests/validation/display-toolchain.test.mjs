@@ -37,6 +37,7 @@ exit 0
       function global:Get-Command {
         [CmdletBinding()]
         param([Parameter(Position = 0)][string]$Name)
+        if ($Name -eq $env:DISPLAY_MISSING_TOOL) { return }
         if ($Name -eq 'ruby' -and $env:DISPLAY_MISSING_RUBY) { return }
         Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
       }
@@ -126,7 +127,10 @@ exit 0
       function global:dotnet {
         @{ tool = 'dotnet'; arguments = @($args); certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE } |
           ConvertTo-Json -Compress | Add-Content -LiteralPath $env:DISPLAY_CALLS
-        if ($args[0] -eq '--version') { '10.0.100' }
+        if ($env:DISPLAY_FAIL -eq 'dotnet:throw') { throw 'Synthetic unusable SDK executable' }
+        if ($args[0] -eq '--version') {
+          if ($env:DISPLAY_SDK_VERSION) { $env:DISPLAY_SDK_VERSION } else { '10.0.100' }
+        }
         $global:LASTEXITCODE = if ($env:DISPLAY_FAIL -eq "dotnet:$($args[0])") { 57 } else { 0 }
       }
       function global:Start-Process {
@@ -414,4 +418,21 @@ test("a timed-out native build fails and terminates its owned compiler process t
   assert.ok(calls.some(call => call.tool === "native-wait" && call.arguments[0] === 45000));
   assert.ok(calls.some(call => call.tool === "native-kill" && call.arguments[0] === true));
   assert.ok(!calls.some(call => call.arguments.includes("config") || call.arguments.includes("install")));
+});
+
+test("setup diagnoses missing, unsupported and unusable SDKs before dependency restoration", async t => {
+  const fixture = await checkout(t);
+  for (const environment of [
+    { DISPLAY_MISSING_TOOL: "dotnet" }, { DISPLAY_SDK_VERSION: "9.0.100" },
+    { DISPLAY_FAIL: "dotnet:--version" }, { DISPLAY_FAIL: "dotnet:throw" }
+  ]) {
+    const result = fixture.run({ DOTNET_GENERATE_ASPNET_CERTIFICATE: "true", ...environment });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /Install.*\.NET 10 SDK|\.NET 10 SDK.*Install/s);
+    assert.doesNotMatch(result.stdout, /Display setup PASSED/);
+    const { before, after } = await fixture.environment();
+    assert.deepEqual(after, before);
+  }
+  assert.ok(!(await fixture.calls()).some(call => call.arguments.includes("config") ||
+    call.arguments.includes("install") || call.arguments.includes("restore")));
 });

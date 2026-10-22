@@ -1,3 +1,17 @@
+function Assert-DisplaySdk {
+    $hint = 'Install the .NET 10 SDK selected by global.json and add dotnet to PATH.'
+    if (!(Get-Command dotnet -ErrorAction SilentlyContinue)) { throw $hint }
+    try {
+        $sdk = & dotnet --version
+        if ($LASTEXITCODE -ne 0 -or "$sdk" -notmatch '^10\.') {
+            throw "Reported '$sdk' (exit $LASTEXITCODE)."
+        }
+    }
+    catch {
+        throw "The .NET 10 SDK selected by global.json is unavailable. $hint $($_.Exception.Message)"
+    }
+}
+
 function Get-DisplayRuby([string]$Root) {
     $localRuby = Join-Path $Root '.tools\ruby\bin\ruby.exe'
     $source = 'PATH'

@@ -2,6 +2,8 @@
 
 This is the repeatable procedure for [ticket #8](https://github.com/geevensingh/trmnl-calendar/issues/8), not a receipt of live activation. Deploy only the reviewed integration commit. Synthetic tests and a successful ARM what-if do not prove Azure authentication, private-source compatibility, managed-identity access, native settings transport, or delivery to a device. Leave #8 and [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2) open until the evidence checklist is complete.
 
+Git landing, publication, completion reporting, and ticket closure follow the [delivery contract](agents/delivery.md). The live activation evidence below is an additional gate, not proof of landing on the target branch.
+
 ## Approved scope and permissions
 
 The owner's private resource plan supplies the subscription, exact resource names, and alert recipient. Do not commit those inputs or put them in issues. The approved location is **West US 2**, the monthly alert budget is **$20**, and always-ready capacity is **zero**. A different region, additional resource/role, increased scale, or paid warming requires renewed approval; a deployment error is not permission to change this plan.
@@ -48,6 +50,8 @@ Use the prerequisites, per-worktree setup, and authoritative [local validation p
 ```powershell
 .\scripts\validate.ps1 -Scope Full
 ```
+
+Full automatically includes the completion-tool tests; it does not replace the delivery contract's live Git proof.
 
 The default deployment mode is **Build**, which only compiles Bicep into ignored `artifacts\infra\main.json`. Tooling tests compile the real template, publish the real app, and substitute only external Azure/Git commands for mutating-command checks. Refresh/HTTP tests use actual handlers, real parser/raw persistence and production client registration, including real acquisition above ten seconds with independent fast HTTP, controlled 30/35/9-second deadlines, LA cadence/DST/holidays, exact freshness/expiry, durable concurrency, partial publication and malformed status. Smoke tests retain strict serialized-size and first-red/retry behavior. Real Core Tools verifies exactly two indexed bindings and cache-only HTTP after restart; Liquid/Chromium covers all six native views. Local direct timer execution is not evidence of deployed host monitor/managed-identity coordination.
 

@@ -45,13 +45,13 @@ The deployment operator needs resource-group creation, listed resource writes, b
 
 ## Local checks and package
 
-Use the prerequisites and per-worktree display setup in the [README](../README.md#local-prerequisites). The delivery tooling additionally needs Azure CLI with Flex/.NET 10 support and Bicep. Node's built-in test runner needs no npm dependencies.
+Use the prerequisites, per-worktree setup, and authoritative [local validation procedure](../README.md#local-validation). Full validation is the local publication gate; it includes delivery checks and production rendering without Azure login or private inputs.
 
 ```powershell
-.\scripts\deploy-azure.ps1
-node --test .\tests\delivery\deployment.test.mjs .\tests\delivery\deploy-command.test.mjs .\tests\delivery\smoke.test.mjs .\tests\delivery\completion.test.mjs
-dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restore --nologo --verbosity minimal
+.\scripts\validate.ps1 -Scope Full
 ```
+
+Full automatically includes the completion-tool tests; it does not replace the delivery contract's live Git proof.
 
 The default deployment mode is **Build**, which only compiles Bicep into ignored `artifacts\infra\main.json`. Tooling tests compile the real template, publish the real app, and substitute only external Azure/Git commands for mutating-command checks. Refresh/HTTP tests use actual handlers, real parser/raw persistence and production client registration, including real acquisition above ten seconds with independent fast HTTP, controlled 30/35/9-second deadlines, LA cadence/DST/holidays, exact freshness/expiry, durable concurrency, partial publication and malformed status. Smoke tests retain strict serialized-size and first-red/retry behavior. Real Core Tools verifies exactly two indexed bindings and cache-only HTTP after restart; Liquid/Chromium covers all six native views. Local direct timer execution is not evidence of deployed host monitor/managed-identity coordination.
 

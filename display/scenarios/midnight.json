@@ -1,0 +1,30 @@
+{
+  "id": "midnight",
+  "name": "Midnight and overnight ranges",
+  "description": "Fixed Los Angeles midnight presentation; the same supplied overnight occurrence overlaps both dates.",
+  "agenda": {
+    "schema_version": 1,
+    "state": "current",
+    "time_zone": "America/Los_Angeles",
+    "generated_at": "2026-10-23T06:55:00Z",
+    "source_succeeded_at": "2026-10-23T06:55:00Z",
+    "primary": {
+      "date": "2026-10-22",
+      "label": "Thursday, Oct 22",
+      "eligible_total": 1,
+      "occurrences": [
+        { "time_kind": "timed", "id": "overnight", "title": "Overnight review", "location": null, "start_at": "2026-10-23T06:50:00Z", "end_at": "2026-10-23T08:00:00Z" }
+      ]
+    },
+    "secondary": {
+      "date": "2026-10-23",
+      "label": "Friday, Oct 23",
+      "eligible_total": 2,
+      "occurrences": [
+        { "time_kind": "timed", "id": "overnight", "title": "Overnight review", "location": null, "start_at": "2026-10-23T06:50:00Z", "end_at": "2026-10-23T08:00:00Z" },
+        { "time_kind": "timed", "id": "early-start", "title": "Early start", "location": "Studio A", "start_at": "2026-10-23T14:00:00Z", "end_at": "2026-10-23T15:00:00Z" }
+      ]
+    },
+    "error": null
+  }
+}

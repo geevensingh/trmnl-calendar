@@ -129,7 +129,7 @@ $null = Invoke-Check 'PowerShell and Node syntax' {
             throw "$($file.Name): $($parseErrors.Message -join '; ')"
         }
     }
-    foreach ($directory in @('scripts', 'tests\delivery', 'tests\validation')) {
+    foreach ($directory in @('scripts', 'display\workbench', 'tests\delivery', 'tests\validation')) {
         foreach ($file in Get-ChildItem -LiteralPath (Join-Path $root $directory) -Filter '*.mjs' -File) {
             Invoke-Tool node @('--check', $file.FullName) 'Fix the reported JavaScript syntax.'
         }

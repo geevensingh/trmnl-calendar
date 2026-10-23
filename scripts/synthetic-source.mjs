@@ -53,15 +53,17 @@ createServer((request, response) => {
       : /^\/demo-(stale-)?(og|x)-(full|half_horizontal|half_vertical)\.html$/.test(path) ? path.slice(1) : null;
     const isAsset = /^\/(css|js)\/3\.4\.3\/plugins\.(css|js)$/.test(path)
       || /^\/fonts\/[A-Za-z0-9_-]+\.(ttf|woff2?)$/.test(path);
-    if (!preview && !isAsset) {
+    const isChecks = path === "/workbench/layout-checks.mjs";
+    if (!preview && !isAsset && !isChecks) {
       response.writeHead(404).end();
       return;
     }
     const file = preview ? join(root, "artifacts", preview)
+      : isChecks ? join(root, "display", "workbench", "layout-checks.mjs")
       : join(root, ".tools", "framework", ...path.slice(1).split("/"));
     try {
       const contentType = preview ? "text/html; charset=utf-8"
-        : path.endsWith(".css") ? "text/css" : path.endsWith(".js") ? "application/javascript"
+        : path.endsWith(".css") ? "text/css" : /\.(m?js)$/.test(path) ? "application/javascript"
         : path.endsWith(".woff2") ? "font/woff2" : path.endsWith(".woff") ? "font/woff" : "font/ttf";
       response.writeHead(200, { "Content-Type": contentType }).end(readFileSync(file));
     } catch (error) {

@@ -1,0 +1,15 @@
+{
+  "id": "error-source",
+  "name": "Source error: no source success",
+  "description": "An unavailable source with no successful source check.",
+  "agenda": {
+    "schema_version": 1,
+    "state": "error",
+    "time_zone": "America/Los_Angeles",
+    "generated_at": "2026-10-23T18:00:00Z",
+    "source_succeeded_at": null,
+    "primary": { "date": "2026-10-23", "label": "Friday, Oct 23", "eligible_total": null, "occurrences": [] },
+    "secondary": { "date": "2026-10-26", "label": "Monday, Oct 26", "eligible_total": null, "occurrences": [] },
+    "error": { "code": "source_unavailable", "message": "The calendar source could not be checked." }
+  }
+}

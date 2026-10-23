@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -457,7 +458,10 @@ public sealed class DisplayTests
             WorkingDirectory = Root,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = true
+            RedirectStandardError = true,
+            StandardInputEncoding = new UTF8Encoding(false),
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
         };
         start.ArgumentList.Add(script);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
@@ -489,6 +493,15 @@ public sealed class DisplayTests
                 await route.FulfillAsync(new() { Body = html, ContentType = "text/html" });
                 return;
             }
+            if (path == "/workbench/layout-checks.mjs")
+            {
+                await route.FulfillAsync(new()
+                {
+                    Path = Path.Combine(Root, "display", "workbench", "layout-checks.mjs"),
+                    ContentType = "application/javascript"
+                });
+                return;
+            }
             var asset = Path.Combine(Root, ".tools", "framework",
                 path.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
             Assert.True(File.Exists(asset), $"Missing framework asset: {path}. Run scripts\\setup-display.ps1.");
@@ -509,32 +522,5 @@ public sealed class DisplayTests
         await page.WaitForFunctionAsync("document.querySelector('.agenda').dataset.agendaReady === 'true'");
     }
 
-    internal static JsonObject CurrentAgenda() => JsonSerializer.SerializeToNode(new
-    {
-        schema_version = 1,
-        state = "current",
-        time_zone = "America/Los_Angeles",
-        generated_at = "2026-10-23T18:00:00Z",
-        source_succeeded_at = "2026-10-23T18:00:00Z",
-        primary = new
-        {
-            date = "2026-10-23",
-            label = "Friday, Oct 23",
-            eligible_total = 1,
-            occurrences = new[]
-            {
-                new
-                {
-                    id = "synthetic-occurrence",
-                    time_kind = "timed",
-                    title = "Synthetic planning",
-                    location = "Studio A",
-                    start_at = "2026-10-23T18:00:00Z",
-                    end_at = "2026-10-23T19:00:00Z"
-                }
-            }
-        },
-        secondary = new { date = "2026-10-26", label = "Monday, Oct 26", eligible_total = 3, occurrences = Array.Empty<object>() },
-        error = (object?)null
-    })!.AsObject();
+    internal static JsonObject CurrentAgenda() => AgendaScenarios.Load("reference");
 }

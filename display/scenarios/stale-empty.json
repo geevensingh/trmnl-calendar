@@ -1,0 +1,15 @@
+{
+  "id": "stale-empty",
+  "name": "Stale empty agenda",
+  "description": "Empty retained data still shows a stale warning and never renews source success.",
+  "agenda": {
+    "schema_version": 1,
+    "state": "stale",
+    "time_zone": "America/Los_Angeles",
+    "generated_at": "2026-10-23T18:45:00Z",
+    "source_succeeded_at": "2026-10-23T18:00:00Z",
+    "primary": { "date": "2026-10-23", "label": "Friday, Oct 23", "eligible_total": 0, "occurrences": [] },
+    "secondary": { "date": "2026-10-26", "label": "Monday, Oct 26", "eligible_total": 0, "occurrences": [] },
+    "error": { "code": "refresh_delayed", "message": "The scheduled source refresh is delayed." }
+  }
+}

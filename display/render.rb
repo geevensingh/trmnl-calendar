@@ -2,8 +2,14 @@
 
 require "bundler/setup"
 require "json"
+require "optparse"
 require "yaml"
 require "trmnl/liquid"
+
+template_root = File.join(__dir__, "src")
+OptionParser.new do |options|
+  options.on("--template-root DIRECTORY") { |directory| template_root = File.expand_path(directory) }
+end.parse!(ARGV)
 
 variables = JSON.parse($stdin.read)
 environment = TRMNL::Liquid.new { |config| config.error_mode = :strict }
@@ -13,13 +19,13 @@ views = %w[full half_horizontal half_vertical]
 markup =
   case mode
   when "settings"
-    puts JSON.generate(YAML.safe_load(File.read(File.join(__dir__, "src", "settings.yml"))))
+    puts JSON.generate(YAML.safe_load(File.read(File.join(template_root, "settings.yml"))))
     exit
   when *views
-    File.read(File.join(__dir__, "src", "shared.liquid")) +
-      File.read(File.join(__dir__, "src", "#{mode}.liquid"))
+    File.read(File.join(template_root, "shared.liquid")) +
+      File.read(File.join(template_root, "#{mode}.liquid"))
   when "polling-body"
-    YAML.safe_load(File.read(File.join(__dir__, "src", "settings.yml"))).fetch("polling_body")
+    YAML.safe_load(File.read(File.join(template_root, "settings.yml"))).fetch("polling_body")
   else
     abort "Unsupported display mode."
   end

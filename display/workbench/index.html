@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agenda UI workbench</title>
+    <link rel="stylesheet" href="/workbench/styles.css">
+    <script type="module" src="/workbench/app.mjs"></script>
+  </head>
+  <body data-state="loading">
+    <header>
+      <h1>Agenda UI workbench</h1>
+      <p>Production presentation. Synthetic inputs. No calendar connection.</p>
+      <p class="baseline">Pinned baseline: <code id="baseline-commit">Resolving...</code></p>
+      <div class="toolbar">
+        <label>Agenda scenario <select id="scenario" aria-label="Agenda scenario"></select></label>
+        <label>Device / layout <select id="target" aria-label="Device / layout"></select></label>
+        <label>Viewing scale
+          <select id="zoom" aria-label="Viewing scale">
+            <option value="fit">Fit to window</option>
+            <option value="100">100% (scroll)</option>
+          </select>
+        </label>
+        <button id="overview" type="button" aria-pressed="false">Overview: all four targets</button>
+        <button id="check" type="button" disabled>Check layout</button>
+      </div>
+      <p id="description"></p>
+      <p id="reference" class="reference"></p>
+      <p id="status" role="status" aria-live="polite">Starting workbench...</p>
+    </header>
+    <main>
+      <div id="comparisons" aria-label="Baseline and working-copy comparisons"></div>
+      <section id="checks" data-state="unchecked" aria-label="Layout check results" aria-live="polite">
+        Checks have not run for this comparison.
+      </section>
+    </main>
+  </body>
+</html>

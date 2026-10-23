@@ -3,6 +3,7 @@ import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { AgendaContractError, validateAgenda } from "./agenda-contract.mjs";
 
 const pollingLimit = 100_000;
 const attemptBudgetMs = 10_000;
@@ -25,74 +26,13 @@ function fail(code, evidence) {
   throw new DeliveryFailure(code, evidence);
 }
 
-function fields(value, required, optional = []) {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    && required.every(name => Object.hasOwn(value, name))
-    && Object.keys(value).every(name => required.includes(name) || optional.includes(name));
-}
-
-function calendarDate(value) {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith("0000-"))
-    return false;
-  const parsed = Date.parse(`${value}T00:00:00Z`);
-  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
-}
-
-function instant(value) {
-  if (typeof value !== "string"
-    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
-    || !calendarDate(value.slice(0, 10)) || Number(value.slice(11, 13)) >= 24)
-    return NaN;
-  return Date.parse(value);
-}
-
-function instantTicks(value) {
-  const fraction = (/\.(\d{1,7})/.exec(value)?.[1] ?? "").padEnd(7, "0");
-  return BigInt(instant(value)) * 10_000n + BigInt(fraction.slice(3));
-}
-
 function validatePollingContract(data, evidence) {
-  if (!fields(data, ["schema_version", "state", "time_zone", "generated_at",
-    "source_succeeded_at", "primary", "secondary", "error"])
-    || data.schema_version !== 1 || !calendarStates.has(data.state)
-    || data.time_zone !== "America/Los_Angeles" || !Number.isFinite(instant(data.generated_at)))
-    fail("invalid_polling_contract", evidence);
-  if (data.state === "current" ? data.error !== null
-    : !fields(data.error, ["code", "message"])
-    || typeof data.error.code !== "string" || typeof data.error.message !== "string")
-    fail("invalid_polling_contract", evidence);
-  for (const day of [data.primary, data.secondary]) {
-    if (!fields(day, ["date", "label", "eligible_total", "occurrences"]) || !calendarDate(day.date)
-      || typeof day.label !== "string" || !Array.isArray(day.occurrences)
-      || (data.state === "error" ? day.eligible_total !== null || day.occurrences.length !== 0
-        : !Number.isSafeInteger(day.eligible_total) || day.eligible_total < day.occurrences.length))
-      fail("invalid_polling_contract", evidence);
-    for (const occurrence of day.occurrences) {
-      if (occurrence === null || typeof occurrence !== "object" || Array.isArray(occurrence))
-        fail("invalid_polling_contract", evidence);
-      const allDay = occurrence.time_kind === "all_day";
-      const timing = allDay ? ["start_date", "end_date_exclusive"] : ["start_at", "end_at"];
-      if (!fields(occurrence, ["time_kind", "id", "title", ...timing], ["location"])
-        || !["all_day", "timed"].includes(occurrence.time_kind)
-        || typeof occurrence.id !== "string" || !occurrence.id.length
-        || typeof occurrence.title !== "string"
-        || (occurrence.location !== undefined && occurrence.location !== null && typeof occurrence.location !== "string")
-        || (allDay ? !calendarDate(occurrence.start_date) || !calendarDate(occurrence.end_date_exclusive)
-          || occurrence.start_date >= occurrence.end_date_exclusive
-          : !Number.isFinite(instant(occurrence.start_at)) || !Number.isFinite(instant(occurrence.end_at))
-          || instant(occurrence.end_at) <= instant(occurrence.start_at)))
-        fail("invalid_polling_contract", evidence);
-    }
+  try {
+    validateAgenda(data);
+  } catch (error) {
+    if (error instanceof AgendaContractError) fail(error.code, evidence);
+    throw error;
   }
-  if (data.source_succeeded_at === null ? data.state !== "error"
-    : !Number.isFinite(instant(data.source_succeeded_at)))
-    fail("invalid_source_success_time", evidence);
-  const sourceAge = data.source_succeeded_at === null ? null
-    : instantTicks(data.generated_at) - instantTicks(data.source_succeeded_at);
-  if (data.state === "current" && !(sourceAge >= 0n && sourceAge < 9_000_000_000n))
-    fail("invalid_source_success_time", evidence);
-  if (data.state === "stale" && !(sourceAge >= 0n && sourceAge < 36_000_000_000n))
-    fail("invalid_source_success_time", evidence);
 }
 
 function pollingEvidence(response, attempts, data) {
@@ -115,7 +55,7 @@ function pollingEvidence(response, attempts, data) {
     error_code: data.error === null ? null
       : calendarErrorCodes.has(data.error.code) ? data.error.code : "unknown",
     source_succeeded_at: data.source_succeeded_at === null ? null
-      : new Date(instant(data.source_succeeded_at)).toISOString(),
+      : new Date(data.source_succeeded_at).toISOString(),
     combined_polling_utf8_bytes: Buffer.byteLength(JSON.stringify(data), "utf8")
   };
 }

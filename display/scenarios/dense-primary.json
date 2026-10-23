@@ -1,0 +1,71 @@
+{
+  "id": "dense-primary",
+  "name": "Dense primary: priority and overflow",
+  "description": "32 supplied primary rows, 12 secondary rows, and larger complete totals exercise admission, optional locations, and truthful overflow.",
+  "agenda": {
+    "schema_version": 1,
+    "state": "current",
+    "time_zone": "America/Los_Angeles",
+    "generated_at": "2026-10-23T18:00:00Z",
+    "source_succeeded_at": "2026-10-23T18:00:00Z",
+    "primary": {
+      "date": "2026-10-23",
+      "label": "Friday, Oct 23",
+      "eligible_total": 47,
+      "occurrences": [
+        { "time_kind": "timed", "id": "primary-001", "title": "Primary commitment 1", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-002", "title": "Primary commitment 2", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-003", "title": "Primary commitment 3", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-004", "title": "Primary commitment 4", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-005", "title": "Primary commitment 5", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-006", "title": "Primary commitment 6", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-007", "title": "Primary commitment 7", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-008", "title": "Primary commitment 8", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-009", "title": "Primary commitment 9", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-010", "title": "Primary commitment 10", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-011", "title": "Primary commitment 11", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-012", "title": "Primary commitment 12", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-013", "title": "Primary commitment 13", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-014", "title": "Primary commitment 14", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-015", "title": "Primary commitment 15", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-016", "title": "Primary commitment 16", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-017", "title": "Primary commitment 17", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-018", "title": "Primary commitment 18", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-019", "title": "Primary commitment 19", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-020", "title": "Primary commitment 20", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-021", "title": "Primary commitment 21", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-022", "title": "Primary commitment 22", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-023", "title": "Primary commitment 23", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-024", "title": "Primary commitment 24", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-025", "title": "Primary commitment 25", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-026", "title": "Primary commitment 26", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-027", "title": "Primary commitment 27", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-028", "title": "Primary commitment 28", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-029", "title": "Primary commitment 29", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-030", "title": "Primary commitment 30", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-031", "title": "Primary commitment 31", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-032", "title": "Primary commitment 32", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" }
+      ]
+    },
+    "secondary": {
+      "date": "2026-10-26",
+      "label": "Monday, Oct 26",
+      "eligible_total": 19,
+      "occurrences": [
+        { "time_kind": "timed", "id": "secondary-001", "title": "Secondary commitment 1", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-002", "title": "Secondary commitment 2", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-003", "title": "Secondary commitment 3", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-004", "title": "Secondary commitment 4", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-005", "title": "Secondary commitment 5", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-006", "title": "Secondary commitment 6", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-007", "title": "Secondary commitment 7", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-008", "title": "Secondary commitment 8", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-009", "title": "Secondary commitment 9", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-010", "title": "Secondary commitment 10", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-011", "title": "Secondary commitment 11", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-012", "title": "Secondary commitment 12", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" }
+      ]
+    },
+    "error": null
+  }
+}

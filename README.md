@@ -174,7 +174,54 @@ For just the adaptive matrix:
 dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restore --nologo --verbosity minimal --filter FullyQualifiedName~AdaptiveDisplayTests
 ```
 
-Fixtures are synthetic agenda-contract data, including busy primary days, secondary overflow, long/escaped strings, optional-location removal, all-day entries, Friday/weekend labels, selected empty days, stale warnings, error categories, and absent source success. Bounded-row fixtures deliberately supply fewer occurrences than `eligible_total` to verify `+N more` includes undisplayed adapter-side commitments; the current adapter still returns `agenda_too_large` rather than truncating. Stale fixtures retain their original source-success time; neither `generated_at` nor rendering advances it.
+The shared version-controlled JSON catalogue in `display\scenarios` supplies the workbench and display checks, including busy primary days, secondary overflow, long/escaped strings, optional-location removal, all-day entries, Friday/weekend labels, selected empty days, stale warnings, error categories, and absent source success. Bounded-row fixtures deliberately supply fewer occurrences than `eligible_total` to verify `+N more` includes undisplayed adapter-side commitments; the current adapter still returns `agenda_too_large` rather than truncating. Stale fixtures retain their original source-success time; neither `generated_at` nor rendering advances it.
+
+## Local agenda UI workbench
+
+After the existing [display setup](#setup-once-per-worktree), launch from this worktree:
+
+```powershell
+node .\scripts\agenda-workbench.mjs
+```
+
+Open the reported loopback URL (default `http://127.0.0.1:8898`). Stop with Ctrl+C. No Outlook access, private calendar, credentials, Azure login, or running Functions host is needed. The workbench uses the real strict Liquid renderer, production templates, installed framework 3.4.3/fonts, and production fitting; it does not reimplement agenda layout.
+
+The baseline defaults to the current Git commit resolved **once at startup**. Its full identity stays visible and fixed even when you save files or create another commit. To use another locally available compatible revision or port:
+
+```powershell
+node .\scripts\agenda-workbench.mjs --baseline <commit-or-ref> --port 8898
+```
+
+Only the committed templates are pinned, not the scenarios or an arbitrary historical runtime. Baselines must declare the current agenda schema in their committed contract and pin the same framework CSS/JavaScript in their renderer. Missing or incompatible history fails explicitly; the tool never checks out old files over your edits, moves its baseline, or silently uses current templates instead. `--port 0` allocates an available port; `--workspace <local-directory>` selects an isolated Git/input workspace while retaining this checkout's installed renderer and assets, as used by browser tests.
+
+The initial view is **Normal mixed agenda / OG Full / Fit to window**. Select one scenario and target for a focused baseline/working-copy pair, or open an on-demand overview of the selected scenario across exactly these targets:
+
+| Target | Native canvas |
+| --- | --- |
+| OG Full | 800 x 480 |
+| X / v2 Full | 1872 x 1404 |
+| X / v2 Half-horizontal | 1872 x 1404, with the production split wrapper |
+| X / v2 Half-vertical | 1872 x 1404, with the production split wrapper |
+
+Fit-to-window scales the completed native documents only. **100% (scroll)** exposes their unscaled native dimensions with scrolling; neither option changes wrapping, event admission, or fitting. X retains the framework's native 1.8 transform, not an additional browser-density scale. Every side/target is a separately sandboxed document. In an overview taller than the window, scroll through the four pairs to finish fitting them; offscreen previews remain explicitly pending rather than failing because the browser pauses their animation frames. Readiness timeouts pause while previews or the browser tab are not visible.
+
+Saving a `display\src\*.liquid` template refreshes only working-copy presentation. Saving a scenario refreshes both sides with exactly the same current normalized payload. Scenario/target selections are retained. After warm startup, a selected template- or scenario-save comparison must finish within **five seconds**, including required font loading and both production readiness signals; initial setup/startup, overview loading, and on-demand checks are separate. Loading, disconnected updates, invalid inputs, rendering/asset failures, and readiness timeouts are visibly different from ready; an old successful render is never presented as the latest success.
+
+**Check layout** runs the shared browser assertions on the currently displayed ready documents. Results identify target, side, and concrete clipping, readability, overlap, native-dimension, count/overflow, source-state, or admission failures. An edit invalidates old check results. These are on-demand invariant checks, not screenshot equality or visual approval; comparative optional-location and raster-ink coverage remains in the automated harness.
+
+### Authoring agenda scenarios
+
+Copy a readable file such as `display\scenarios\normal-mixed.json`, give it a lowercase kebab-case filename, and set its matching `id`. Each file has exactly `id`, `name`, `description`, and `agenda`. The `agenda` value follows the [version-1 normalized contract](docs/agenda-contract.md#result), including supplied working-day labels, complete counts, timed or date-only occurrences, fixed `generated_at` reference time, original `source_succeeded_at`, and current/stale/error state. Invalid JSON, field types, timing, or inconsistent source states produce filename/field diagnostics, not an empty agenda. Error scenarios may have no source-success timestamp; current/stale scenarios may not invent or omit one.
+
+The catalogue covers normal timed/all-day mixes, multiday ranges, all empty-day combinations, dense agendas and bounded-row overflow, optional locations, long/unusual text, midnight/offset/working-day examples, and freshness/errors. It is presentation data only: it does **not** parse feeds, expand recurrence, apply exclusions, select working days, or exercise cache/refresh transitions. Those remain covered by the existing source/HTTP tests. Commit synthetic inputs only, never private calendar content.
+
+For focused browser and display checks:
+
+```powershell
+dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restore --nologo --verbosity minimal --filter "FullyQualifiedName~WorkbenchTests|FullyQualifiedName~DisplayTests"
+```
+
+Workbench checks launch the public process in disposable Git/input workspaces and use real Chromium. Warm template/scenario-save measurements are saved to ignored `artifacts\workbench-latency.json`; all eight selected-target measurements must be at most 5,000 ms. The shared catalogue also runs through the native display matrix, including both OG half placements that are intentionally absent from the interactive workbench. Use the authoritative `scripts\validate.ps1` Fast/Full scopes for normal validation; nothing runs the full suite on every save.
 
 ## HTTP-to-display example
 

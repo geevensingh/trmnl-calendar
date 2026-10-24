@@ -1,106 +1,49 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { checkout } from "./display-toolchain-fixture.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
-async function checkout(t) {
-  const directory = await mkdtemp(join(tmpdir(), "agenda display setup "));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const scripts = join(directory, "scripts");
-  const tools = join(directory, "synthetic tools");
-  const sdkHome = join(directory, "sdk home");
-  const browser = join(directory, "tests", "CalendarAgenda.Tests", "bin", "Debug", "net10.0");
-  for (const path of [scripts, tools, sdkHome, browser])
-    await mkdir(path, { recursive: true });
-  const setup = join(scripts, "setup-display.ps1");
-  await cp(join(root, "scripts", "setup-display.ps1"), setup);
-  const calls = join(directory, "calls.jsonl");
-  const ruby = join(tools, "ruby.ps1");
-  await writeFile(ruby, `
-    @{ tool = 'ruby'; arguments = @($args) } | ConvertTo-Json -Compress |
-      Add-Content -LiteralPath $env:SETUP_CALLS
-    $global:LASTEXITCODE = if ($env:SETUP_FAIL -eq "ruby:$($args[1])") { 23 } else { 0 }
-  `);
-  await writeFile(join(browser, "playwright.ps1"), `
-    @{ tool = 'browser'; arguments = @($args) } | ConvertTo-Json -Compress |
-      Add-Content -LiteralPath $env:SETUP_CALLS
-    dotnet fixture-playwright.dll @args
-    if ($env:SETUP_FAIL -eq 'browser') { $global:LASTEXITCODE = 31 }
-  `);
-  const run = (environment = {}) => {
-    const inherited = { ...process.env };
-    for (const name of Object.keys(inherited)) {
-      if (["DOTNET_GENERATE_ASPNET_CERTIFICATE", "DOTNET_CLI_HOME", "TRMNL_RUBY"].includes(name.toUpperCase()) ||
-          name.toUpperCase().startsWith("SETUP_"))
-        delete inherited[name];
-    }
-    return spawnSync("pwsh", [
-      "-NoProfile", "-NonInteractive", "-Command", `
-        $ErrorActionPreference = 'Stop'
-        $env:PATH = $env:SETUP_TOOLS
-        function global:dotnet {
-          $state = Join-Path $env:DOTNET_CLI_HOME 'fixture-first-run'
-          $firstRun = !(Test-Path -LiteralPath $state)
-          @{
-            tool = 'dotnet'
-            arguments = @($args)
-            sdkHome = $env:DOTNET_CLI_HOME
-            firstRun = $firstRun
-            certificateGeneration = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE
-            certificateAttempt = $firstRun -and $env:DOTNET_GENERATE_ASPNET_CERTIFICATE -ne 'false'
-          } | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:SETUP_CALLS
-          Set-Content -LiteralPath $state 'synthetic SDK first-run state'
-          $global:LASTEXITCODE = if ($env:SETUP_FAIL -eq "dotnet:$($args[0])") { 29 } else { 0 }
-        }
-        function global:Invoke-WebRequest {
-          param([string]$Uri, [string]$OutFile, [int]$TimeoutSec)
-          @{ tool = 'download'; arguments = @($Uri) } | ConvertTo-Json -Compress |
-            Add-Content -LiteralPath $env:SETUP_CALLS
-          Set-Content -LiteralPath $OutFile 'synthetic framework asset'
-        }
-        function global:Expand-Archive {
-          param([string]$Path, [string]$DestinationPath, [switch]$Force)
-          @{ tool = 'unzip'; arguments = @($Path) } | ConvertTo-Json -Compress |
-            Add-Content -LiteralPath $env:SETUP_CALLS
-          Set-Content -LiteralPath (Join-Path $DestinationPath 'synthetic.woff2') 'synthetic font'
-        }
-        & $env:SETUP_SCRIPT
-      `
-    ], {
-      cwd: directory, encoding: "utf8", timeout: 30_000,
-      env: {
-        ...inherited, SETUP_SCRIPT: setup, SETUP_CALLS: calls, SETUP_TOOLS: tools,
-        DOTNET_CLI_HOME: sdkHome, TRMNL_RUBY: ruby, SETUP_FAIL: "", ...environment
-      }
-    });
-  };
-  return {
-    directory, sdkHome, run,
-    calls: async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/).map(JSON.parse)
-  };
-}
-
 function setupCommands(directory) {
-  const bundle = join(directory, "synthetic tools", "bundle");
+  const project = join(directory, "tests", "CalendarAgenda.Tests", "CalendarAgenda.Tests.csproj");
+  const browserCheck = ["screenshot", "--browser", "chromium", "--timeout", 15000, "about:blank"];
   return [
-    ["ruby", bundle, "config", "set", "--local", "path", "vendor/bundle"],
-    ["ruby", bundle, "install", "--quiet"],
+    ["dotnet", "--version"],
+    ["bundle", "config", "set", "--local", "path", "vendor/bundle"],
+    ["bundle", "config", "set", "--local", "frozen", "true"],
+    ["bundle", "config", "set", "--local", "disable_shared_gems", "true"],
+    ["bundle", "check"],
+    ["bundle", "install", "--quiet"],
     ["download", "https://trmnl.com/css/3.4.3/plugins.css"],
     ["download", "https://trmnl.com/js/3.4.3/plugins.js"],
     ["download", "https://trmnl.com/fonts/bundles/trmnl/trmnl-fonts-bundle--trmnl.zip"],
-    ["unzip", join(directory, ".tools", "trmnl-fonts.zip")],
+    ["extract", "trmnl-fonts.zip"],
     ["download", "https://trmnl.com/fonts/bundles/classic/trmnl-fonts-bundle--classic.zip"],
-    ["unzip", join(directory, ".tools", "classic-fonts.zip")],
-    ["dotnet", "restore", ".\\src\\CalendarAgenda\\CalendarAgenda.csproj", "--nologo", "--verbosity", "quiet"],
-    ["dotnet", "build", ".\\tests\\CalendarAgenda.Tests\\CalendarAgenda.Tests.csproj", "--nologo", "--verbosity", "quiet"],
-    ["browser", "install", "chromium"],
-    ["dotnet", "fixture-playwright.dll", "install", "chromium"]
+    ["extract", "classic-fonts.zip"],
+    ["dotnet", "restore", project, "--nologo", "--verbosity", "quiet"],
+    ["dotnet", "build", project, "--no-restore", "--nologo", "--verbosity", "quiet"],
+    ["playwright", ...browserCheck],
+    ["dotnet", "fixture-playwright.dll", ...browserCheck],
+    ["playwright", "install", "chromium"],
+    ["dotnet", "fixture-playwright.dll", "install", "chromium"],
+    ["playwright", ...browserCheck],
+    ["dotnet", "fixture-playwright.dll", ...browserCheck]
   ];
+}
+
+function setupCalls(calls) {
+  return calls.flatMap(call => {
+    if (call.tool === "ruby" && call.arguments[1].includes("Gem.bin_path"))
+      return [["bundle", ...call.arguments.slice(3)]];
+    if (call.tool === "download") return [["download", call.uri]];
+    if (call.tool === "extract") return [["extract", basename(call.archive)]];
+    if (call.tool === "dotnet" || call.tool === "playwright")
+      return [[call.tool, ...(call.arguments.includes("screenshot") ? call.arguments.slice(0, -1) : call.arguments)]];
+    return [];
+  });
 }
 
 test("display setup suppresses certificate generation before the first SDK call in a fresh SDK home", async t => {
@@ -113,7 +56,7 @@ test("display setup suppresses certificate generation before the first SDK call 
   assert.deepEqual({
     sdkHome: first.sdkHome,
     firstRun: first.firstRun,
-    certificateGeneration: first.certificateGeneration,
+    certificateGeneration: first.certificate,
     certificateAttempt: first.certificateAttempt
   }, {
     sdkHome: fixture.sdkHome,
@@ -121,7 +64,10 @@ test("display setup suppresses certificate generation before the first SDK call 
     certificateGeneration: "false",
     certificateAttempt: false
   });
-  assert.deepEqual(calls.map(call => call.certificateGeneration), ["false", "false", "false"]);
+  assert.deepEqual(calls.map(call => call.arguments[0]), [
+    "--version", "restore", "build", "fixture-playwright.dll", "fixture-playwright.dll", "fixture-playwright.dll"
+  ]);
+  assert.ok(calls.every(call => call.certificate === "false"));
   assert.ok(calls.every(call => !call.certificateAttempt));
 });
 
@@ -133,15 +79,18 @@ test("display setup overrides inherited certificate generation for every SDK cal
   for (let run = 0; run < 2; run++) {
     const result = fixture.run({ DOTNET_GENERATE_ASPNET_CERTIFICATE: "true" });
     assert.equal(result.status, 0, result.stdout + result.stderr);
+    const { before, after } = await fixture.environment();
+    assert.deepEqual(after, before);
   }
   const calls = (await fixture.calls()).filter(call => call.tool === "dotnet");
   assert.deepEqual(calls.map(call => call.arguments[0]), [
-    "restore", "build", "fixture-playwright.dll", "restore", "build", "fixture-playwright.dll"
+    "--version", "restore", "build", "fixture-playwright.dll", "fixture-playwright.dll", "fixture-playwright.dll",
+    "--version", "restore", "build", "fixture-playwright.dll"
   ]);
-  assert.deepEqual(calls.map(call => call.firstRun), [true, false, false, false, false, false]);
+  assert.deepEqual(calls.map(call => call.firstRun), [true, ...Array(9).fill(false)]);
   for (const call of calls) {
     assert.equal(call.sdkHome, fixture.sdkHome);
-    assert.equal(call.certificateGeneration, "false");
+    assert.equal(call.certificate, "false");
     assert.equal(call.certificateAttempt, false);
   }
   assert.deepEqual(names.map(name => process.env[name]), parentEnvironment);
@@ -152,29 +101,32 @@ test("successful display setup preserves Bundler, framework, restore, build, and
   const result = fixture.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(
-    (await fixture.calls()).map(call => [call.tool, ...call.arguments]),
+    setupCalls(await fixture.calls()),
     setupCommands(fixture.directory)
   );
 });
 
 test("display setup reports failed stages and stops before dependent commands", async t => {
   for (const [failure, message, completed] of [
-    ["ruby:config", "Bundler configuration failed.", 1],
-    ["ruby:install", "TRMNL Liquid dependency restore failed.", 2],
-    ["dotnet:restore", "Functions restore failed.", 9],
-    ["dotnet:build", "Display harness build failed.", 10],
-    ["browser", "Browser restore failed.", 12],
-    ["dotnet:fixture-playwright.dll", "Browser restore failed.", 12]
+    ["dotnet:--version", ".NET 10 SDK", 1],
+    ["bundle-config", "Bundler configuration failed.", 2],
+    ["bundle-install", "gem restore failed.", 6],
+    ["dotnet:restore", "dependency restore failed.", 13],
+    ["dotnet:build", "Display harness build failed.", 14],
+    ["browser-install", "Chromium setup failed.", 18],
+    ["dotnet:fixture-playwright.dll", "Chromium setup failed.", 18]
   ]) {
     await t.test(failure, async t => {
       const fixture = await checkout(t);
-      const result = fixture.run({ SETUP_FAIL: failure });
+      const result = fixture.run({ DISPLAY_FAIL: failure, DOTNET_GENERATE_ASPNET_CERTIFICATE: "true" });
       assert.equal(result.status, 1, result.stdout + result.stderr);
       assert.ok(result.stderr.includes(message), result.stdout + result.stderr);
       assert.deepEqual(
-        (await fixture.calls()).map(call => [call.tool, ...call.arguments]),
+        setupCalls(await fixture.calls()),
         setupCommands(fixture.directory).slice(0, completed)
       );
+      const { before, after } = await fixture.environment();
+      assert.deepEqual(after, before);
     });
   }
 });
@@ -188,12 +140,12 @@ test("the documented Fast-only restore suppresses first-run certificates without
   for (const generation of [undefined, "true"]) {
     await t.test(generation ?? "absent", async t => {
       const fixture = await checkout(t);
-      await rm(join(fixture.directory, "synthetic tools", "ruby.ps1"));
+      await rm(join(fixture.directory, "scripts"), { recursive: true });
       await rm(join(fixture.directory, "tests", "CalendarAgenda.Tests", "bin"), { recursive: true });
       const restore = join(fixture.directory, "fast-restore.ps1");
       await writeFile(restore, block[1]);
       assert.deepEqual(await readdir(fixture.sdkHome), []);
-      const environment = { SETUP_SCRIPT: restore };
+      const environment = { DISPLAY_SCRIPT: restore, TRMNL_RUBY: "missing-synthetic-ruby", DISPLAY_MISSING_RUBY: "1" };
       if (generation !== undefined) environment.DOTNET_GENERATE_ASPNET_CERTIFICATE = generation;
       const result = fixture.run(environment);
       assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -202,7 +154,7 @@ test("the documented Fast-only restore suppresses first-run certificates without
         arguments: ["restore", ".\\tests\\CalendarAgenda.Tests\\CalendarAgenda.Tests.csproj"],
         sdkHome: fixture.sdkHome,
         firstRun: true,
-        certificateGeneration: "false",
+        certificate: "false",
         certificateAttempt: false
       }]);
     });

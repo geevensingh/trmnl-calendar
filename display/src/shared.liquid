@@ -18,8 +18,8 @@
   .agenda .table.table--large tbody tr { height: auto; }
   .agenda .table td { padding: 2px 0; vertical-align: top; }
   .agenda .agenda-day td .title {
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
-    width: 100%; overflow: hidden; overflow-wrap: anywhere;
+    display: block; width: 100%; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
   }
   .agenda .agenda-location {
     display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

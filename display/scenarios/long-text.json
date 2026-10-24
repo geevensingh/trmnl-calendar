@@ -1,7 +1,7 @@
 {
   "id": "long-text",
   "name": "Long and unusual text",
-  "description": "Wrapping, truncation, accented/non-Latin text, and markup-shaped text without executable markup.",
+  "description": "Single-line title ellipsis, optional location truncation, accented/non-Latin text, and markup-shaped text without executable markup.",
   "agenda": {
     "schema_version": 1,
     "state": "current",

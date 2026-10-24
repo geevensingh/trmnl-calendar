@@ -6,6 +6,10 @@ require "json"
 
 request = JSON.parse($stdin.read)
 image = ChunkyPNG::Image.from_file(request.fetch("image"))
+comparison = ChunkyPNG::Image.from_file(request.fetch("comparison_image")) if request.key?("comparison_image")
+if comparison && (comparison.width != image.width || comparison.height != image.height)
+  abort "Raster comparison must use identical physical dimensions."
+end
 results = request.fetch("regions").map do |region|
   left = region.fetch("x").floor
   top = region.fetch("y").floor
@@ -16,15 +20,19 @@ results = request.fetch("regions").map do |region|
   end
 
   ink = 0
+  different = 0
   (top...bottom).each do |y|
     (left...right).each do |x|
       color = image[x, y]
+      different += 1 if comparison && color != comparison[x, y]
       if ChunkyPNG::Color.a(color).positive? && ChunkyPNG::Color.r(color) < 96 &&
           ChunkyPNG::Color.g(color) < 96 && ChunkyPNG::Color.b(color) < 96
         ink += 1
       end
     end
   end
-  { text: region.fetch("text"), dark_pixels: ink }
+  result = { text: region.fetch("text"), dark_pixels: ink }
+  result[:different_pixels] = different if comparison
+  result
 end
 puts JSON.generate(results)

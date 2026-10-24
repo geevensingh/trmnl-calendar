@@ -38,10 +38,13 @@ public sealed class AdaptiveDisplayTests
               const title = row.querySelector("td .title");
               const time = row.querySelector(".agenda-time");
               const style = getComputedStyle(title);
+              const range = document.createRange();
+              range.selectNodeContents(title);
               return {
                 count: document.querySelectorAll(".agenda-secondary tbody tr:not([hidden])").length,
                 font: style.fontFamily, fontSize: style.fontSize, lineHeight: style.lineHeight,
-                titleClamp: style.webkitLineClamp, timeWidth: time.getBoundingClientRect().width,
+                titleLines: new Set([...range.getClientRects()].map(rect => rect.top)).size,
+                timeWidth: time.getBoundingClientRect().width,
                 padding: getComputedStyle(time).padding, rowHeight: row.getBoundingClientRect().height
               };
             }
@@ -56,7 +59,7 @@ public sealed class AdaptiveDisplayTests
         Assert.Equal("TRMNL21", metrics.GetProperty("font").GetString());
         Assert.Equal("21px", metrics.GetProperty("fontSize").GetString());
         Assert.Equal("29.4px", metrics.GetProperty("lineHeight").GetString());
-        Assert.Equal("2", metrics.GetProperty("titleClamp").GetString());
+        Assert.Equal(1, metrics.GetProperty("titleLines").GetInt32());
         Assert.Equal(230, metrics.GetProperty("timeWidth").GetInt32());
         Assert.Equal("2px 0px", metrics.GetProperty("padding").GetString());
         Assert.Equal(33.390625, metrics.GetProperty("rowHeight").GetDouble(), precision: 4);
@@ -320,6 +323,164 @@ public sealed class AdaptiveDisplayTests
         await VisibleInsideView(page.Locator(".agenda-primary").GetByText("Studio A", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("Primary commitment 1", new() { Exact = true }));
         await VisibleInsideView(page.Locator("[data-agenda-source]"));
+    }
+
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Dense_long_titles_use_one_title_line_and_keep_truthful_ordered_fitting(
+        NativeView view)
+    {
+        var data = DenseLongTitleAgenda();
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await NativeBounds(page, view);
+
+        var rows = page.Locator(".agenda-primary tbody tr:visible");
+        var count = await rows.CountAsync();
+        Assert.InRange(count, 1, 31);
+        Assert.Equal(0, await page.Locator(".agenda-secondary tbody tr:visible").CountAsync());
+        await DayCount(page, "primary", 47);
+        await DayCount(page, "secondary", 19);
+        await VisibleInsideView(page.Locator("[data-agenda-source]"));
+        for (var index = 0; index < count; index++)
+        {
+            Assert.Equal(data["primary"]!["occurrences"]![index]!["title"]!.GetValue<string>(),
+                await rows.Nth(index).Locator("td .title").TextContentAsync());
+            await VisibleInsideView(rows.Nth(index).Locator("[data-agenda-start]"));
+        }
+
+        var measurements = await rows.EvaluateAllAsync<JsonElement>("""
+            rows => rows.map(row => {
+              const title = row.querySelector("td .title");
+              const style = getComputedStyle(title);
+              const time = row.querySelector(".agenda-time");
+              const timing = time.querySelector(".label");
+              const range = document.createRange();
+              range.selectNodeContents(title);
+              return {
+                titleHeight: parseFloat(style.height), lineHeight: parseFloat(style.lineHeight),
+                fontSize: parseFloat(style.fontSize), fontFamily: style.fontFamily,
+                textLines: [...new Set([...range.getClientRects()].map(rect => rect.top))].length,
+                timeWidth: getComputedStyle(time).width,
+                timeFontSize: getComputedStyle(timing).fontSize,
+                timeFontFamily: getComputedStyle(timing).fontFamily,
+                paddingTop: getComputedStyle(time).paddingTop,
+                paddingBottom: getComputedStyle(time).paddingBottom
+              };
+            })
+            """);
+        Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
+        await page.ScreenshotAsync(new()
+        {
+            Path = Path.Combine(DisplayTests.Root, "artifacts", $"title-density-{view.Device}-{view.Placement}.png")
+        });
+        await File.WriteAllTextAsync(
+            Path.Combine(DisplayTests.Root, "artifacts", $"title-density-{view.Device}-{view.Placement}.json"),
+            JsonSerializer.Serialize(new { count, measurements }));
+        Assert.True(measurements.EnumerateArray().All(item =>
+            item.GetProperty("textLines").GetInt32() == 1
+            && item.GetProperty("titleHeight").GetDouble() <= item.GetProperty("lineHeight").GetDouble() + 1),
+            $"{view.Device}/{view.Placement}: {count} displayed primary events; {measurements[0]}");
+        if (view is { Device: "og", Placement: "full" })
+            Assert.True(count > 4, "The unchanged two-line renderer displayed four events for this same fixture.");
+        await ReadableRows(rows);
+        var required = page.Locator("""
+            .agenda-heading .title, .agenda-day-label .label, [data-agenda-source],
+            .agenda-primary tbody tr:not([hidden]) .label--large,
+            .agenda-primary tbody tr:not([hidden]) td .title
+            """);
+        Assert.Equal(5 + 2 * count, await required.CountAsync());
+        await VisibleInk(page, $"title-density-{view.Device}-{view.Placement}", view, await required.AllAsync());
+    }
+
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Timed_and_all_day_titles_preserve_text_and_typography_with_visible_end_ellipsis(
+        NativeView view)
+    {
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        foreach (var (name, text) in new[]
+        {
+            ("short", "Plan"),
+            ("long", string.Join(" ", Enumerable.Repeat("A very long calendar planning title", 20))),
+            ("unbroken", new string('W', 600)),
+            ("markup", $"<svg onload=window.pwn=1> & \"quoted\" {new string('W', 600)}")
+        })
+            foreach (var allDay in new[] { false, true })
+            {
+                var data = Agenda(primaryRows: 1, secondaryRows: 0);
+                var occurrence = data["primary"]!["occurrences"]![0]!.AsObject();
+                occurrence["title"] = text;
+                occurrence["location"] = null;
+                if (allDay)
+                {
+                    occurrence["time_kind"] = "all_day";
+                    occurrence.Remove("start_at");
+                    occurrence.Remove("end_at");
+                    occurrence["start_date"] = "2026-10-23";
+                    occurrence["end_date_exclusive"] = "2026-10-24";
+                }
+                await DisplayTests.Show(page, data, view.Placement, view.Device);
+                await NativeBounds(page, view);
+                var row = page.Locator(".agenda-primary tbody tr:visible");
+                await Assertions.Expect(row).ToHaveCountAsync(1);
+                var title = row.Locator("td .title");
+                Assert.Equal(text, await title.TextContentAsync());
+                await VisibleInsideView(title, textMayBeTruncated: true);
+                await ReadableRows(row);
+                var timing = row.Locator(".agenda-time .label");
+                Assert.Equal(allDay ? "All day" : "11:00 AM - 12:00 PM",
+                    (await timing.InnerTextAsync()).Trim());
+                await VisibleInsideView(timing);
+                Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
+                Assert.Equal(0, await page.Locator(".agenda svg, .agenda img, .agenda script").CountAsync());
+                var metrics = await row.EvaluateAsync<JsonElement>("""
+                    row => {
+                      const title = row.querySelector("td .title");
+                      const time = row.querySelector(".agenda-time");
+                      const label = time.querySelector(".label");
+                      const style = getComputedStyle(title);
+                      return {
+                        font: style.fontFamily, size: parseFloat(style.fontSize),
+                        lineHeight: parseFloat(style.lineHeight),
+                        timeSize: parseFloat(getComputedStyle(label).fontSize),
+                        timeFont: getComputedStyle(label).fontFamily,
+                        timeWidth: parseFloat(getComputedStyle(time).width),
+                        paddingTop: getComputedStyle(time).paddingTop,
+                        paddingBottom: getComputedStyle(time).paddingBottom,
+                        timeAbove: label.getBoundingClientRect().bottom <= title.getBoundingClientRect().top + 1,
+                        overflowing: title.scrollWidth > title.clientWidth
+                      };
+                    }
+                    """);
+                Assert.Equal(21, metrics.GetProperty("size").GetDouble());
+                Assert.Equal(29.4, metrics.GetProperty("lineHeight").GetDouble(), precision: 1);
+                Assert.Equal(view.Device == "og" ? "TRMNL21" : "\"Inter Variable\", Inter",
+                    metrics.GetProperty("font").GetString());
+                Assert.Equal(21, metrics.GetProperty("timeSize").GetDouble());
+                Assert.Equal("\"Inter Variable\", Inter", metrics.GetProperty("timeFont").GetString());
+                Assert.Equal("2px", metrics.GetProperty("paddingTop").GetString());
+                Assert.Equal("2px", metrics.GetProperty("paddingBottom").GetString());
+                var compact = view.LogicalViewWidth < 600;
+                Assert.Equal(compact, metrics.GetProperty("timeAbove").GetBoolean());
+                if (!compact) Assert.Equal(230, metrics.GetProperty("timeWidth").GetDouble());
+                Assert.Equal(name != "short", metrics.GetProperty("overflowing").GetBoolean());
+                await TitleEndInk(page, title,
+                    $"title-{view.Device}-{view.Placement}-{name}-{(allDay ? "all-day" : "timed")}",
+                    view, overflowing: name != "short");
+            }
     }
 
     [Theory]
@@ -619,8 +780,7 @@ public sealed class AdaptiveDisplayTests
     public async Task Native_capture_readiness_is_not_published_before_production_fitting_completes(
         NativeView view)
     {
-        var data = Agenda(primaryRows: 32, secondaryRows: 12);
-        data["primary"]!["eligible_total"] = 47;
+        var data = DenseLongTitleAgenda();
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
         var page = await browser.NewPageAsync(new()
@@ -651,7 +811,21 @@ public sealed class AdaptiveDisplayTests
                     rows: [...primary.querySelectorAll("tbody tr")].filter(row => !row.hidden).length,
                     count: count.textContent,
                     countInside: inside(count),
-                    sourceInside: inside(document.querySelector("[data-agenda-source]"))
+                    secondaryCount: agenda.querySelector(".agenda-secondary .agenda-count").textContent,
+                    sourceInside: inside(document.querySelector("[data-agenda-source]")),
+                    countsInside: [...agenda.querySelectorAll(".agenda-heading .title, .agenda-day-label .label")]
+                      .every(inside),
+                    timesInside: [...primary.querySelectorAll("tr:not([hidden]) [data-agenda-start]")]
+                      .every(time => inside(time) && time.textContent === "11:00 AM - 12:00 PM"),
+                    titlesCorrect: [...primary.querySelectorAll("tr:not([hidden]) td .title")].every(title => {
+                      const style = getComputedStyle(title);
+                      const range = document.createRange();
+                      range.selectNodeContents(title);
+                      const rectangles = [...range.getClientRects()];
+                      return inside(title) && parseFloat(style.fontSize) === 21
+                        && title.clientHeight <= Math.ceil(parseFloat(style.lineHeight)) + 1
+                        && rectangles.every(rect => Math.abs(rect.top - rectangles[0].top) < 1);
+                    })
                   });
                 }
               });
@@ -667,9 +841,28 @@ public sealed class AdaptiveDisplayTests
             var count = snapshot.GetProperty("rows").GetInt32();
             Assert.InRange(count, 1, 31);
             Assert.Equal($"{count} of 47 events shown", snapshot.GetProperty("count").GetString());
+            Assert.Equal("0 of 19 events shown", snapshot.GetProperty("secondaryCount").GetString());
             Assert.True(snapshot.GetProperty("countInside").GetBoolean());
             Assert.True(snapshot.GetProperty("sourceInside").GetBoolean());
+            Assert.True(snapshot.GetProperty("countsInside").GetBoolean());
+            Assert.True(snapshot.GetProperty("timesInside").GetBoolean());
+            Assert.True(snapshot.GetProperty("titlesCorrect").GetBoolean());
         }
+    }
+
+    private static JsonObject DenseLongTitleAgenda()
+    {
+        var data = Agenda(primaryRows: 32, secondaryRows: 12);
+        data["primary"]!["eligible_total"] = 47;
+        data["secondary"]!["eligible_total"] = 19;
+        foreach (var day in new[] { "primary", "secondary" })
+            foreach (var occurrence in data[day]!["occurrences"]!.AsArray())
+            {
+                occurrence!["title"] = $"{occurrence["title"]!.GetValue<string>()}: " +
+                    string.Concat(Enumerable.Repeat("Planning across native placements at unchanged readable typography. ", 8));
+                occurrence["location"] = null;
+            }
+        return data;
     }
 
     private static JsonObject Agenda(int primaryRows, int secondaryRows)
@@ -736,7 +929,8 @@ public sealed class AdaptiveDisplayTests
         var regions = new List<JsonElement>();
         foreach (var content in required)
         {
-            await VisibleInsideView(content);
+            await VisibleInsideView(content, textMayBeTruncated:
+                await content.EvaluateAsync<bool>("element => element.matches('td .title')"));
             regions.Add(await content.EvaluateAsync<JsonElement>("""
                 element => {
                   const box = element.getBoundingClientRect();
@@ -754,6 +948,43 @@ public sealed class AdaptiveDisplayTests
         foreach (var region in ink.RootElement.EnumerateArray())
             Assert.True(region.GetProperty("dark_pixels").GetInt32() >= 20,
                 $"Required text has no readable raster ink: {region.GetProperty("text").GetString()}");
+    }
+
+    private static async Task TitleEndInk(IPage page, ILocator title, string name, NativeView view, bool overflowing)
+    {
+        var region = await title.EvaluateAsync<JsonElement>("""
+            (element, density) => {
+              const box = element.getBoundingClientRect();
+              const width = Math.min(box.width, 48 * density);
+              return { text: element.textContent, x: box.right - width, y: box.top, width, height: box.height };
+            }
+            """, (double)view.Density);
+        Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
+        var image = Path.Combine(DisplayTests.Root, "artifacts", $"{name}.png");
+        var comparison = Path.Combine(DisplayTests.Root, "artifacts", $"{name}-clip.png");
+        var screenshot = await page.ScreenshotAsync(new() { Path = image });
+        Assert.Equal(view.PhysicalWidth, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
+        Assert.Equal(view.PhysicalHeight, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
+        await title.EvaluateAsync("element => { element.style.textOverflow = 'clip'; }");
+        try
+        {
+            await page.ScreenshotAsync(new() { Path = comparison });
+        }
+        finally
+        {
+            await title.EvaluateAsync("element => { element.style.removeProperty('text-overflow'); }");
+        }
+        using var ink = JsonDocument.Parse(DisplayTests.RunRuby(
+            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"),
+            new { image, comparison_image = comparison, regions = new[] { region } }));
+        var result = ink.RootElement[0];
+        if (overflowing)
+        {
+            Assert.True(result.GetProperty("dark_pixels").GetInt32() >= 3, "The title end must paint visible ink.");
+            Assert.True(result.GetProperty("different_pixels").GetInt32() > 0,
+                "The painted end ellipsis must differ from silent hard clipping.");
+        }
+        else Assert.Equal(0, result.GetProperty("different_pixels").GetInt32());
     }
 
     private static async Task ReadableRows(ILocator rows)

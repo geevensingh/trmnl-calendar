@@ -371,7 +371,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(2, current.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
             Assert.DoesNotContain("OOF", current.RootElement.GetRawText());
             await Show(current.RootElement, "current", "Oct 19, 2026, 9:30 AM PDT",
-                "2 eligible events", "0 eligible events", "Detached workshop", "All day",
+                "2 events", "No remaining events", "Detached workshop", "All day",
                 "Proofreading detached session", "12:00 PM - 1:00 PM");
 
             first.Clock.Advance(TimeSpan.FromMinutes(5));
@@ -380,7 +380,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(2, edited.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
             Assert.DoesNotContain("Proofreading", edited.RootElement.GetRawText());
             await Show(edited.RootElement, "edited", "Oct 19, 2026, 9:30 AM PDT",
-                "2 eligible events", "0 eligible events", "Detached workshop", "All day",
+                "2 events", "No remaining events", "Detached workshop", "All day",
                 "OOF detached planning", "10:00 AM - 11:00 AM");
         }
 
@@ -395,7 +395,7 @@ public sealed partial class AgendaHttpTests
             stale.RootElement.GetProperty("primary").GetProperty("occurrences").EnumerateArray()
                 .Select(item => item.GetProperty("title").GetString()));
         await Show(stale.RootElement, "stale", "Oct 19, 2026, 9:30 AM PDT",
-            "3 eligible events", "0 eligible events", "Stale agenda", "Detached workshop", "All day",
+            "3 events", "No remaining events", "Stale agenda", "Detached workshop", "All day",
             "A detached recurring change must specify a single complete occurrence.");
 
         recreated.Clock.Advance(TimeSpan.FromMinutes(40) - TimeSpan.FromTicks(1));

@@ -74,7 +74,7 @@ export function rowProblems(rows) {
   return problems;
 }
 
-export function checkLayout(document, agenda, target) {
+export function checkLayout(document, agenda, target, allowLegacy = false) {
   const findings = [];
   const add = (rule, passed, message) => findings.push({ rule, passed: Boolean(passed), message });
   const requireText = (element, name, truncated = false) =>
@@ -84,6 +84,10 @@ export function checkLayout(document, agenda, target) {
   const screen = document.querySelector(".screen");
   add("structure", root && view && screen, "The production agenda, view, and screen must exist.");
   if (!root || !view || !screen) return findings;
+  const legacy = allowLegacy && Boolean(view.querySelector(".agenda-footer"));
+  if (!legacy)
+    add("structure", !view.querySelector(".agenda-footer, .agenda-overflow, .title_bar"),
+      "Counts and source information must not reserve standalone overflow or footer space.");
 
   const bounds = screen.getBoundingClientRect();
   add("dimensions", Math.abs(bounds.width - target.width) < 1 && Math.abs(bounds.height - target.height) < 1,
@@ -131,14 +135,38 @@ export function checkLayout(document, agenda, target) {
     const heading = element.querySelector(".agenda-heading .title");
     const count = element.querySelector(".agenda-heading .label");
     requireText(heading, `${name} date label`);
-    requireText(count, `${name} eligible count`);
     add("dates", heading?.textContent.trim() === day.label, `The supplied ${name} day label must not change.`);
-    add("counts", count?.textContent.trim() === `${day.eligible_total} eligible event${day.eligible_total === 1 ? "" : "s"}`,
-      `The ${name} count must use the complete eligible total.`);
 
     const rows = [...element.querySelectorAll("tbody tr")];
     const shown = rows.filter(visible);
     visibleCounts[name] = shown.length;
+    requireText(count, `${name} count or empty message`);
+    const noun = day.eligible_total === 1 ? "event" : "events";
+    const expected = legacy ? `${day.eligible_total} eligible ${noun}`
+      : day.eligible_total === 0 ? "No remaining events"
+      : shown.length === day.eligible_total ? `${day.eligible_total} ${noun}`
+      : `${shown.length} of ${day.eligible_total} ${noun} shown`;
+    add("counts", count?.textContent.trim() === expected,
+      `The ${name} count must agree with displayed rows and the complete eligible total: ${expected}.`);
+    if (!legacy && heading && count) {
+      const dateBox = heading.getBoundingClientRect();
+      const countBox = count.getBoundingClientRect();
+      const headerBox = element.querySelector(".agenda-heading").getBoundingClientRect();
+      add("heading", Math.abs(dateBox.left - headerBox.left) < 1 && countBox.left >= dateBox.right
+        && countBox.left - dateBox.right <= 12 * target.width / screen.clientWidth
+        && Math.max(dateBox.top, countBox.top) < Math.min(dateBox.bottom, countBox.bottom),
+      `${name} date and count/empty message must share a left-aligned line.`);
+      if (name === "primary" && source) {
+        const sourceBox = source.getBoundingClientRect();
+        add("source", source.closest(".agenda-heading") === element.querySelector(".agenda-heading")
+          && separate(sourceBox, dateBox) && separate(sourceBox, countBox),
+        "Source-success information must be inside the primary header, separate from its date/count.");
+        add("source", view.clientWidth < 600
+          ? sourceBox.top >= Math.max(dateBox.bottom, countBox.bottom) - 1
+          : Math.abs(sourceBox.right - headerBox.right) < 1,
+        "Narrow source metadata uses a second header line; wide source metadata stays at the right.");
+      }
+    }
     add("admission", rows.length === day.occurrences.length && shown.every((row, index) => row === rows[index]),
       `The ${name} rows must retain the supplied order and admit a prefix.`);
     const problems = rowProblems(shown);
@@ -160,14 +188,16 @@ export function checkLayout(document, agenda, target) {
           `${name} row ${index + 1} must not overlap source information.`);
     }
     if (day.eligible_total === 0) requireText(element.querySelector(".agenda-empty"), `${name} empty state`);
-    const remaining = day.eligible_total - shown.length;
-    const overflow = element.querySelector(".agenda-overflow");
-    if (visible(overflow)) {
-      add("overflow", remaining > 0 && overflow.textContent.trim() === `+${remaining} more`,
-        `${name} overflow must be the complete total minus visible rows.`);
-      requireText(overflow, `${name} overflow`);
-    } else if (name === "primary" && remaining > 0) {
-      add("overflow", false, "Undisplayed primary commitments require visible truthful overflow.");
+    if (legacy) {
+      const remaining = day.eligible_total - shown.length;
+      const overflow = element.querySelector(".agenda-overflow");
+      if (visible(overflow)) {
+        add("overflow", remaining > 0 && overflow.textContent.trim() === `+${remaining} more`,
+          `${name} overflow must be the complete total minus visible rows.`);
+        requireText(overflow, `${name} overflow`);
+      } else if (name === "primary" && remaining > 0) {
+        add("overflow", false, "Undisplayed primary commitments require visible truthful overflow.");
+      }
     }
   }
   add("priority", !visibleCounts.secondary || visibleCounts.primary === agenda.primary.occurrences.length,

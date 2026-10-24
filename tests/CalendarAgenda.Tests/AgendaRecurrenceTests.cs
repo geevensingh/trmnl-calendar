@@ -40,7 +40,7 @@ public sealed partial class AgendaHttpTests
         await Assertions.Expect(page.GetByText("Monday, Oct 19", new() { Exact = true })).ToBeVisibleAsync();
         var secondary = page.Locator(".agenda-secondary");
         await Assertions.Expect(secondary.GetByText("Tuesday, Oct 20", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(secondary.GetByText("1 eligible event", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(secondary.GetByText("1 event", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(secondary.GetByText("Evening planning", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(secondary.GetByText("7:00 PM - 8:00 PM", new() { Exact = true })).ToBeVisibleAsync();
         Assert.DoesNotContain("Future all-day commitment", await page.Locator("body").InnerTextAsync());
@@ -83,7 +83,7 @@ public sealed partial class AgendaHttpTests
         await DisplayTests.Show(page, body);
 
         var secondaryView = page.Locator(".agenda-secondary");
-        foreach (var text in new[] { "Tuesday, Oct 20", "2 eligible events", "Daily all-day commitment",
+        foreach (var text in new[] { "Tuesday, Oct 20", "2 events", "Daily all-day commitment",
             "All day", "Evening planning", "7:00 PM - 8:00 PM" })
             await Assertions.Expect(secondaryView.GetByText(text, new() { Exact = true })).ToBeVisibleAsync();
         Assert.DoesNotContain("12:00 AM", await page.Locator("body").InnerTextAsync());
@@ -147,8 +147,8 @@ public sealed partial class AgendaHttpTests
 
         await Assertions.Expect(page.GetByText("Moved Wednesday planning", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("1:30 PM - 2:15 PM", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("1 eligible event", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("0 eligible events", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("No remaining events", new() { Exact = true })).ToBeVisibleAsync();
         Assert.DoesNotContain("OOF", await page.Locator("body").InnerTextAsync());
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-secondary"));
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-source"));
@@ -193,9 +193,9 @@ public sealed partial class AgendaHttpTests
     }
 
     [Theory]
-    [InlineData("moved-occurrences.ics", "1 eligible event", "2 eligible events",
+    [InlineData("moved-occurrences.ics", "1 event", "2 events",
         "Moved Wednesday planning", "1:30 PM - 2:15 PM")]
-    [InlineData("cancelled-overrides.ics", "0 eligible events", "1 eligible event",
+    [InlineData("cancelled-overrides.ics", "No remaining events", "1 event",
         "No remaining events", null)]
     public async Task Production_OG_renders_resolved_moves_and_cancellations_from_HTTP(
         string fixture, string primaryCount, string secondaryCount, string primaryText, string? time)
@@ -386,7 +386,7 @@ public sealed partial class AgendaHttpTests
         await Assertions.Expect(primary.GetByText("Pacific recurring planning", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(primary.GetByText("Eastern recurring planning", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText(secondaryLabel, new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("2 eligible events", new() { Exact = true })).ToHaveCountAsync(2);
+        await Assertions.Expect(page.GetByText("2 events", new() { Exact = true })).ToHaveCountAsync(2);
         await Assertions.Expect(page.GetByText(sourceLabel, new() { Exact = true })).ToBeVisibleAsync();
         await DisplayTests.InsideScreen(page, primary.GetByText("9:00 AM - 10:00 AM", new() { Exact = true }).Last);
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-secondary"));
@@ -460,7 +460,7 @@ public sealed partial class AgendaHttpTests
         var primary = page.Locator(".agenda-primary");
         await Assertions.Expect(page.GetByText("Monday, Oct 19", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Tuesday, Oct 20", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("2 eligible events", new() { Exact = true })).ToHaveCountAsync(2);
+        await Assertions.Expect(page.GetByText("2 events", new() { Exact = true })).ToHaveCountAsync(2);
         await Assertions.Expect(primary.GetByText("Multiday workshop", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(primary.GetByText("Monday commitment", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(primary.GetByText("All day", new() { Exact = true })).ToHaveCountAsync(2);

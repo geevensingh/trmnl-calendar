@@ -36,8 +36,8 @@ public sealed class SourceFallbackDisplayTests
                 page.GetByText("The scheduled source refresh is delayed.", new() { Exact = true }),
                 page.GetByText("Monday, Oct 19", new() { Exact = true }),
                 page.GetByText("Tuesday, Oct 20", new() { Exact = true }),
-                page.GetByText("2 eligible events", new() { Exact = true }),
-                page.GetByText("1 eligible event", new() { Exact = true }),
+                await AdaptiveDisplayTests.DayCount(page, "primary", 2),
+                await AdaptiveDisplayTests.DayCount(page, "secondary", 1),
                 page.GetByText("Oct 19, 2026, 11:00 AM PDT", new() { Exact = true })
             });
         agenda.Clock.Advance(TimeSpan.FromMinutes(45));
@@ -125,8 +125,8 @@ public sealed class SourceFallbackDisplayTests
             {
                 page.GetByText("Friday, Oct 23", new() { Exact = true }),
                 page.GetByText("Monday, Oct 26", new() { Exact = true }),
-                page.Locator(".agenda-primary .agenda-heading .label"),
-                page.Locator(".agenda-secondary .agenda-heading .label"),
+                await AdaptiveDisplayTests.DayCount(page, "primary", primaryTotal),
+                await AdaptiveDisplayTests.DayCount(page, "secondary", secondaryTotal),
                 page.GetByText("Source checked:", new() { Exact = true }),
                 page.GetByText("Oct 23, 2026, 11:00 AM PDT", new() { Exact = true })
             };
@@ -150,7 +150,7 @@ public sealed class SourceFallbackDisplayTests
                 Assert.InRange(visible, 1, primaryTotal - 1);
                 required.Add(rows.First.Locator("[data-agenda-start]"));
                 required.Add(rows.First.Locator("td .title"));
-                required.Add(page.GetByText($"+{primaryTotal - visible} more", new() { Exact = true }));
+                required.Add(await AdaptiveDisplayTests.DayCount(page, "primary", primaryTotal));
                 Assert.Equal(0, await page.Locator(".agenda-secondary tbody tr:visible").CountAsync());
             }
             await Assertions.Expect(page.Locator("[data-agenda-source]"))

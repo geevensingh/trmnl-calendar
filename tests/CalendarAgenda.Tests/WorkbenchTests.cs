@@ -361,7 +361,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
           screen: [document.querySelector(".screen").getBoundingClientRect().width, document.querySelector(".screen").getBoundingClientRect().height],
           view: [document.querySelector(".agenda-view").clientWidth, document.querySelector(".agenda-view").clientHeight],
           titles: [...document.querySelectorAll(".agenda tbody tr:not([hidden]) td .title")].map(node => node.textContent),
-          overflow: [...document.querySelectorAll(".agenda-overflow:not([hidden])")].map(node => node.textContent)
+          counts: [...document.querySelectorAll(".agenda-count")].map(node => node.textContent)
         })
         """);
 

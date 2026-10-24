@@ -301,7 +301,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(DateTimeOffset.Parse("2026-11-02T18:00:00Z"), moved.GetProperty("end_at").GetDateTimeOffset());
             Assert.DoesNotContain("OOF", body.GetRawText());
             await Show(body, "current", "Nov 2, 2026, 7:00 AM PST",
-                "1 eligible event", "0 eligible events", "Proofreading moved planning", "9:00 AM - 10:00 AM");
+                "1 event", "No remaining events", "Proofreading moved planning", "9:00 AM - 10:00 AM");
 
             first.Clock.Advance(TimeSpan.FromMinutes(5));
             using var edited = await first.Poll(DisplayTests.Render("polling-body", new { rules_json = excludeProofreading }));
@@ -311,7 +311,7 @@ public sealed partial class AgendaHttpTests
             Assert.DoesNotContain("Proofreading", edited.RootElement.GetRawText());
             await Show(edited.RootElement, "edited", "Nov 2, 2026, 7:00 AM PST",
                 "OOF workshop", "OOF original planning");
-            await Assertions.Expect(page.GetByText("1 eligible event", new() { Exact = true })).ToHaveCountAsync(2);
+            await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToHaveCountAsync(2);
             await Assertions.Expect(page.Locator(".agenda-primary").GetByText("8:00 AM - 9:00 AM",
                 new() { Exact = true })).ToBeVisibleAsync();
         }
@@ -326,7 +326,7 @@ public sealed partial class AgendaHttpTests
         Assert.Equal(movedId, Assert.Single(stale.RootElement.GetProperty("primary").GetProperty("occurrences")
             .EnumerateArray()).GetProperty("id").GetString());
         await Show(stale.RootElement, "stale", "Nov 2, 2026, 7:00 AM PST",
-            "1 eligible event", "0 eligible events", "Stale agenda", "Proofreading moved planning",
+            "1 event", "No remaining events", "Stale agenda", "Proofreading moved planning",
             "9:00 AM - 10:00 AM", "The source contains an unsupported time zone.");
 
         recreated.Clock.Advance(TimeSpan.FromMinutes(40) - TimeSpan.FromTicks(1));

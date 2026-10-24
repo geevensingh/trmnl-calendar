@@ -171,6 +171,8 @@ Fitting responds to actual view geometry and font readiness, completes synchrono
 
 Calendar text is escaped as HTML/data attributes and time formatting assigns `textContent`; calendar text never becomes executable markup. Times and source-success labels are formatted with the named Los Angeles timezone and a 12-hour AM/PM clock.
 
+The [local UI workbench](../README.md#local-agenda-ui-workbench) consumes version-controlled normalized JSON scenarios from `display\scenarios`, shared with display checks. Its fixed reference instant is `generated_at`; dates, source state, and original source-success time are supplied, never recomputed from a live clock. These presentation inputs bypass source interpretation and selection rather than claiming to test those behaviors. Commit-pinned and working-copy template inputs use the same strict renderer and native wrappers, with isolated browser documents and unchanged production fitting. The optional `--template-root` renderer input changes only where templates are read; ordinary rendering, native settings, and polling-body defaults are unchanged.
+
 ## Activation evidence
 
 The [Azure delivery runbook](azure-delivery.md) defines deployment, secret/identity configuration, key rotation, bounded telemetry/storage, redacted smoke tooling and the live acceptance checklist. The smoke tool measures the complete native single-URL polling object in serialized UTF-8, with a strict 100,000-byte limit and a ten-second deadline per attempt with at most one transport retry. A rescued slow first attempt still fails the latency check. Authorized renderable calendar errors remain different from authentication rejection and fresh source success.

@@ -21,6 +21,35 @@ public sealed class AdaptiveDisplayTests
         new("v2", "half_vertical", 1872, 1404, 1.8f, 505, 760)
     };
 
+    public static IEnumerable<object[]> ScenarioCases => AgendaScenarios.Ids.Select(id => new object[] { id });
+
+    [Theory]
+    [MemberData(nameof(ScenarioCases))]
+    public async Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(
+        string scenario)
+    {
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new() { DeviceScaleFactor = 1 });
+        foreach (var values in Views.Cast<object[]>())
+        {
+            var view = Assert.IsType<NativeView>(values[0]);
+            await page.SetViewportSizeAsync(view.PhysicalWidth, view.PhysicalHeight);
+            var data = AgendaScenarios.Load(scenario);
+            await DisplayTests.Show(page, data, view.Placement, view.Device);
+            await NativeBounds(page, view);
+            var findings = await page.EvaluateAsync<JsonElement>("""
+                async input => {
+                  const checks = await import("/workbench/layout-checks.mjs");
+                  return checks.checkLayout(document, JSON.parse(input.agendaJson), input.target).filter(item => !item.passed);
+                }
+                """, new { agendaJson = data.ToJsonString(), target = new { width = view.PhysicalWidth, height = view.PhysicalHeight } });
+            Assert.True(findings.GetArrayLength() == 0, $"{scenario}/{view.Device}/{view.Placement}: {findings}");
+            Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
+            Assert.Null(await page.EvaluateAsync<int?>("window.locationPwn"));
+        }
+    }
+
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Essential_agenda_information_fits_each_native_physical_device_and_placement(
@@ -517,6 +546,13 @@ public sealed class AdaptiveDisplayTests
 
     private static JsonObject Agenda(int primaryRows, int secondaryRows)
     {
+        if ((primaryRows, secondaryRows) is (32, 12) or (1, 32))
+        {
+            var scenario = AgendaScenarios.Load(primaryRows == 32 ? "dense-primary" : "dense-secondary");
+            scenario["primary"]!["eligible_total"] = primaryRows;
+            scenario["secondary"]!["eligible_total"] = secondaryRows;
+            return scenario;
+        }
         var data = DisplayTests.CurrentAgenda();
         var prototype = data["primary"]!["occurrences"]![0]!.DeepClone();
         foreach (var (day, label, count) in new[]
@@ -582,49 +618,18 @@ public sealed class AdaptiveDisplayTests
 
     private static async Task ReadableRows(ILocator rows)
     {
-        float previousBottom = 0;
-        for (var index = 0; index < await rows.CountAsync(); index++)
-        {
-            var row = rows.Nth(index);
-            var bounds = await row.BoundingBoxAsync();
-            var time = await row.Locator(".agenda-time .label").BoundingBoxAsync();
-            var title = await row.Locator("td .title").BoundingBoxAsync();
-            Assert.NotNull(bounds);
-            Assert.NotNull(time);
-            Assert.NotNull(title);
-            Assert.True(bounds.Y >= previousBottom - 1, "Visible occurrence rows must not overlap.");
-            Assert.True(time.Y >= bounds.Y - 1 && time.Y + time.Height <= bounds.Y + bounds.Height + 1,
-                "The time range must fit inside its occurrence row.");
-            Assert.True(title.Y >= bounds.Y - 1 && title.Y + title.Height <= bounds.Y + bounds.Height + 1,
-                "The title must fit inside its occurrence row.");
-            Assert.True(time.X + time.Width <= title.X + 1 || title.X + title.Width <= time.X + 1
-                || time.Y + time.Height <= title.Y + 1 || title.Y + title.Height <= time.Y + 1,
-                "Essential time and title text must not overlap.");
-            previousBottom = bounds.Y + bounds.Height;
-        }
+        var problems = await rows.EvaluateAllAsync<string[]>("""
+            async rows => (await import("/workbench/layout-checks.mjs")).rowProblems(rows)
+            """);
+        Assert.Empty(problems);
     }
 
     internal static async Task VisibleInsideView(ILocator content, bool textMayBeTruncated = false)
     {
         await Assertions.Expect(content).ToBeVisibleAsync();
         Assert.True(await content.EvaluateAsync<bool>("""
-            (element, truncated) => {
-              const range = document.createRange();
-              range.selectNodeContents(element);
-              if (truncated && element.firstChild?.nodeType === Node.TEXT_NODE)
-                range.setEnd(element.firstChild, Math.min(12, element.firstChild.length));
-              const rectangles = [...range.getClientRects()];
-              for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
-                const style = getComputedStyle(ancestor);
-                if (ancestor.matches(".view") || /(hidden|clip|auto|scroll)/.test(style.overflow)) {
-                  const bounds = ancestor.getBoundingClientRect();
-                  if (rectangles.some(rect => rect.left < bounds.left - 1 || rect.top < bounds.top - 1
-                    || rect.right > bounds.right + 1 || rect.bottom > bounds.bottom + 1)) return false;
-                }
-                if (ancestor.matches(".view")) break;
-              }
-              return rectangles.length > 0;
-            }
+            async (element, truncated) =>
+              (await import("/workbench/layout-checks.mjs")).textInsideView(element, truncated)
             """, textMayBeTruncated), $"Required text is clipped or outside its native view: {await content.InnerTextAsync()}");
     }
 }

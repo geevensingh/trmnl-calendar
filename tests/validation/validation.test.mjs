@@ -14,6 +14,7 @@ async function checkout(t) {
   await cp(join(root, "scripts"), join(directory, "scripts"), { recursive: true });
   for (const name of ["Gemfile", "Gemfile.lock"])
     await cp(join(root, name), join(directory, name));
+  await cp(join(root, "display", "workbench"), join(directory, "display", "workbench"), { recursive: true });
   for (const name of ["delivery", "validation"]) {
     await cp(join(root, "tests", name), join(directory, "tests", name), { recursive: true });
   }
@@ -139,6 +140,9 @@ test("fast validation reports success, checks formatting without edits, and comp
   const build = calls.find(call => call.tool === "dotnet" && call.arguments[0] === "build");
   assert.ok(build.arguments.includes("--no-restore"));
   assert.ok(!calls.some(call => call.arguments.includes("test") || call.arguments.includes("--test")));
+  for (const name of ["app.mjs", "preview.mjs", "layout-checks.mjs"])
+    assert.ok(calls.some(call => call.tool === "node" && call.arguments[0] === "--check"
+      && call.arguments[1].endsWith(name)), `Missing browser syntax check: ${name}`);
 });
 
 test("a failed component cannot become overall success when later commands pass", async t => {

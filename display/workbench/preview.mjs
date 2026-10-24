@@ -117,7 +117,7 @@ window.addEventListener("message", event => {
     return;
   }
   send("checks", {
-    checkId: message.checkId, findings: checkLayout(document, metadata.agenda, metadata.target)
+    checkId: message.checkId, findings: checkLayout(document, metadata.agenda, metadata.target, metadata.side === "baseline")
   });
 });
 

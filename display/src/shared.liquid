@@ -3,7 +3,10 @@
     flex: 1; height: auto; min-height: 0; margin-bottom: 0;
     padding: var(--gap); gap: 4px; align-items: stretch;
   }
-  .agenda .agenda-heading { display: flex; justify-content: space-between; align-items: center; width: 100%; flex-shrink: 0; }
+  .agenda .agenda-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; width: 100%; flex-shrink: 0; }
+  .agenda .agenda-day-label { display: flex; align-items: baseline; gap: 8px; min-width: 0; max-width: 100%; white-space: nowrap; }
+  .agenda .agenda-day-label > .title { flex-shrink: 0; }
+  .agenda .agenda-count { white-space: normal; }
   .agenda .agenda-warning { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; flex-shrink: 0; }
   .agenda .title { font-size: 21px; line-height: 1.4; }
   .agenda .label { line-height: 1.4; }
@@ -22,18 +25,26 @@
     display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 16px; line-height: 1.4;
   }
-  .agenda .agenda-overflow { display: block; }
   .agenda .agenda-time { width: 230px; white-space: nowrap; }
   .agenda .agenda-secondary { border-top: 2px solid; padding-top: 4px; }
-  .trmnl .agenda-view .agenda-footer { flex-shrink: 0; height: auto; min-height: 32px; }
-  .trmnl .agenda-view .agenda-source {
+  .agenda .agenda-source {
     display: flex; flex-wrap: wrap; justify-content: flex-end; column-gap: 4px;
-    min-width: 0; white-space: normal; font-size: 16px; line-height: 1.4;
+    flex-shrink: 0; white-space: nowrap; font-size: 16px; line-height: 1.4;
   }
-  .agenda-view[data-agenda-compact] .agenda-footer > .title { display: none; }
+  .agenda-view[data-agenda-compact] .agenda-heading { flex-direction: column; gap: 0; }
+  .agenda-view[data-agenda-compact] .agenda-source { align-self: flex-end; }
   .agenda-view[data-agenda-compact] .agenda-day tr { display: flex; flex-direction: column; }
   .agenda-view[data-agenda-compact] .agenda-day td { width: 100%; }
 </style>
+{% capture agenda_source %}
+<span class="label agenda-source"><span>Source checked:</span>
+  {% if source_succeeded_at %}
+    <time data-agenda-source datetime="{{ source_succeeded_at | escape }}"></time>
+  {% else %}
+    <span>No successful source check</span>
+  {% endif %}
+</span>
+{% endcapture %}
 {% capture agenda_content %}
 <div class="layout layout--col layout--top agenda" data-agenda-state="{{ state | escape }}">
   {% if state == "current" or state == "stale" %}
@@ -49,12 +60,17 @@
       {% if day_name == "secondary" %}{% assign day = secondary %}{% endif %}
       <div class="agenda-{{ day_name }} agenda-day" data-agenda-total="{{ day.eligible_total }}">
         <div class="agenda-heading">
-          <span class="title">{{ day.label | escape }}</span>
-          <span class="label">{{ day.eligible_total }} eligible event{% unless day.eligible_total == 1 %}s{% endunless %}</span>
+          <div class="agenda-day-label">
+            <span class="title">{{ day.label | escape }}</span>
+            {% if day.eligible_total == 0 %}
+              <span class="label agenda-empty">No remaining events</span>
+            {% else %}
+              <span class="label agenda-count">0 of {{ day.eligible_total }} event{% unless day.eligible_total == 1 %}s{% endunless %} shown</span>
+            {% endif %}
+          </div>
+          {% if day_name == "primary" %}{{ agenda_source }}{% endif %}
         </div>
-        {% if day.eligible_total == 0 %}
-          <span class="description agenda-empty">No remaining events</span>
-        {% else %}
+        {% unless day.eligible_total == 0 %}
           <table class="table table--large">
             <tbody>
               {% for occurrence in day.occurrences %}
@@ -78,8 +94,7 @@
               {% endfor %}
             </tbody>
           </table>
-          <span class="label agenda-overflow" hidden></span>
-        {% endif %}
+        {% endunless %}
       </div>
     {% endfor %}
   {% else %}
@@ -90,17 +105,8 @@
       <span class="description">{{ error.message | escape }}</span>
       <span class="label">{{ error.code | escape }}</span>
     {% endif %}
+    {{ agenda_source }}
   {% endif %}
-</div>
-<div class="title_bar agenda-footer">
-  <span class="title">Agenda</span>
-  <span class="instance agenda-source"><span>Source checked:</span>
-    {% if source_succeeded_at %}
-      <time data-agenda-source datetime="{{ source_succeeded_at | escape }}"></time>
-    {% else %}
-      <span>No successful source check</span>
-    {% endif %}
-  </span>
 </div>
 <script>
   (() => {
@@ -124,27 +130,28 @@
       view.toggleAttribute("data-agenda-compact", view.clientWidth < 600);
       const days = [...agenda.querySelectorAll(".agenda-day")].map(element => ({
         rows: [...element.querySelectorAll("tbody tr")],
-        overflow: element.querySelector(".agenda-overflow"),
+        count: element.querySelector(".agenda-count"),
         total: Number(element.dataset.agendaTotal),
         visible: 0
       }));
       const fits = () => agenda.scrollHeight <= agenda.clientHeight;
-      const updateOverflow = day => {
-        if (day.overflow) {
-          const remaining = Math.max(0, day.total - day.visible);
-          day.overflow.hidden = remaining === 0;
-          day.overflow.textContent = `+${remaining} more`;
+      const updateCount = day => {
+        if (day.count) {
+          const noun = day.total === 1 ? "event" : "events";
+          day.count.textContent = day.visible === day.total
+            ? `${day.total} ${noun}`
+            : `${day.visible} of ${day.total} ${noun} shown`;
         }
       };
       const admitRows = day => {
         for (const row of day.rows) {
           row.hidden = false;
           day.visible++;
-          updateOverflow(day);
+          updateCount(day);
           if (!fits()) {
             row.hidden = true;
             day.visible--;
-            updateOverflow(day);
+            updateCount(day);
             break;
           }
         }
@@ -152,17 +159,12 @@
       agenda.querySelectorAll(".agenda-location").forEach(location => { location.hidden = true; });
       for (const day of days) {
         day.rows.forEach(row => { row.hidden = true; });
-        if (day.overflow) day.overflow.hidden = true;
+        updateCount(day);
       }
       const [primary, secondary] = days;
       if (primary) {
-        updateOverflow(primary);
         admitRows(primary);
-        if (primary.visible === primary.rows.length && secondary.overflow) {
-          updateOverflow(secondary);
-          if (fits()) admitRows(secondary);
-          else secondary.overflow.hidden = true;
-        }
+        if (primary.visible === primary.rows.length && secondary) admitRows(secondary);
       }
       for (const day of days) {
         for (const row of day.rows.slice(0, day.visible)) {

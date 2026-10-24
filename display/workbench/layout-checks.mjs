@@ -9,13 +9,24 @@ export function textInsideView(element, truncated = false) {
   if (!visible(element)) return false;
   const range = element.ownerDocument.createRange();
   range.selectNodeContents(element);
-  if (truncated && element.firstChild?.nodeType === Node.TEXT_NODE)
-    range.setEnd(element.firstChild, Math.min(12, element.firstChild.length));
-  const rectangles = [...range.getClientRects()];
+  let rectangles = [...range.getClientRects()];
+  const elementBounds = element.getBoundingClientRect();
+  if (truncated) {
+    const style = getComputedStyle(element);
+    if (style.textOverflow !== "ellipsis" || style.whiteSpace !== "nowrap"
+      || !/(hidden|clip)/.test(style.overflowX)
+      || rectangles.some(rect => rect.top < elementBounds.top - 1 || rect.bottom > elementBounds.bottom + 1))
+      return false;
+    rectangles = rectangles.map(rect => ({
+      left: Math.max(rect.left, elementBounds.left), right: Math.min(rect.right, elementBounds.right),
+      top: rect.top, bottom: rect.bottom
+    }));
+  }
   for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
     const style = getComputedStyle(ancestor);
     if (ancestor.matches(".view") || /(hidden|clip|auto|scroll)/.test(style.overflow)) {
       const bounds = ancestor.getBoundingClientRect();
+      if (truncated && !inside(elementBounds, bounds)) return false;
       if (rectangles.some(rect => rect.left < bounds.left - 1 || rect.top < bounds.top - 1
         || rect.right > bounds.right + 1 || rect.bottom > bounds.bottom + 1)) return false;
     }
@@ -51,6 +62,13 @@ export function rowProblems(rows) {
     if (!inside(timeBounds, bounds) || !inside(titleBounds, bounds))
       problems.push(`Row ${index + 1} does not contain its time and title.`);
     if (!separate(timeBounds, titleBounds)) problems.push(`Row ${index + 1} has overlapping time and title.`);
+    const range = row.ownerDocument.createRange();
+    range.selectNodeContents(title);
+    const rectangles = [...range.getClientRects()];
+    if (title.clientHeight > Math.ceil(parseFloat(getComputedStyle(title).lineHeight)) + 1
+      || title.scrollHeight > title.clientHeight + 1
+      || rectangles.some(rect => Math.abs(rect.top - rectangles[0].top) > 1))
+      problems.push(`Row ${index + 1} title must occupy exactly one title line without vertical clipping.`);
     previousBottom = bounds.bottom;
   }
   return problems;

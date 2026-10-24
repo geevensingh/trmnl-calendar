@@ -196,7 +196,9 @@ The [Git delivery contract](docs/agents/delivery.md) governs implementation acce
 
 TRMNL prepends `shared.liquid` to each matching view template: `full.liquid`, `half_horizontal.liquid`, or `half_vertical.liquid`. All three use the same production markup and fitter under the platform's native view wrapper; `display\render.rb` adds only a local preview shell, not another layout algorithm.
 
-The fitter measures the available view after fonts load and before the framework publishes capture readiness, and refits on dimension changes. It reserves both selected-day headings/counts, source-success information, and truthful primary overflow before admitting ordered primary occurrences. Only remaining room goes to secondary details, then optional locations. Titles use up to two readable 21px logical lines; locations may be elided or removed, not allowed to displace essential rows. Timed rows retain AM/PM start-end ranges and all-day rows say **All day**. No descriptions or attendees are rendered.
+The fitter measures the available view after fonts load and before the framework publishes capture readiness, and refits on dimension changes. It reserves both selected-day headers and source-success information before admitting ordered primary occurrences. Both populated-day counts stay beside their dates on the left: **N events** when complete, or **N of M events shown** when any eligible events are hidden, including zero displayed rows. Counts update as rows are admitted or removed. Valid empty days use one date/**No remaining events** line; they never promote later dates. There is no separate overflow row or footer. The absolute successful source-check timestamp is at the right of the primary header in wide views and on a second header line in narrow views, including empty primary days. Error views retain last-success information without inventing valid days or counts.
+
+Only remaining room goes to secondary details, then optional locations. A populated-day count may wrap beside a longer date when needed, without shrinking header or event text. Titles retain up to two readable 21px logical lines; locations may be elided or removed, not allowed to displace essential rows. Timed rows retain AM/PM start-end ranges and all-day rows say **All day**. No descriptions or attendees are rendered.
 
 The native framework includes screen padding and the split-screen gap:
 
@@ -213,7 +215,7 @@ For just the adaptive matrix:
 dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restore --nologo --verbosity minimal --filter FullyQualifiedName~AdaptiveDisplayTests
 ```
 
-The shared version-controlled JSON catalogue in `display\scenarios` supplies the workbench and display checks, including busy primary days, secondary overflow, long/escaped strings, optional-location removal, all-day entries, Friday/weekend labels, selected empty days, stale warnings, error categories, and absent source success. Bounded-row fixtures deliberately supply fewer occurrences than `eligible_total` to verify `+N more` includes undisplayed adapter-side commitments; the current adapter still returns `agenda_too_large` rather than truncating. Stale fixtures retain their original source-success time; neither `generated_at` nor rendering advances it.
+The shared version-controlled JSON catalogue in `display\scenarios` supplies the workbench and display checks, including busy primary days, secondary overflow, long/escaped strings, optional-location removal, all-day entries, Friday/weekend labels, selected empty days, stale warnings, error categories, and absent source success. Bounded-row fixtures deliberately supply fewer occurrences than `eligible_total` to verify inline counts include undisplayed adapter-side commitments; the current adapter still returns `agenda_too_large` rather than truncating. Stale fixtures retain their original source-success time; neither `generated_at` nor rendering advances it.
 
 ## Local agenda UI workbench
 

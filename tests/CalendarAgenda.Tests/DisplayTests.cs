@@ -4,7 +4,6 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 using CalendarAgenda;
 using Microsoft.Azure.Functions.Worker;
@@ -30,11 +29,11 @@ public sealed class DisplayTests
         await Show(page, data);
 
         await Assertions.Expect(page.GetByText("Friday, Oct 23", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("1 eligible event", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Synthetic planning", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("11:00 AM - 12:00 PM", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Monday, Oct 26", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("3 eligible events", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("0 of 3 events shown", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Oct 23, 2026, 11:00 AM PDT", new() { Exact = true })).ToBeVisibleAsync();
         Assert.DoesNotContain("tomorrow", await page.Locator("body").InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(800, await page.Locator(".screen").EvaluateAsync<int>("element => element.offsetWidth"));
@@ -81,7 +80,7 @@ public sealed class DisplayTests
         await Assertions.Expect(page.Locator(".agenda-primary").GetByText("No remaining events", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Friday, Oct 23", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Monday, Oct 26", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("0 eligible events", new() { Exact = true })).ToHaveCountAsync(2);
+        await Assertions.Expect(page.GetByText("No remaining events", new() { Exact = true })).ToHaveCountAsync(2);
         await InsideScreen(page, page.Locator(".agenda-secondary"));
         await InsideScreen(page, page.Locator(".agenda-source"));
     }
@@ -129,9 +128,8 @@ public sealed class DisplayTests
         var visibleCount = await visibleTimes.CountAsync();
 
         Assert.InRange(visibleCount, 1, 13);
-        await Assertions.Expect(page.GetByText(new Regex($@"\b{14 - visibleCount} more\b"))).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("14 eligible events", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("3 eligible events", new() { Exact = true })).ToBeVisibleAsync();
+        await AdaptiveDisplayTests.DayCount(page, "primary", 14);
+        await AdaptiveDisplayTests.DayCount(page, "secondary", 3);
         await InsideScreen(page, visibleTimes.Last);
         await InsideScreen(page, page.Locator(".agenda-primary td .title:visible").First);
         await InsideScreen(page, page.Locator(".agenda-secondary"));
@@ -252,7 +250,6 @@ public sealed class DisplayTests
             Assert.DoesNotContain("meeting", edited.ToJsonString(), StringComparison.OrdinalIgnoreCase);
             await Show(page, edited);
             await Assertions.Expect(page.GetByText("No remaining events", new() { Exact = true })).ToHaveCountAsync(2);
-            await Assertions.Expect(page.GetByText("0 eligible events", new() { Exact = true })).ToHaveCountAsync(2);
 
             var invalidBody = Render("polling-body", new
             {
@@ -484,6 +481,28 @@ public sealed class DisplayTests
     internal static async Task Show(IPage page, object data, string mode = "full", string device = "og")
     {
         var html = Render(mode, data, device);
+        html = html.Replace("</head>", $$"""
+            <script type="module">
+              import { checkLayout } from "/workbench/layout-checks.mjs";
+              const previous = Object.getOwnPropertyDescriptor(window, "TRMNL_PLUGINS_READY");
+              let ready = window.TRMNL_PLUGINS_READY;
+              window.agendaCaptureFindings = ready === true
+                ? [[{ message: "Native readiness was published before capture instrumentation." }]] : [];
+              Object.defineProperty(window, "TRMNL_PLUGINS_READY", {
+                configurable: true,
+                get: () => ready,
+                set: value => {
+                  ready = value;
+                  previous?.set?.(value);
+                  if (value !== true || !document.querySelector(".agenda")) return;
+                  window.agendaCaptureFindings.push(checkLayout(document, {{JsonSerializer.Serialize(data)}},
+                    { width: {{(device == "og" ? 800 : 1872)}}, height: {{(device == "og" ? 480 : 1404)}} })
+                    .filter(item => !item.passed));
+                }
+              });
+            </script>
+            </head>
+            """);
         await page.UnrouteAsync("http://trmnl.local/**");
         await page.RouteAsync("http://trmnl.local/**", async route =>
         {
@@ -520,6 +539,17 @@ public sealed class DisplayTests
         await page.EvaluateAsync("document.fonts.ready");
         await page.WaitForFunctionAsync("window.TRMNL_PLUGINS_READY === true");
         await page.WaitForFunctionAsync("document.querySelector('.agenda').dataset.agendaReady === 'true'");
+        var captures = await page.EvaluateAsync<JsonElement>("window.agendaCaptureFindings");
+        Assert.NotEmpty(captures.EnumerateArray());
+        foreach (var capture in captures.EnumerateArray())
+        {
+            if (capture.GetArrayLength() > 0)
+            {
+                Directory.CreateDirectory(Path.Combine(Root, "artifacts"));
+                await page.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", $"capture-invalid-{device}-{mode}.png") });
+            }
+            Assert.True(capture.GetArrayLength() == 0, $"Invalid layout at native capture readiness: {capture}");
+        }
     }
 
     internal static JsonObject CurrentAgenda() => AgendaScenarios.Load("reference");

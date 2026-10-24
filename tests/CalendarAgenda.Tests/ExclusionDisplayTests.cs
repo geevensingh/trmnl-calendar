@@ -88,8 +88,8 @@ public sealed class ExclusionDisplayTests
         using var original = await agenda.Poll(DisplayTests.Render("polling-body", new { rules_json = "[]" }));
         await DisplayTests.Show(page, original.RootElement);
         await Assertions.Expect(page.GetByText("Design review", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("2 eligible events", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("1 eligible event", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("2 events", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToBeVisibleAsync();
 
         using var edited = await agenda.Poll(DisplayTests.Render("polling-body", new
         {
@@ -98,8 +98,8 @@ public sealed class ExclusionDisplayTests
         await DisplayTests.Show(page, edited.RootElement);
         await Assertions.Expect(page.GetByText("Ongoing planning", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Design review", new() { Exact = true })).ToHaveCountAsync(0);
-        await Assertions.Expect(page.GetByText("1 eligible event", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("0 eligible events", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("No remaining events", new() { Exact = true })).ToBeVisibleAsync();
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-secondary"));
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-source"));
         Assert.DoesNotContain("Design", edited.RootElement.GetRawText(), StringComparison.OrdinalIgnoreCase);
@@ -125,8 +125,8 @@ public sealed class ExclusionDisplayTests
         using var cleared = await agenda.Poll(DisplayTests.Render("polling-body", new { rules_json = "[]" }));
         await DisplayTests.Show(page, cleared.RootElement);
         await Assertions.Expect(page.GetByText("Design review", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("2 eligible events", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("1 eligible event", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("2 events", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Agenda unavailable", new() { Exact = true })).ToHaveCountAsync(0);
     }
 }

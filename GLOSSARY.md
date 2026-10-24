@@ -8,6 +8,14 @@ A filtered calendar display for a TRMNL device.
 A chronological list of calendar events selected for display.
 _Avoid_: Event list
 
+**Eligible event**:
+A calendar event that qualifies after the agenda's date, time, and exclusion rules, whether or not its details fit on the device.
+_Avoid_: Displayed event (when referring to every qualifying event)
+
+**Displayed event**:
+An eligible event whose details are visible on the device.
+_Avoid_: Eligible event (when referring only to visible details)
+
 **Exclusion rule**:
 A configurable condition that identifies calendar events to omit from the agenda.
 _Avoid_: Hide rule

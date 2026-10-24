@@ -410,10 +410,8 @@ public sealed partial class AgendaHttpTests
             {
                 page.GetByText("Monday, Oct 19", new() { Exact = true }),
                 page.GetByText("Tuesday, Oct 20", new() { Exact = true }),
-                page.Locator(".agenda-primary").GetByText(
-                    $"{primaryTotal} eligible {(primaryTotal == 1 ? "event" : "events")}", new() { Exact = true }),
-                page.Locator(".agenda-secondary").GetByText(
-                    $"{secondaryTotal} eligible {(secondaryTotal == 1 ? "event" : "events")}", new() { Exact = true }),
+                await AdaptiveDisplayTests.DayCount(page, "primary", primaryTotal),
+                await AdaptiveDisplayTests.DayCount(page, "secondary", secondaryTotal),
                 page.GetByText("Source checked:", new() { Exact = true }),
                 page.GetByText(sourceLabel, new() { Exact = true })
             };

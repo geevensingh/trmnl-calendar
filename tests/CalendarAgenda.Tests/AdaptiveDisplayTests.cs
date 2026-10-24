@@ -23,6 +23,70 @@ public sealed class AdaptiveDisplayTests
 
     public static IEnumerable<object[]> ScenarioCases => AgendaScenarios.Ids.Select(id => new object[] { id });
 
+    [Fact]
+    public async Task Empty_primary_dense_secondary_uses_reclaimed_space_without_changing_event_geometry()
+    {
+        var data = Agenda(primaryRows: 0, secondaryRows: 32);
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
+        await DisplayTests.Show(page, data);
+        var rows = page.Locator(".agenda-secondary tbody tr:visible");
+        var count = await rows.CountAsync();
+        var metrics = await rows.First.EvaluateAsync<JsonElement>("""
+            row => {
+              const title = row.querySelector("td .title");
+              const time = row.querySelector(".agenda-time");
+              const style = getComputedStyle(title);
+              return {
+                count: document.querySelectorAll(".agenda-secondary tbody tr:not([hidden])").length,
+                font: style.fontFamily, fontSize: style.fontSize, lineHeight: style.lineHeight,
+                titleClamp: style.webkitLineClamp, timeWidth: time.getBoundingClientRect().width,
+                padding: getComputedStyle(time).padding, rowHeight: row.getBoundingClientRect().height
+              };
+            }
+            """);
+        Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
+        await File.WriteAllTextAsync(Path.Combine(DisplayTests.Root, "artifacts", "density-agenda.json"), data.ToJsonString());
+        await File.WriteAllTextAsync(Path.Combine(DisplayTests.Root, "artifacts", "density-metrics.json"), metrics.ToString());
+        await VisibleInk(page, "density-og-full", new("og", "full", 800, 480, 1, 780, 460),
+            await page.Locator(".agenda-heading .title, [data-agenda-source], .agenda-secondary tbody tr:not([hidden]) .label--large, .agenda-secondary tbody tr:not([hidden]) td .title").AllAsync());
+        // The unchanged renderer at b0bd1e4 displayed eight rows for this exact fixture.
+        Assert.True(count > 8, metrics.ToString());
+        Assert.Equal("TRMNL21", metrics.GetProperty("font").GetString());
+        Assert.Equal("21px", metrics.GetProperty("fontSize").GetString());
+        Assert.Equal("29.4px", metrics.GetProperty("lineHeight").GetString());
+        Assert.Equal("2", metrics.GetProperty("titleClamp").GetString());
+        Assert.Equal(230, metrics.GetProperty("timeWidth").GetInt32());
+        Assert.Equal("2px 0px", metrics.GetProperty("padding").GetString());
+        Assert.Equal(33.390625, metrics.GetProperty("rowHeight").GetDouble(), precision: 4);
+    }
+
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Empty_days_keep_date_and_message_on_one_line_without_a_zero_count(NativeView view)
+    {
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        await DisplayTests.Show(page, Agenda(primaryRows: 0, secondaryRows: 0), view.Placement, view.Device);
+        foreach (var name in new[] { "primary", "secondary" })
+        {
+            var day = page.Locator($".agenda-{name}");
+            var date = await day.Locator(".agenda-heading .title").BoundingBoxAsync();
+            var empty = await day.Locator(".agenda-empty").BoundingBoxAsync();
+            Assert.NotNull(date);
+            Assert.NotNull(empty);
+            Assert.True(Math.Max(date.Y, empty.Y) < Math.Min(date.Y + date.Height, empty.Y + empty.Height),
+                "Empty date and message must share one line.");
+            Assert.DoesNotContain("0 event", await day.InnerTextAsync());
+            Assert.DoesNotContain("eligible", await day.InnerTextAsync());
+        }
+    }
+
     [Theory]
     [MemberData(nameof(ScenarioCases))]
     public async Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(
@@ -45,9 +109,78 @@ public sealed class AdaptiveDisplayTests
                 }
                 """, new { agendaJson = data.ToJsonString(), target = new { width = view.PhysicalWidth, height = view.PhysicalHeight } });
             Assert.True(findings.GetArrayLength() == 0, $"{scenario}/{view.Device}/{view.Placement}: {findings}");
+            await VisibleInk(page, $"scenario-{scenario}-{view.Device}-{view.Placement}", view,
+                await page.Locator("""
+                    .agenda-heading .title, .agenda-day-label .label, .agenda-source > span, [data-agenda-source],
+                    .agenda-warning > *, .agenda > .title, .agenda > .label:not(.agenda-source), .agenda > .description,
+                    tbody tr:not([hidden]) .label--large
+                    """).AllAsync());
             Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
             Assert.Null(await page.EvaluateAsync<int?>("window.locationPwn"));
         }
+    }
+
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Longer_working_day_labels_keep_partial_counts_inside_native_headers(NativeView view)
+    {
+        var data = Agenda(primaryRows: 32, secondaryRows: 12);
+        data["primary"]!["eligible_total"] = 47;
+        data["generated_at"] = "2026-11-25T19:00:00Z";
+        data["source_succeeded_at"] = "2026-11-25T19:00:00Z";
+        foreach (var (name, date, label) in new[]
+        {
+            ("primary", "2026-11-25", "Wednesday, Nov 25"),
+            ("secondary", "2026-11-26", "Thursday, Nov 26")
+        })
+        {
+            data[name]!["date"] = date;
+            data[name]!["label"] = label;
+            foreach (var occurrence in data[name]!["occurrences"]!.AsArray())
+            {
+                occurrence!["start_at"] = $"{date}T19:00:00Z";
+                occurrence["end_at"] = $"{date}T20:00:00Z";
+            }
+        }
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await VisibleInk(page, $"long-date-{view.Device}-{view.Placement}", view,
+            await page.Locator(".agenda-heading .title, .agenda-count, [data-agenda-source]").AllAsync());
+        foreach (var name in new[] { "primary", "secondary" })
+        {
+            data[name]!["eligible_total"] = 0;
+            data[name]!["occurrences"] = new JsonArray();
+        }
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await VisibleInk(page, $"long-date-empty-{view.Device}-{view.Placement}", view,
+            await page.Locator(".agenda-heading .title, .agenda-empty, [data-agenda-source]").AllAsync());
+    }
+
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Counts_disclose_displayed_rows_and_complete_totals_even_without_occurrences(NativeView view)
+    {
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
+        });
+        var data = Agenda(primaryRows: 0, secondaryRows: 0);
+        data["primary"]!["eligible_total"] = 9;
+        data["secondary"]!["eligible_total"] = 1;
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await VisibleInsideView(page.GetByText("0 of 9 events shown", new() { Exact = true }));
+        await VisibleInsideView(page.GetByText("0 of 1 event shown", new() { Exact = true }));
+        Assert.DoesNotContain("No remaining events", await page.Locator(".agenda").InnerTextAsync());
+        Assert.Equal(0, await page.Locator(".agenda-overflow, .agenda-footer, .title_bar").CountAsync());
+        await VisibleInk(page, $"zero-visible-{view.Device}-{view.Placement}", view,
+            await page.Locator(".agenda-heading .title, .agenda-count, [data-agenda-source]").AllAsync());
     }
 
     [Theory]
@@ -71,8 +204,8 @@ public sealed class AdaptiveDisplayTests
 
         foreach (var text in new[]
         {
-            "Friday, Oct 23", "1 eligible event", "Synthetic planning", "11:00 AM - 12:00 PM",
-            "Monday, Oct 26", "3 eligible events", "Oct 23, 2026, 11:00 AM PDT"
+            "Friday, Oct 23", "1 event", "Synthetic planning", "11:00 AM - 12:00 PM",
+            "Monday, Oct 26", "0 of 3 events shown", "Oct 23, 2026, 11:00 AM PDT"
         })
             await VisibleInsideView(page.GetByText(text, new() { Exact = true }));
     }
@@ -98,10 +231,9 @@ public sealed class AdaptiveDisplayTests
         var count = await visible.CountAsync();
         Assert.InRange(count, 1, 31);
         await VisibleInsideView(page.GetByText("Friday, Oct 23", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText($"+{47 - count} more", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("47 eligible events", new() { Exact = true }));
+        await DayCount(page, "primary", 47);
         await VisibleInsideView(page.GetByText("Monday, Oct 26", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("19 eligible events", new() { Exact = true }));
+        await DayCount(page, "secondary", 19);
         await VisibleInsideView(page.Locator("[data-agenda-source]"));
         Assert.Equal(0, await page.Locator(".agenda-secondary [data-agenda-start]:visible").CountAsync());
         for (var index = 0; index < count; index++)
@@ -113,12 +245,12 @@ public sealed class AdaptiveDisplayTests
             "element => parseFloat(getComputedStyle(element).fontSize)") >= 20);
         await ReadableRows(page.Locator(".agenda-primary tbody tr:visible"));
         var required = page.Locator("""
-            .agenda-day .agenda-heading .title, .agenda-day .agenda-heading .label,
-            .agenda-primary .agenda-overflow, [data-agenda-source],
+            .agenda-day .agenda-heading .title, .agenda-day .agenda-day-label .label,
+            [data-agenda-source],
             .agenda-primary tbody tr:not([hidden]) .label--large,
             .agenda-primary tbody tr:not([hidden]) td .title
             """);
-        Assert.Equal(6 + 2 * count, await required.CountAsync());
+        Assert.Equal(5 + 2 * count, await required.CountAsync());
         await VisibleInk(page, $"busy-{(view.Device == "v2" ? "x" : view.Device)}-{view.Placement}",
             view, await required.AllAsync());
     }
@@ -140,13 +272,12 @@ public sealed class AdaptiveDisplayTests
         await NativeBounds(page, view);
 
         await VisibleInsideView(page.GetByText("Primary commitment 1", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("1 eligible event", new() { Exact = true }));
+        await VisibleInsideView(page.GetByText("1 event", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("Monday, Oct 26", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("50 eligible events", new() { Exact = true }));
+        await DayCount(page, "secondary", 50);
         var secondary = page.Locator(".agenda-secondary [data-agenda-start]:visible");
         var count = await secondary.CountAsync();
         Assert.InRange(count, view.Device == "og" && view.Placement == "half_horizontal" ? 0 : 1, 31);
-        await VisibleInsideView(page.GetByText($"+{50 - count} more", new() { Exact = true }));
         for (var index = 0; index < count; index++)
         {
             await VisibleInsideView(secondary.Nth(index));
@@ -181,7 +312,7 @@ public sealed class AdaptiveDisplayTests
         Assert.Equal(primaryCount, await page.Locator(".agenda-primary tbody tr:visible").CountAsync());
         Assert.Equal(secondaryCount, await page.Locator(".agenda-secondary tbody tr:visible").CountAsync());
         Assert.True(await page.Locator(".agenda-location:visible").CountAsync() < primaryCount);
-        await VisibleInsideView(page.GetByText($"+{32 - primaryCount} more", new() { Exact = true }));
+        await DayCount(page, "primary", 32);
         await VisibleInsideView(page.Locator("[data-agenda-source]"));
 
         await DisplayTests.Show(page, Agenda(primaryRows: 1, secondaryRows: 0), view.Placement, view.Device);
@@ -217,10 +348,9 @@ public sealed class AdaptiveDisplayTests
 
         var count = await page.Locator(".agenda-primary tbody tr:visible").CountAsync();
         Assert.InRange(count, 1, 31);
-        await VisibleInsideView(page.GetByText($"+{47 - count} more", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("47 eligible events", new() { Exact = true }));
+        await DayCount(page, "primary", 47);
         await VisibleInsideView(page.GetByText("Monday, Oct 26", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("12 eligible events", new() { Exact = true }));
+        await DayCount(page, "secondary", 12);
         await VisibleInsideView(page.Locator("[data-agenda-source]"));
         var title = page.Locator(".agenda-primary td .title:visible").First;
         Assert.Equal(data["primary"]!["occurrences"]![0]!["title"]!.GetValue<string>(), await title.InnerTextAsync());
@@ -292,9 +422,8 @@ public sealed class AdaptiveDisplayTests
         Assert.Equal(0, await rows.First.Locator("[data-agenda-start], [data-agenda-end]").CountAsync());
         await VisibleInsideView(page.GetByText("Monday, Oct 26", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("Tuesday, Oct 27", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("47 eligible events", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("12 eligible events", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText($"+{47 - count} more", new() { Exact = true }));
+        await DayCount(page, "primary", 47);
+        await DayCount(page, "secondary", 12);
         await VisibleInsideView(page.GetByText("Oct 24, 2026, 11:00 AM PDT", new() { Exact = true }));
         Assert.Equal(0, await page.Locator(".agenda-secondary tbody tr:visible").CountAsync());
         Assert.DoesNotContain("tomorrow", await page.Locator("body").InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
@@ -327,9 +456,9 @@ public sealed class AdaptiveDisplayTests
         await VisibleInsideView(page.GetByText("Stale agenda", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("The calendar source could not be checked.", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("Friday, Oct 23", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("47 eligible events", new() { Exact = true }));
+        await DayCount(page, "primary", 47);
         await VisibleInsideView(page.GetByText("Monday, Oct 26", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("12 eligible events", new() { Exact = true }));
+        await DayCount(page, "secondary", 12);
         var count = await page.Locator(".agenda-primary tbody tr:visible").CountAsync();
         Assert.True(count is >= 1 and <= 31, await page.Locator(".agenda").EvaluateAsync<string>("""
             element => JSON.stringify({
@@ -339,7 +468,6 @@ public sealed class AdaptiveDisplayTests
               }))
             })
             """));
-        await VisibleInsideView(page.GetByText($"+{47 - count} more", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("Oct 23, 2026, 11:00 AM PDT", new() { Exact = true }));
         await Assertions.Expect(page.Locator("[data-agenda-source]"))
             .ToHaveAttributeAsync("datetime", "2026-10-23T18:00:00Z");
@@ -409,17 +537,17 @@ public sealed class AdaptiveDisplayTests
             await NativeBounds(page, view);
             await VisibleInsideView(page.GetByText("Friday, Oct 23", new() { Exact = true }));
             await VisibleInsideView(page.GetByText("Monday, Oct 26", new() { Exact = true }));
-            await VisibleInsideView(page.Locator(".agenda-primary").GetByText("0 eligible events", new() { Exact = true }));
+            await VisibleInsideView(page.Locator(".agenda-primary").GetByText("No remaining events", new() { Exact = true }));
             await VisibleInsideView(page.Locator(".agenda-primary .agenda-empty"));
             Assert.Equal(0, await page.Locator(".agenda-primary tbody tr:visible").CountAsync());
             if (secondaryRows == 0)
             {
-                await VisibleInsideView(page.Locator(".agenda-secondary").GetByText("0 eligible events", new() { Exact = true }));
+                await VisibleInsideView(page.Locator(".agenda-secondary").GetByText("No remaining events", new() { Exact = true }));
                 await VisibleInsideView(page.Locator(".agenda-secondary .agenda-empty"));
             }
             else
             {
-                await VisibleInsideView(page.GetByText("32 eligible events", new() { Exact = true }));
+                await DayCount(page, "secondary", 32);
                 await VisibleInsideView(page.GetByText("Secondary commitment 1", new() { Exact = true }));
             }
             await VisibleInsideView(page.Locator("[data-agenda-source]"));
@@ -478,12 +606,12 @@ public sealed class AdaptiveDisplayTests
             """, original);
         var compact = await rows.CountAsync();
         Assert.InRange(compact, 1, original - 1);
-        await VisibleInsideView(page.GetByText($"+{32 - compact} more", new() { Exact = true }));
-        await VisibleInsideView(page.GetByText("12 eligible events", new() { Exact = true }));
+        await DayCount(page, "primary", 32);
+        await DayCount(page, "secondary", 12);
         await VisibleInsideView(page.Locator("[data-agenda-source]"));
         await page.Locator(".agenda-view").EvaluateAsync("element => { element.style.removeProperty('height'); }");
         await Assertions.Expect(rows).ToHaveCountAsync(original);
-        await VisibleInsideView(page.GetByText($"+{32 - original} more", new() { Exact = true }));
+        await DayCount(page, "primary", 32);
     }
 
     [Theory]
@@ -517,12 +645,12 @@ public sealed class AdaptiveDisplayTests
                       && box.top >= view.top && box.right <= view.right && box.bottom <= view.bottom;
                   };
                   const primary = agenda.querySelector(".agenda-primary");
-                  const overflow = primary.querySelector(".agenda-overflow");
+                  const count = primary.querySelector(".agenda-count");
                   window.agendaNativeReadySnapshots.push({
                     fitted: agenda.dataset.agendaReady === "true",
                     rows: [...primary.querySelectorAll("tbody tr")].filter(row => !row.hidden).length,
-                    overflow: overflow.textContent,
-                    overflowInside: inside(overflow),
+                    count: count.textContent,
+                    countInside: inside(count),
                     sourceInside: inside(document.querySelector("[data-agenda-source]"))
                   });
                 }
@@ -538,8 +666,8 @@ public sealed class AdaptiveDisplayTests
             Assert.True(snapshot.GetProperty("fitted").GetBoolean(), snapshot.GetRawText());
             var count = snapshot.GetProperty("rows").GetInt32();
             Assert.InRange(count, 1, 31);
-            Assert.Equal($"+{47 - count} more", snapshot.GetProperty("overflow").GetString());
-            Assert.True(snapshot.GetProperty("overflowInside").GetBoolean());
+            Assert.Equal($"{count} of 47 events shown", snapshot.GetProperty("count").GetString());
+            Assert.True(snapshot.GetProperty("countInside").GetBoolean());
             Assert.True(snapshot.GetProperty("sourceInside").GetBoolean());
         }
     }
@@ -577,6 +705,18 @@ public sealed class AdaptiveDisplayTests
             data[day]!["occurrences"] = occurrences;
         }
         return data;
+    }
+
+    internal static async Task<ILocator> DayCount(IPage page, string name, int total)
+    {
+        var day = page.Locator($".agenda-{name}");
+        var visible = await day.Locator("tbody tr:visible").CountAsync();
+        var text = total == 0 ? "No remaining events"
+            : visible == total ? $"{total} event{(total == 1 ? "" : "s")}"
+            : $"{visible} of {total} event{(total == 1 ? "" : "s")} shown";
+        var count = day.GetByText(text, new() { Exact = true });
+        await VisibleInsideView(count);
+        return count;
     }
 
     internal static async Task NativeBounds(IPage page, NativeView nativeView)

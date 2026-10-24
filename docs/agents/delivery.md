@@ -2,20 +2,36 @@
 
 This is the authoritative completion workflow for implementation, dependency acceptance, delivery reports, and delivery-ticket closure. An accepted integration commit, successful deployment, or green test suite is not proof of delivery.
 
+## Standing authorization and PR handoff
+
+For the requested task, use a session-owned feature branch in a linked worktree. Reuse a host-provided worktree; otherwise create a dedicated worktree and feature branch before editing. Use host-managed workspace operations where available and preserve other sessions' work.
+
+Unless the user narrows the task's authorization, agents may create that workspace, stage and commit task-related changes, push the feature branch to `origin`, create or update its PR, address feedback, and resolve conflicts on the feature branch without asking again. Push after each coherent commit checkpoint and before a handoff or pause, using an explicit single-branch push. Report failed or blocked pushes; do not substitute bulk, mirror, or tag pushes.
+
+Repository PR policy controls merge-versus-rebase strategy and any published-history rewriting. There is no global rebase requirement. When no policy specifies otherwise, preserve published history and obtain separate authorization before rewriting published commits or force-pushing. Branch deletion, worktree cleanup/pruning, stashing, destructive resets, and credential/protection changes are outside this standing grant.
+
+The default endpoint for substantive implementation is a pushed feature branch and an open PR ready for human review once the agreed review prerequisites are met, unless the user requests a different handoff. Report unmet prerequisites explicitly. Feature-branch backup is not publication to `main`, and **ready for review** is not **delivered**. Keep delivery tickets open until the closure gate below is satisfied.
+
+### Human-only landing
+
+Agents prepare changes for a human to land. They must not advance `main`, the default branch, or another protected/shared integration target by local merge, direct commit or push, PR merge, API call, merge queue, or auto-merge. Do not configure or delegate another agent or automation to bypass this boundary. Updating the session-owned feature branch from its base for conflict resolution is allowed; landing it into the target is human-only.
+
+These are standing instructions, not technical enforcement or changes to tool approvals, credentials, hooks, or GitHub protections.
+
 ## Agree before implementation
 
-Record the contract in the issue or session and confirm it before implementation starts:
+Record the contract in the issue or session before implementation starts. Use the standing authorization and defaults below without repeating permission requests; confirm only unresolved choices or deviations. The human-only landing boundary remains in force:
 
 | Field | Agreement to record |
 | --- | --- |
-| Target | The local target branch. Normally `main`, regardless of the current integration branch. |
-| Publication | Normally **remote**, to `origin` branch `main`. Confirm the configured remote name and branch explicitly. A local-only handoff must be explicitly requested; call it locally landed, not published. |
+| Target | The local integration target, normally `main`. This is the human landing target, not permission for an agent to update it. |
+| Publication | Normally **remote**, to `origin` branch `main`, after human landing. Verify the configured names. Pushing the feature branch is a separate backup/handoff, not fulfillment of this publication contract. A local-only delivery contract must be explicitly requested; call it locally landed, not published. |
 | Verification | The exact existing validation commands/selectors, required outcomes, review, and any scope-specific evidence. Use the [existing local checks](../azure-delivery.md#local-checks-and-package); no new validation entrypoint or live calendar is needed for this workflow. |
-| Git writes | Which branch/worktree operations, commits, merges/rebases, pushes, and cleanup are authorized. Permission for one operation does not grant the others. |
+| Git writes | The standing feature-branch grant above and any narrower task-specific limits. Record separately authorized exceptions outside that grant; landing remains human-only. |
 
 After review, record the full accepted implementation commit ID and bind verification evidence to that content. If review precedes committing, identify the resulting commit of the unchanged reviewed content. A moving branch name is not a reviewed commit identity.
 
-Unspecified merge or push permission means **ready-to-land**, not permission to write. State the pending operation and request approval; keep the delivery ticket open. Deployment permission does not imply permission to merge or push.
+After the PR handoff, identify human landing and any remaining evidence as pending, and keep the delivery ticket open. The feature-branch grant does not authorize writes to the integration target; neither deployment permission nor a green test suite changes that boundary.
 
 ## Delivery states
 
@@ -27,7 +43,7 @@ Unspecified merge or push permission means **ready-to-land**, not permission to 
 
 These describe Git position, not the whole completion contract. Dirty work or missing verification can still prevent completion. A local check cannot discharge a remote-publication contract. Normal repository delivery requires publication; an explicitly agreed local-only handoff is a different, limited outcome.
 
-The publication check deliberately requires equal target tips. A remote that is behind, ahead, or divergent fails, even if it might contain the reviewed commit. Reconcile the intended target using separately authorized operations and rerun the proof; do not silently weaken the contract.
+The publication check deliberately requires equal target tips. A remote that is behind, ahead, or divergent fails, even if it might contain the reviewed commit. Have a human reconcile any required target-branch writes, then rerun the proof; do not silently weaken the contract.
 
 ## Executable, read-only proof
 
@@ -49,7 +65,7 @@ Index entries marked `assume-unchanged` or `skip-worktree` can hide tracked edit
 
 Reachability uses Git's commit graph. Remote mode reads the actual advertised branch with `git ls-remote`; it does not fetch objects, refresh tracking refs, or overwrite `FETCH_HEAD`. Each Git command has a ten-second bound and credential prompts are disabled. Git diagnostics and remote URLs are never printed. Optional index locks, filesystem monitoring, Git tracing, lazy object fetches, and replacement objects are disabled for these reads.
 
-The check never edits files, switches branches, commits, merges, rebases, stashes, pushes, deploys, or closes issues. Perform any necessary writes separately, with approval. Proof is a timestamped observation, not a lock on the local or remote branch; rerun it after relevant changes.
+The check never edits files, switches branches, commits, merges, rebases, stashes, pushes, deploys, or closes issues. Necessary writes remain subject to the standing grant and human-only landing boundary. Proof is a timestamped observation, not a lock on the local or remote branch; rerun it after relevant changes.
 
 ## Acceptance can advance the frontier
 
@@ -60,8 +76,8 @@ After recording acceptance, clear only the satisfied implementation dependency's
 ## Closure and final reporting
 
 1. Record required verification results and review acceptance for the implementation content, including any scope-specific evidence. Tests and deployment evidence supplement, rather than replace, Git proof.
-2. Perform only authorized landing/publication operations. A squash or cherry-pick creates a new commit identity: establish acceptance/evidence for that resulting commit instead of pretending the original is reachable.
+2. A human performs landing/publication to the agreed integration target. A squash or cherry-pick creates a new commit identity: establish acceptance/evidence for that resulting commit instead of pretending the original is reachable.
 3. From a clean checkout, run the check for the agreed contract. Record its invocation, exit status, and full JSON proof in the ticket or a linked durable artifact **before** closure and the final report, alongside the contract and verification evidence. Keep credentials, remote URLs, and private runtime inputs out of the record.
-4. Close a delivery ticket or report delivery complete only when **every** agreed condition is satisfied. Otherwise report integrated or locally landed work as **ready-to-land**, naming the remaining permission, publication, or evidence gate, and leave the delivery ticket open. Use issue references rather than automatic closing keywords until the closure gate has been met.
+4. Close a delivery ticket or report delivery complete only when **every** agreed condition is satisfied. Otherwise report the PR handoff as **ready for review**, or describe the actual remaining blocker if it is not ready, and leave the delivery ticket open. After human landing, name any remaining publication or evidence gate. Use issue references rather than automatic closing keywords until the closure gate has been met.
 
-An Azure activation checklist, when part of the ticket, remains an additional gate. This workflow adds no CI/CD, PR requirement, branch protection, application behavior, or deployment step.
+An Azure activation checklist, when part of the ticket, remains an additional gate. The PR handoff adds no CI/CD, branch protection, application behavior, or deployment step.

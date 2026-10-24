@@ -14,7 +14,7 @@ Domain docs use a single-context layout. Before exploring the codebase, see `doc
 
 ### Delivery
 
-Before implementation, accepting implementation dependencies, reporting completion, or closing delivery tickets, follow `docs/agents/delivery.md`.
+Before implementation, Git/worktree/PR writes, accepting implementation dependencies, reporting completion, or closing delivery tickets, follow `docs/agents/delivery.md` for standing feature-branch authorization, PR handoff, human-only landing, and delivery evidence.
 
 ### Local validation
 

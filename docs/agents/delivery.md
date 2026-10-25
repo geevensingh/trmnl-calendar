@@ -14,7 +14,9 @@ The default endpoint for substantive implementation is a pushed feature branch a
 
 ### Human-only landing
 
-Agents prepare changes for a human to land. They must not advance `main`, the default branch, or another protected/shared integration target by local merge, direct commit or push, PR merge, API call, merge queue, or auto-merge. Do not configure or delegate another agent or automation to bypass this boundary. Updating the session-owned feature branch from its base for conflict resolution is allowed; landing it into the target is human-only.
+Agents prepare new changes for a human to land. Landing on `main`, the default branch, or another protected/shared integration target by local merge, direct commit or push, PR merge, API call, merge queue, or auto-merge remains human-only. Do not configure or delegate another agent or automation to bypass this boundary. Updating the session-owned feature branch from its base for conflict resolution is allowed; landing it into the target is not.
+
+After a human merges, follow [post-human-merge bookkeeping](post-merge.md) for an **already approved** local fast-forward synchronization, acceptance of the actual resulting commit, and final proof. Synchronization of already-published history is separate from landing new changes. That procedure executes permission recorded in the user's authoritative guidance or explicit approval; it grants none itself. Reuse applicable recorded approval, while checking checkout capability separately and preserving host workspace restrictions.
 
 These are standing instructions, not technical enforcement or changes to tool approvals, credentials, hooks, or GitHub protections.
 
@@ -31,7 +33,7 @@ Record the contract in the issue or session before implementation starts. Use th
 
 After review, record the full accepted implementation commit ID and bind verification evidence to that content. If review precedes committing, identify the resulting commit of the unchanged reviewed content. A moving branch name is not a reviewed commit identity.
 
-After the PR handoff, identify human landing and any remaining evidence as pending, and keep the delivery ticket open. The feature-branch grant does not authorize writes to the integration target; neither deployment permission nor a green test suite changes that boundary.
+After the PR handoff, identify human landing and any remaining evidence as pending, and keep the delivery ticket open. The feature-branch grant does not authorize writes to the integration target; neither deployment permission nor a green test suite changes that boundary. Once human landing is confirmed, use the [post-merge procedure](post-merge.md), not another request for approval already recorded for the same bounded synchronization.
 
 ## Delivery states
 
@@ -43,7 +45,7 @@ After the PR handoff, identify human landing and any remaining evidence as pendi
 
 These describe Git position, not the whole completion contract. Dirty work or missing verification can still prevent completion. A local check cannot discharge a remote-publication contract. Normal repository delivery requires publication; an explicitly agreed local-only handoff is a different, limited outcome.
 
-The publication check deliberately requires equal target tips. A remote that is behind, ahead, or divergent fails, even if it might contain the reviewed commit. Have a human reconcile any required target-branch writes, then rerun the proof; do not silently weaken the contract.
+The publication check deliberately requires equal target tips. A remote that is behind, ahead, or divergent fails, even if it might contain the reviewed commit. Use the [post-merge path](post-merge.md) for an already-approved clean fast-forward synchronization; reconciliation outside that bounded path remains human work. Then rerun the proof without weakening the contract.
 
 ## Executable, read-only proof
 
@@ -76,8 +78,8 @@ After recording acceptance, clear only the satisfied implementation dependency's
 ## Closure and final reporting
 
 1. Record required verification results and review acceptance for the implementation content, including any scope-specific evidence. Tests and deployment evidence supplement, rather than replace, Git proof.
-2. A human performs landing/publication to the agreed integration target. A squash or cherry-pick creates a new commit identity: establish acceptance/evidence for that resulting commit instead of pretending the original is reachable.
-3. From a clean checkout, run the check for the agreed contract. Record its invocation, exit status, and full JSON proof in the ticket or a linked durable artifact **before** closure and the final report, alongside the contract and verification evidence. Keep credentials, remote URLs, and private runtime inputs out of the record.
+2. A human performs landing/publication to the agreed integration target. Follow [post-human-merge bookkeeping](post-merge.md) to route approved synchronization to a permitted checkout and establish acceptance/provenance for the actual merge, squash, or cherry-pick identity. Reachability alone does not prove unchanged implementation content.
+3. From a clean checkout, run the existing check for the agreed contract, using the full accepted resulting commit ID after human landing. Record its invocation, exit status, and full JSON proof in the ticket or a linked durable artifact **before** closure and the final report, alongside the contract and verification/review provenance. Keep credentials, remote URLs, and private runtime inputs out of the record.
 4. Close a delivery ticket or report delivery complete only when **every** agreed condition is satisfied. Otherwise report the PR handoff as **ready for review**, or describe the actual remaining blocker if it is not ready, and leave the delivery ticket open. After human landing, name any remaining publication or evidence gate. Use issue references rather than automatic closing keywords until the closure gate has been met.
 
 An Azure activation checklist, when part of the ticket, remains an additional gate. The PR handoff adds no CI/CD, branch protection, application behavior, or deployment step.

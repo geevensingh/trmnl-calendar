@@ -7,6 +7,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { AgendaContractError, agendaSchemaVersion, validateAgenda } from "./agenda-contract.mjs";
+import { isolatedGitEnvironment } from "./git-environment.mjs";
 
 const toolRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const execute = promisify(execFile);
@@ -46,7 +47,7 @@ async function git(workspace, ...arguments_) {
   try {
     const { stdout } = await execute("git", arguments_, {
       cwd: workspace, encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1" }
+      env: isolatedGitEnvironment({ GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1" })
     });
     return stdout;
   } catch {

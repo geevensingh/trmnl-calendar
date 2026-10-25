@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const command = join(root, "scripts", "check-completion.mjs");
@@ -17,10 +18,10 @@ async function repository(t) {
   await mkdir(checkout);
   const globalConfig = join(directory, "global.config");
   await writeFile(globalConfig, "");
-  const env = {
-    ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: globalConfig,
+  const env = isolatedGitEnvironment({
+    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: globalConfig,
     GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never"
-  };
+  });
   function git(...args) {
     const result = spawnSync("git", ["--no-pager", ...args], {
       cwd: checkout, env, encoding: "utf8", timeout: 10_000
@@ -28,7 +29,8 @@ async function repository(t) {
     assert.equal(result.status, 0, result.stderr);
     return result.stdout.trim();
   }
-  git("init", "--quiet", "--initial-branch=main");
+  git("init", "--quiet", "--initial-branch=main", "--template=");
+  await mkdir(join(checkout, ".git", "info"));
   git("config", "user.name", "Synthetic Reviewer");
   git("config", "user.email", "reviewer@example.invalid");
   git("config", "commit.gpgSign", "false");
@@ -85,6 +87,24 @@ async function assertUnchanged(directory, before) {
   for (const [path, hash] of Object.entries(before))
     assert.equal(after[path], hash, `${path} changed`);
 }
+
+test("completion repository is isolated before initialization and keeps deliberate fixture configuration", async t => {
+  const repo = await repository(t);
+  assert.equal(repo.git("rev-parse", "--show-toplevel"), repo.checkout.replaceAll("\\", "/"));
+  for (const target of ["index", "objects"])
+    assert.equal(repo.git("rev-parse", "--path-format=absolute", "--git-path", target),
+      join(repo.checkout, ".git", target).replaceAll("\\", "/"));
+  assert.equal(repo.git("config", "--get", "core.bare"), "false");
+  assert.equal(repo.git("config", "--get", "user.name"), "Synthetic Reviewer");
+  assert.equal(repo.git("show", "-s", "--format=%an|%cn", "HEAD"), "Synthetic Reviewer|Synthetic Reviewer");
+  assert.doesNotMatch(repo.git("count-objects", "-v"), /^alternate:/m);
+  assert.deepEqual(Object.keys(repo.env).filter(name => name.toUpperCase().startsWith("GIT_")).sort(),
+    ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT"]);
+  const remote = join(repo.directory, "independent.git");
+  repo.git("init", "--quiet", "--bare", remote);
+  assert.equal(repo.git("config", "--get", "core.bare"), "false");
+  assert.equal(repo.git("--git-dir", remote, "config", "--get", "core.bare"), "true");
+});
 
 test("reviewed integration work is not landed until the target branch contains its commit", async t => {
   const repo = await repository(t);

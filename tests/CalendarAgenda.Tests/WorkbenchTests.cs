@@ -16,6 +16,24 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
     private static readonly string[] Targets = ["og-full", "v2-full", "v2-half_horizontal", "v2-half_vertical"];
 
     [Fact]
+    public async Task Git_fixture_is_independent_of_inherited_repository_context()
+    {
+        await using var fixture = await Workspace.Create();
+        Assert.Equal(Path.GetFullPath(fixture.Root), Path.GetFullPath(await fixture.Git("rev-parse", "--show-toplevel")));
+        Assert.Equal(Path.Combine(fixture.Root, ".git"), Path.GetFullPath(await fixture.Git("rev-parse", "--absolute-git-dir")));
+        foreach (var target in new[] { "index", "objects" })
+            Assert.Equal(Path.Combine(fixture.Root, ".git", target),
+                Path.GetFullPath(await fixture.Git("rev-parse", "--path-format=absolute", "--git-path", target)));
+        Assert.Equal("false", await fixture.Git("config", "--get", "core.bare"));
+        Assert.Equal("Synthetic workbench", await fixture.Git("config", "--get", "user.name"));
+        Assert.Equal("Synthetic workbench|Synthetic workbench", await fixture.Git("show", "-s", "--format=%an|%cn", "HEAD"));
+        Assert.Equal(Path.Combine(fixture.Root, ".git", "empty-hooks"), await fixture.Git("config", "--get", "core.hooksPath"));
+        Assert.DoesNotContain("alternate:", await fixture.Git("count-objects", "-v"));
+        Assert.Contains("display/src/shared.liquid", await fixture.Git("ls-tree", "-r", "--name-only", fixture.Baseline));
+        Assert.DoesNotContain("owner.txt", await fixture.Git("ls-tree", "-r", "--name-only", fixture.Baseline));
+    }
+
+    [Fact]
     public async Task Startup_HEAD_is_immutable_and_live_template_and_scenario_inputs_remain_like_for_like()
     {
         await using var fixture = await Workspace.Create();
@@ -266,7 +284,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
 
         var scripts = Path.Combine(fixture.Root, "uninstalled", "scripts");
         Directory.CreateDirectory(scripts);
-        foreach (var file in new[] { "agenda-workbench.mjs", "agenda-contract.mjs" })
+        foreach (var file in new[] { "agenda-workbench.mjs", "agenda-contract.mjs", "git-environment.mjs" })
             File.Copy(Path.Combine(DisplayTests.Root, "scripts", file), Path.Combine(scripts, file));
         await fixture.StartFailure(fixture.Baseline, "Missing framework asset",
             launcher: Path.Combine(scripts, "agenda-workbench.mjs"));
@@ -388,7 +406,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
     private sealed class Workspace : IAsyncDisposable
     {
         private readonly List<(Process Process, Task<string> Errors)> processes = [];
-        internal string Root { get; } = Path.Combine(DisplayTests.Root, "artifacts", "workbench-tests", Guid.NewGuid().ToString("N"));
+        internal string Root { get; } = Path.Combine(Path.GetTempPath(), "agenda-workbench-tests", Guid.NewGuid().ToString("N"));
         internal string Template { get; private set; } = "";
         internal string Baseline { get; private set; } = "";
 
@@ -403,7 +421,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
             foreach (var file in new[] { Path.Combine("display", "render.rb"), Path.Combine("docs", "agenda-contract.md") })
                 File.Copy(Path.Combine(DisplayTests.Root, file), Path.Combine(workspace.Root, file));
             workspace.Template = await File.ReadAllTextAsync(Path.Combine(workspace.Root, "display", "src", "shared.liquid"));
-            await workspace.Git("init", "--quiet");
+            await workspace.Git("init", "--quiet", "--template=");
             await workspace.Git("config", "user.name", "Synthetic workbench");
             await workspace.Git("config", "user.email", "workbench@synthetic.invalid");
             await workspace.Git("config", "commit.gpgsign", "false");
@@ -460,6 +478,10 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+            foreach (var name in start.Environment.Keys.Where(name => name.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToArray())
+                start.Environment.Remove(name);
+            start.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
+            start.Environment["GIT_CONFIG_GLOBAL"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
             start.Environment["GIT_TERMINAL_PROMPT"] = "0";
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
             using var process = Process.Start(start)!;

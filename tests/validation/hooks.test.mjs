@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const hookNames = ["pre-commit", "pre-merge-commit", "pre-push"];
@@ -19,10 +20,7 @@ async function repository(t) {
   await mkdir(checkout);
   await mkdir(template);
   await writeFile(globalConfig, "");
-  const environment = { ...process.env };
-  for (const key of Object.keys(environment))
-    if (key.startsWith("GIT_")) delete environment[key];
-  Object.assign(environment, {
+  const environment = isolatedGitEnvironment({
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: globalConfig,
     GIT_TERMINAL_PROMPT: "0", HOOK_CALLS: calls, HOOK_FAIL_SCOPE: "", HOOK_MUTATION: ""
   });

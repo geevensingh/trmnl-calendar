@@ -120,6 +120,10 @@ The command resolves its own checkout root and reports each component as **PASSE
 
 Manual validation checks the current working tree, including unstaged edits. Full uses synthetic fixtures, local HTTP/storage substitutes, and disposable Git repositories/local bare remotes. Delivery checks compile Bicep and publish a local Release package; external mutating Azure commands are substituted. Validation does not fetch the owner's calendar, require private inputs, change Azure resources, deploy, or change application behavior.
 
+Foreign-repository Git subprocesses remove **all inherited `GIT_*` environment variables before the first `git init` or read**, not just `GIT_DIR` or the working directory. This includes common/work-tree, index/object/alternate selectors and environment-injected configuration. Node callers use `isolatedGitEnvironment(controls, inherited)` from `scripts/git-environment.mjs`; the C# Workbench fixture applies the same rule to `ProcessStartInfo.Environment`. Callers reapply only deliberate controls: fixtures disable system/global configuration and inherited templates, while the public Workbench retains normal on-disk user configuration. Non-Git tool settings are preserved. Workbench fixtures live in independent temporary directories. Owning-repository hooks, packaging/deployment reads and completion proof retain their intended Git context; the hook/validation boundary is not a substitute for isolating each foreign command.
+
+`tests/validation/git-isolation.test.mjs` exercises actual completion and C# Workbench fixture commands with exported pre-push context from synthetic standard and linked owners, individual selectors, and injected configuration. It compares SHA-256s of all owner working files and Git metadata, including config, refs, HEAD, indexes and object storage; identity checks alone cannot detect inherited index/object targets. Build the existing test project before running this Node regression directly; Full already builds it before Node tests. No reproduction targets a real checkout's metadata.
+
 ### Display setup troubleshooting
 
 | Failure | Recovery |

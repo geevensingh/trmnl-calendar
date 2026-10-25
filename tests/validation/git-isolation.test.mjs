@@ -103,7 +103,7 @@ writeFileSync(process.env.ISOLATION_CAPTURE, JSON.stringify(Object.fromEntries(
     assert.equal(result.status, 0, result.stderr);
     const exported = JSON.parse(await readFile(output, "utf8"));
     const gitDirectory = git(cwd, "rev-parse", "--absolute-git-dir");
-    if (cwd === linked) assert.equal(resolve(cwd, exported.GIT_DIR), gitDirectory);
+    if (cwd === linked) assert.equal(resolve(cwd, exported.GIT_DIR), resolve(gitDirectory));
     contexts.push({ cwd, exported, gitDirectory });
     await writeFile(join(cwd, "owner.txt"), "Stashed owner work\n");
     git(cwd, "stash", "push", "--quiet", "-m", "Owner stash");

@@ -284,7 +284,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
 
         var scripts = Path.Combine(fixture.Root, "uninstalled", "scripts");
         Directory.CreateDirectory(scripts);
-        foreach (var file in new[] { "agenda-workbench.mjs", "agenda-contract.mjs" })
+        foreach (var file in new[] { "agenda-workbench.mjs", "agenda-contract.mjs", "git-environment.mjs" })
             File.Copy(Path.Combine(DisplayTests.Root, "scripts", file), Path.Combine(scripts, file));
         await fixture.StartFailure(fixture.Baseline, "Missing framework asset",
             launcher: Path.Combine(scripts, "agenda-workbench.mjs"));

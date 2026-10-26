@@ -137,6 +137,30 @@ test("committed mode pins committed content and excludes every local layer witho
   record(t, review, accepted);
 });
 
+test("committed scope uses pinned Git entries when excluded local work replaces a file with a directory", async t => {
+  const repo = await repository(t);
+  await repo.write("task.txt", "Committed task\n");
+  const head = repo.commit("task.txt");
+  await mkdir(join(repo.checkout, "tracked-directory"));
+  await repo.write("tracked-directory/child.txt", "Committed directory child\n");
+  repo.commit("tracked-directory/child.txt");
+  await rm(join(repo.checkout, "task.txt"));
+  await mkdir(join(repo.checkout, "task.txt"));
+  await repo.write("task.txt/user.txt", "Excluded local directory content\n");
+  const indexBefore = await readFile(join(repo.checkout, ".git", "index"));
+  const statusBefore = repo.git("status", "--porcelain");
+
+  const review = manifest(repo.capture("committed"));
+  assert.match(review.commits.join("\n"), new RegExp(head));
+  assert.equal(repo.git("show", `${review.tree}:task.txt`), "Committed task");
+  assert.doesNotMatch(review.patch.join("\n"), /Excluded local|user\.txt/);
+  rejected(repo.capture("committed", ["tracked-directory"]), /Scope must contain individual file paths/);
+  assert.equal(repo.git("status", "--porcelain"), statusBefore);
+  assert.deepEqual(await readFile(join(repo.checkout, ".git", "index")), indexBefore);
+  assert.equal(await readFile(join(repo.checkout, "task.txt", "user.txt"), "utf8"), "Excluded local directory content\n");
+  record(t, review, manifest(repo.bind(review)));
+});
+
 test("uncommitted-only review reuses a recorded full baseline and accepts its unchanged eventual commit", async t => {
   const repo = await repository(t);
   await repo.write("task.txt", "Uncommitted task\n");
@@ -218,7 +242,18 @@ test("directory symlinks are literal file scopes in committed and working-tree r
       repo.git("config", "core.symlinks", "true");
       await mkdir(join(repo.checkout, "target"));
       await repo.write("target/nested.txt", "Directory contents are not the scoped link\n");
-      await symlink("target", join(repo.checkout, "directory-link"), "dir");
+      repo.commit("target/nested.txt");
+      try {
+        await symlink("target", join(repo.checkout, "directory-link"), "dir");
+      } catch (error) {
+        if (error.code !== "EPERM") throw error;
+        throw new Error(
+          "Full review fixtures require permission to create directory symbolic links. " +
+          "On Windows, explicitly enable Developer Mode or grant the account Create symbolic links permission; " +
+          "see README.md Local prerequisites. Tests never enable privileges or substitute junctions.",
+          { cause: error }
+        );
+      }
       if (mode === "committed") repo.commit("directory-link");
       const indexBefore = await readFile(join(repo.checkout, ".git", "index"));
       const review = manifest(repo.capture(mode, ["directory-link"]));
@@ -232,6 +267,34 @@ test("directory symlinks are literal file scopes in committed and working-tree r
       record(t, review, manifest(repo.bind(review, commit)));
     });
   }
+});
+
+test("unavailable directory symlink permission fails explicitly with documented prerequisite guidance", () => {
+  const injection = `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    fs.promises.symlink = async () => {
+      const error = new Error("Synthetic missing symbolic-link permission");
+      error.code = "EPERM";
+      throw error;
+    };
+    syncBuiltinESMExports();
+  `;
+  const env = isolatedGitEnvironment();
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, [
+    "--import", `data:text/javascript,${encodeURIComponent(injection)}`,
+    "--test", "--test-name-pattern=^directory symlinks",
+    fileURLToPath(import.meta.url)
+  ], {
+    cwd: root, env, encoding: "utf8", timeout: 30_000
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout + result.stderr, /Full review fixtures require permission to create directory symbolic links/);
+  assert.match(result.stdout + result.stderr, /Developer Mode|Create symbolic links/);
+  assert.match(result.stdout + result.stderr, /\bfail 3\b/);
+  assert.match(result.stdout + result.stderr, /\bskipped 0\b/);
 });
 
 test("one snapshot composes committed, staged, unstaged, and untracked task content while preserving user work", async t => {

@@ -45,6 +45,7 @@ Native polling remains **15 minutes**, independently of internal source refresh.
 
 - .NET 10 SDK selected by `global.json`, PowerShell 7, and Node.js 22 or newer. Node uses its built-in test runner; no npm packages or hook manager are needed.
 - Git for Windows for the opt-in hooks; it supplies their shell launcher.
+- Full's review-recipe fixtures require permission to create directory symbolic links. On Windows, explicitly enable Developer Mode or grant the test account **Create symbolic links** permission before running Full. The fixture checks this by creating a real link and fails with prerequisite guidance when permission is unavailable; scripts never enable privileges, substitute junctions, or skip the symlink assertions. Fast does not need this permission.
 - For Full validation: Azure Functions Core Tools v4 with .NET 10 support, the .NET/ASP.NET Core 10 runtimes, and Azure CLI with Bicep on PATH. Only local compilation is used; no Azure login is needed.
 - For display setup: Ruby 4, the lockfile's Bundler **4.0.20**, and compatible native-extension compiler/linker/make tools. On Windows, use RubyInstaller **with Devkit**; `redcarpet` and other locked gems have native extensions. Full validation needs the restored native gems to load, not a compiler merely to render them.
 

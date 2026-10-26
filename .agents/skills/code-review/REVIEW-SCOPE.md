@@ -15,6 +15,8 @@ Resolve the baseline-selection rules in `SKILL.md` first. Supply these inputs in
 
 Keep exclusions and their reasons beside the snapshot. Committed mode deliberately excludes all staged, unstaged, and untracked work. Working-tree mode overlays **final working files** on the pinned head, seeding scoped index entries first so staged executable/symlink modes survive when Git ignores filesystem modes. Staged and unstaged edits to the same file compose into one final candidate, not two competing versions. Frozen layer patches expose both edits; if they cancel completely, only the effective final change is reviewed. Untracked additions appear in the final patch and `untracked` list.
 
+Committed scope validation uses the pinned head/basis tree entries, not the live filesystem. An excluded local directory replacing a committed file cannot block that committed review.
+
 Whole-file scope is intentional: if a file contains unrelated user hunks, first construct an explicit task-only candidate in a disposable copy/alternate index, preserving the user file and real index. Use that candidate's tree and patches in the same manifest below. If intent cannot be isolated confidently, clarify before review; including the whole mixed file is not an exclusion.
 
 Resolve unmerged entries and index visibility restrictions before using the recipe. Dirty submodule contents need their own pinned review; a superproject tree only records the gitlink. Missing paths deleted in earlier implementation commits remain in scope without being re-added.
@@ -33,7 +35,8 @@ function Invoke-ReviewGit {
 if ($mode -notin @('committed', 'working-tree')) { throw 'Specify the review mode.' }
 if (@($paths).Count -eq 0) { throw 'Specify a nonempty literal file scope.' }
 foreach ($path in $paths) {
-    if (!$path -or ((Test-Path -LiteralPath $path -PathType Container) -and
+    if (!$path -or ($mode -eq 'working-tree' -and
+        (Test-Path -LiteralPath $path -PathType Container) -and
         (Get-Item -LiteralPath $path -Force).LinkType -ne 'SymbolicLink')) {
         throw 'Scope must contain individual file paths, not directories.'
     }
@@ -43,6 +46,15 @@ $reviewHead = Invoke-ReviewGit rev-parse --verify 'HEAD^{commit}'
 $bases = @(Invoke-ReviewGit merge-base --all $baseline $reviewHead)
 if ($bases.Count -ne 1) { throw 'A unique comparison basis is required.' }
 $basis = $bases[0]
+if ($mode -eq 'committed') {
+    foreach ($path in $paths) {
+        $entries = @(Invoke-ReviewGit ls-tree $reviewHead '--' $path) +
+            @(Invoke-ReviewGit ls-tree $basis '--' $path)
+        if ($entries -match '^040000 ') {
+            throw 'Scope must contain individual file paths, not directories.'
+        }
+    }
+}
 $headTree = Invoke-ReviewGit rev-parse "$reviewHead^{tree}"
 $reviewTree = $headTree
 $stagedPatch = @()

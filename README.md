@@ -77,6 +77,8 @@ This is the RubyGems `install bundler` operation, independent of another install
 
 **`scripts\validate.ps1` is the authoritative validation procedure**, for manual use, the opt-in hooks, and any future CI. Run the shared entrypoint rather than maintaining another list of checks. No CI workflow, PR requirement, or branch-protection change is introduced.
 
+**Agreed future design, not yet implemented:** [Required CI and manual local validation](docs/ci-validation-design.md) replaces automatic repository-managed hooks with required Full CI on up-to-date PRs. The commands and hook behavior below describe the current implementation, not that future state.
+
 ### Setup once per worktree
 
 For Fast-only work, restore .NET dependencies without requesting an SDK development certificate:

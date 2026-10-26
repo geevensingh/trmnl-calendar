@@ -1,6 +1,6 @@
 # TRMNL Calendar
 
-<!-- DISPOSABLE CI EVENT PROBE aa571f4b-c4e6-4b4b-a1c7-03f1a5795251: documentation-only synchronize fixture; never integrate. -->
+<!-- DISPOSABLE CI EVENT PROBE aa571f4b-c4e6-4b4b-a1c7-03f1a5795251: corrected preparation documentation-only synchronize fixture; never integrate. -->
 
 The agenda slices for [#3](https://github.com/geevensingh/trmnl-calendar/issues/3) and [#4](https://github.com/geevensingh/trmnl-calendar/issues/4), native configurable title exclusions from [#5](https://github.com/geevensingh/trmnl-calendar/issues/5), adaptive production views from [#6](https://github.com/geevensingh/trmnl-calendar/issues/6), persistent stale-source fallback from [#7](https://github.com/geevensingh/trmnl-calendar/issues/7), and secure delivery tooling for [#8](https://github.com/geevensingh/trmnl-calendar/issues/8), under [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2). Delivery tooling and the protected source preflight from [#11](https://github.com/geevensingh/trmnl-calendar/issues/11) are not claims of live activation.
 

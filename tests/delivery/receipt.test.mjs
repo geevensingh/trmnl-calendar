@@ -69,11 +69,16 @@ async function fixture(t, { squash = false } = {}) {
     run: { id: 100, run_attempt: 1, event: "workflow_dispatch", head_sha: base, head_branch: "main",
       path: ".github/workflows/delivery-receipt.yml", repository: { full_name: repository } },
     jobs: [],
-    comments: [], writes: [], unavailable: null, writeFailure: false
+    comments: [], writes: [], unavailable: null, writeFailure: false, writeFailures: new Set()
   };
+  state.associations = { [landing]: [67] };
+  state.associationResponses = {};
+  state.additional = {};
+  const requests = [];
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     const path = url.pathname.replace(`/repos/${repository}`, "");
+    requests.push(`${request.method} ${url.pathname}${url.search}`);
     response.setHeader("Content-Type", "application/json");
     if (state.unavailable === path) {
       response.writeHead(503).end(JSON.stringify({ message: "SECRET /private/machine https://secret.invalid" }));
@@ -90,12 +95,21 @@ async function fixture(t, { squash = false } = {}) {
         "/actions/runs/100/attempts/2/jobs": { jobs: state.jobs },
         "/issues/67/comments": state.comments
       }[path];
+      const associated = path.match(/^\/commits\/([a-f0-9]+)\/pulls$/);
+      if (associated) data = state.associationResponses[associated[1]] ??
+        (state.associations[associated[1]] ?? []).map(number =>
+          number === 67 ? state.pr : state.additional[number].pr);
+      const other = path.match(/^\/(?:pulls|issues)\/(\d+)(\/(?:timeline|reviews|comments|commits))?$/);
+      if (other && state.additional[other[1]]) {
+        const entry = state.additional[other[1]];
+        data = other[2] ? entry[other[2].slice(1)] : entry.pr;
+      }
     } else {
       let text = "";
       for await (const chunk of request) text += chunk;
       const payload = JSON.parse(text);
       state.writes.push({ method: request.method, path, payload });
-      if (state.writeFailure) {
+      if (state.writeFailure || state.writeFailures.has(path)) {
         response.writeHead(403).end(JSON.stringify({ message: "SECRET write diagnostic" }));
         return;
       }
@@ -105,11 +119,19 @@ async function fixture(t, { squash = false } = {}) {
       } else if (request.method === "PATCH" && path === "/issues/comments/900") {
         data = state.comments.find(comment => comment.id === 900);
         data.body = payload.body;
+      } else if (request.method === "POST" && /^\/issues\/\d+\/comments$/.test(path)) {
+        const number = Number(path.split("/")[2]);
+        const entry = state.additional[number];
+        data = { id: 900 + number, user: bot, performed_via_github_app: { id: 15368 }, body: payload.body };
+        entry.comments.push(data);
       }
     }
     if (Array.isArray(data)) {
       const page = Number(url.searchParams.get("page") ?? 1);
       data = data.slice((page - 1) * 100, page * 100);
+    } else if (data?.jobs) {
+      const page = Number(url.searchParams.get("page") ?? 1);
+      data = { ...data, jobs: data.jobs.slice((page - 1) * 100, page * 100) };
     }
     if (data === undefined) response.writeHead(404).end("{}");
     else response.end(JSON.stringify(data));
@@ -150,7 +172,74 @@ async function fixture(t, { squash = false } = {}) {
           conclusion: name === "Run the shared Full validation" ? conclusion : "success" }))
     }];
   }
-  return { directory, checkout, git, env, base, head, landing, tree, state, collect, full, invoke };
+  async function push(phase = "admit", batch = null, eventOverrides = {}, overrides = {}) {
+    const path = join(directory, phase === "admit" ? "push-event.json" : "push-batch.json");
+    const event = { repository: { full_name: repository }, ref: "refs/heads/main", before: base,
+      after: landing, deleted: false, forced: false, ...eventOverrides };
+    await writeFile(path, JSON.stringify(batch ?? event));
+    return invoke(join(root, "scripts", "delivery-push.mjs"), [phase, "--repository", repository,
+      "--run-id", "100", "--attempt", "1", "--orchestration-commit", state.run.head_sha,
+      "--api-url", api, phase === "admit" ? "--event" : "--batch", path], overrides);
+  }
+  async function landingCollect(entry, phase = "prepare", plan = null) {
+    const args = [phase, "--repository", repository, "--pr", `${entry.pr_number}`, "--run-id", "100",
+      "--attempt", "1", "--orchestration-commit", state.run.head_sha, "--api-url", api,
+      "--landing-commit", entry.landing_commit];
+    if (plan) {
+      const path = join(directory, `plan-${entry.pr_number}.json`);
+      await writeFile(path, JSON.stringify(plan));
+      args.push("--plan", path);
+    }
+    return invoke(command, args);
+  }
+  function pushFull(entry, plan, conclusion = "success") {
+    assert.equal(plan.provenance.landing_commit, entry.landing_commit);
+    assert.equal(plan.provenance.landing_tree, git("rev-parse", `${entry.landing_commit}^{tree}`));
+    state.jobs.push({
+      id: 200 + entry.pr_number, name: `Receipt PR ${entry.pr_number} / ${entry.landing_commit} / Exact landing Full`,
+      run_id: 100, run_attempt: 1, head_sha: state.run.head_sha, status: "completed", conclusion,
+      steps: ["Check out the exact landing", "Verify the exact checkout", "Run the shared Full validation"]
+        .map(name => ({ name, status: "completed",
+          conclusion: name === "Run the shared Full validation" ? conclusion : "success" }))
+    });
+  }
+  function published(entry, conclusion = "success") {
+    state.jobs.push({
+      id: 400 + entry.pr_number,
+      name: `Receipt PR ${entry.pr_number} / ${entry.landing_commit} / Persist the delivery assessment`,
+      run_id: 100, run_attempt: 1, head_sha: state.run.head_sha, status: "completed", conclusion
+    });
+  }
+  function asPush(after = landing) {
+    Object.assign(state.run, { event: "push", head_sha: after, path: ".github/workflows/delivery-receipt-push.yml" });
+  }
+  async function land(number, squash = false) {
+    const parent = git("rev-parse", "HEAD");
+    git("switch", "--quiet", "-c", `feature-${number}`);
+    await writeFile(join(checkout, `feature-${number}.txt`), `Implementation ${number}\n`);
+    git("add", ".");
+    git("commit", "--quiet", "-m", `Implementation ${number}`);
+    const head = git("rev-parse", "HEAD");
+    git("switch", "--quiet", "main");
+    if (squash) {
+      git("merge", "--quiet", "--squash", `feature-${number}`);
+      git("commit", "--quiet", "-m", `Human squash ${number}`);
+    } else {
+      git("merge", "--quiet", "--no-ff", `feature-${number}`, "-m", `Human merge ${number}`);
+    }
+    const commit = git("rev-parse", "HEAD");
+    state.additional[number] = {
+      pr: { ...structuredClone(state.pr), number, merge_commit_sha: commit,
+        head: { sha: head }, base: { sha: parent, ref: "main", repo: { full_name: repository } } },
+      timeline: [{ ...structuredClone(state.timeline[0]), commit_id: commit }],
+      reviews: [], comments: []
+    };
+    state.associations[commit] = [number];
+    git("push", "--quiet", "origin", "main");
+    return commit;
+  }
+  return { directory, checkout, git, env, base, head, landing, tree, state, collect, full, invoke,
+    push, landingCollect, pushFull, published, asPush, requests, land };
 }
 
 function output(result, status = 0) {
@@ -164,6 +253,12 @@ function receipt(state) {
   const match = state.comments[0].body.match(/<!-- delivery-receipt:v1\n([\s\S]*?)\n-->/);
   assert.ok(match, state.comments[0].body);
   return JSON.parse(match[1]);
+}
+
+function batchOutput(result, status = 0) {
+  assert.equal(result.status, status, result.stdout + result.stderr);
+  assert.equal(result.stderr, "");
+  return JSON.parse(result.stdout);
 }
 
 async function snapshot(directory) {
@@ -212,6 +307,347 @@ test("manual dispatch persists exact human-merge acceptance, Full and live publi
   assert.deepEqual(await readFile(join(f.checkout, ".git", "config")), config);
   assert.equal(f.state.pr.state, "closed");
   assert.match(f.state.pr.body, /incidental #8/);
+});
+
+test("a main push drives the immutable landing through independent Full to a persisted receipt and truthful batch summary", async t => {
+  const f = await fixture(t);
+  f.asPush();
+  const batch = output(await f.push());
+  assert.deepEqual(batch.landings, [{ pr_number: 67, landing_commit: f.landing }]);
+  assert.deepEqual(batch.exceptions, []);
+  const entry = batch.landings[0];
+  const plan = output(await f.landingCollect(entry));
+  f.pushFull(entry, plan);
+  f.state.jobs.unshift(...Array.from({ length: 100 }, (_, index) =>
+    ({ id: index + 1000, name: `Unrelated job ${index}` })));
+  const result = output(await f.landingCollect(entry, "publish", plan));
+  assert.equal(result.assessment, "complete");
+  f.published(entry);
+  const summary = output(await f.push("summarize", batch));
+  assert.equal(summary.complete, true);
+  assert.deepEqual(summary.landings.map(item => [item.pr_number, item.persisted, item.assessment]),
+    [[67, true, "complete"]]);
+  const attempt = receipt(f.state).attempts[0];
+  assert.equal(attempt.validation.run_on_commit, f.landing);
+  assert.equal(attempt.validation.evaluated_tree, f.tree);
+  assert.equal(attempt.validation.orchestration_commit, f.landing);
+  assert.ok(f.requests.some(path => path.includes("/jobs?per_page=100&page=2")));
+  assert.equal(f.state.writes.length, 1);
+  assert.equal(f.state.pr.state, "closed");
+});
+
+test("multi-landing push paginates and deduplicates associations without certifying constituent or unrelated commits", async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.checkout, "direct.txt"), "Unassociated target change\n");
+  f.git("add", ".");
+  f.git("commit", "--quiet", "-m", "Unassociated target change");
+  const direct = f.git("rev-parse", "HEAD");
+  const second = await f.land(68, true);
+  f.state.associations[f.landing] = Array(101).fill(67);
+  f.asPush(second);
+  const batch = output(await f.push("admit", null, { after: second }));
+  assert.deepEqual(batch.landings, [
+    { pr_number: 67, landing_commit: f.landing }, { pr_number: 68, landing_commit: second }
+  ]);
+  assert.deepEqual(batch.exceptions, [{ commit: direct, code: "push_commit_unassociated" }]);
+  assert.ok(f.requests.some(path => path.includes(`/commits/${f.landing}/pulls?per_page=100&page=2`)));
+  assert.ok(!f.requests.some(path => path.includes(`/commits/${f.head}/pulls`)));
+  const plans = await Promise.all(batch.landings.map(entry => f.landingCollect(entry)));
+  f.pushFull(batch.landings[0], output(plans[0]), "failure");
+  f.pushFull(batch.landings[1], output(plans[1]));
+  // Main may advance after admission; that must not change either immutable evaluation.
+  await writeFile(join(f.checkout, "later.txt"), "Later live main\n");
+  f.git("add", ".");
+  f.git("commit", "--quiet", "-m", "Later live main");
+  const liveTip = f.git("rev-parse", "HEAD");
+  f.git("push", "--quiet", "origin", "main");
+  const results = await Promise.all(batch.landings.map((entry, index) =>
+    f.landingCollect(entry, "publish", output(plans[index]))));
+  assert.deepEqual(results.map(result => output(result).assessment), ["failed", "complete"]);
+  for (const entry of batch.landings) f.published(entry);
+  const summary = batchOutput(await f.push("summarize", batch), 1);
+  assert.equal(summary.complete, false);
+  assert.deepEqual(summary.landings.map(item => [item.pr_number, item.persisted, item.assessment]),
+    [[67, true, "failed"], [68, true, "complete"]]);
+  assert.deepEqual(summary.exceptions, [{ commit: direct, code: "push_commit_unassociated" }]);
+  const first = receipt(f.state).attempts[0];
+  const other = receipt(f.state.additional[68]).attempts[0];
+  assert.equal(first.provenance.merge_kind, "merge");
+  assert.equal(other.provenance.merge_kind, "squash");
+  assert.equal(other.validation.run_on_commit, second);
+  assert.equal(first.publication.remote_commit, liveTip);
+  assert.equal(other.publication.remote_commit, liveTip);
+  assert.deepEqual(f.state.writes.map(write => write.path).sort(), ["/issues/67/comments", "/issues/68/comments"]);
+});
+
+test("a failed landing comment write does not hide another landing's independently persisted receipt", async t => {
+  const f = await fixture(t);
+  const second = await f.land(68, true);
+  f.asPush(second);
+  const batch = output(await f.push("admit", null, { after: second }));
+  f.state.writeFailures.add("/issues/67/comments");
+  for (const entry of batch.landings) {
+    const plan = output(await f.landingCollect(entry));
+    f.pushFull(entry, plan);
+    const result = await f.landingCollect(entry, "publish", plan);
+    if (entry.pr_number === 67) {
+      assert.deepEqual(output(result, 1).errors, ["receipt_write_failed"]);
+      f.published(entry, "failure");
+    } else {
+      assert.equal(output(result).assessment, "complete");
+      f.published(entry);
+    }
+  }
+  const summary = batchOutput(await f.push("summarize", batch), 1);
+  assert.equal(summary.complete, false);
+  assert.deepEqual(summary.landings.map(item => [item.persisted, item.assessment]),
+    [[false, "pending"], [true, "complete"]]);
+  assert.deepEqual(summary.landings[0].blockers, ["push_receipt_unavailable"]);
+  assert.equal(f.state.comments.length, 0);
+  assert.equal(f.state.additional[68].comments.length, 1);
+});
+
+test("push admission refuses stale or unmerged association evidence while preserving other landings", async t => {
+  const f = await fixture(t);
+  const second = await f.land(68, true);
+  f.asPush(second);
+  f.state.pr.merged = false;
+  const batch = output(await f.push("admit", null, { after: second }));
+  assert.deepEqual(batch.landings, [{ pr_number: 68, landing_commit: second }]);
+  assert.deepEqual(batch.exceptions, [{ commit: f.landing, code: "push_association_changed" }]);
+  const entry = batch.landings[0];
+  const plan = output(await f.landingCollect(entry));
+  f.pushFull(entry, plan);
+  assert.equal(output(await f.landingCollect(entry, "publish", plan)).assessment, "complete");
+  f.published(entry);
+  const summary = batchOutput(await f.push("summarize", batch), 1);
+  assert.equal(summary.landings[0].persisted, true);
+  assert.equal(f.state.comments.length, 0);
+});
+
+test("the automatic workflow independently calls the existing isolated exact-landing process without superseding work", async () => {
+  const automatic = await readFile(join(root, ".github/workflows/delivery-receipt-push.yml"), "utf8");
+  const landing = await readFile(join(root, ".github/workflows/delivery-receipt.yml"), "utf8");
+  assert.match(automatic, /push:\s*\n\s+branches:\s*\[main\]/);
+  assert.match(automatic, /fail-fast: false/);
+  assert.match(automatic, /uses: \.\/\.github\/workflows\/delivery-receipt\.yml/);
+  assert.match(automatic, /name: Receipt PR \$\{\{ matrix\.pr_number \}\} \/ \$\{\{ matrix\.landing_commit \}\}/);
+  assert.match(automatic, /--event "\$env:GITHUB_EVENT_PATH"/);
+  assert.match(automatic, /if: always\(\) && needs\.admit\.result == 'success'/);
+  assert.doesNotMatch(automatic + landing, /concurrency:|cancel-in-progress:/);
+  assert.match(landing, /workflow_call:/);
+  assert.match(landing, /EXPECTED_COMMIT: \$\{\{ needs\.prepare\.outputs\.landing \}\}/);
+  assert.match(landing, /--landing-commit/);
+  assert.match(landing, /validation:[\s\S]*?permissions:\s*\n\s+contents: read\s*\n\s+defaults:/);
+  assert.match(landing, /ref: \$\{\{ needs\.prepare\.outputs\.landing \}\}/);
+});
+
+test("batch summaries reject untrusted fields instead of echoing arbitrary input or claiming completion", async t => {
+  const f = await fixture(t);
+  f.asPush();
+  const batch = output(await f.push());
+  batch.private_diagnostic = "SECRET /private/machine https://private.invalid";
+  const result = await f.push("summarize", batch);
+  assert.deepEqual(output(result, 1).errors, ["push_batch_invalid"]);
+  assert.doesNotMatch(result.stdout + result.stderr, /SECRET|private\.invalid|\/private\/machine/);
+  assert.deepEqual(f.state.writes, []);
+});
+
+test("event admission reports missing or unsafe ranges rather than substituting the current main tip", async t => {
+  for (const [name, overrides, code] of [
+    ["missing before object", { before: "a".repeat(40) }, "commit_object_unavailable"],
+    ["initial branch creation", { before: "0".repeat(40) }, "push_range_unavailable"],
+    ["wrong event revision", { after: "a".repeat(40) }, "push_event_invalid"],
+    ["other branch", { ref: "refs/heads/feature" }, "push_event_invalid"],
+    ["other repository", { repository: { full_name: "other/repository" } }, "push_event_invalid"],
+    ["rewritten target", { forced: true }, "push_event_invalid"],
+    ["deleted target", { deleted: true }, "push_event_invalid"],
+    ["missing history", {}, "push_history_unavailable"],
+    ["non-first-parent range", null, "push_range_not_first_parent"]
+  ]) {
+    await t.test(name, async t => {
+      const f = await fixture(t);
+      f.asPush();
+      if (name === "missing history") await writeFile(join(f.checkout, ".git", "shallow"), `${f.base}\n`);
+      const batch = output(await f.push("admit", null, overrides ?? { before: f.head }));
+      assert.deepEqual(batch.landings, []);
+      assert.deepEqual(batch.exceptions, [{ commit: null, code }]);
+      const summary = batchOutput(await f.push("summarize", batch), 1);
+      assert.equal(summary.complete, false);
+      assert.deepEqual(f.state.writes, []);
+    });
+  }
+});
+
+test("an unavailable association page leaves an explicit exception while the other landing completes", async t => {
+  const f = await fixture(t);
+  const second = await f.land(68, true);
+  f.asPush(second);
+  f.state.unavailable = `/commits/${f.landing}/pulls`;
+  const batch = output(await f.push("admit", null, { after: second }));
+  assert.deepEqual(batch.landings, [{ pr_number: 68, landing_commit: second }]);
+  assert.deepEqual(batch.exceptions, [{ commit: f.landing, code: "github_evidence_unavailable" }]);
+  const entry = batch.landings[0];
+  const plan = output(await f.landingCollect(entry));
+  f.pushFull(entry, plan);
+  assert.equal(output(await f.landingCollect(entry, "publish", plan)).assessment, "complete");
+  f.published(entry);
+  assert.equal(batchOutput(await f.push("summarize", batch), 1).landings[0].persisted, true);
+  assert.doesNotMatch(JSON.stringify(f.state.additional[68].comments), /SECRET|private\.invalid|\/private\/machine/);
+});
+
+test("malformed association records cannot abort discovery of the remaining push landings", async t => {
+  const f = await fixture(t);
+  const second = await f.land(68, true);
+  f.asPush(second);
+  f.state.associationResponses[f.landing] = [null];
+  const batch = output(await f.push("admit", null, { after: second }));
+  assert.deepEqual(batch.landings, [{ pr_number: 68, landing_commit: second }]);
+  assert.deepEqual(batch.exceptions, [{ commit: f.landing, code: "github_evidence_invalid" }]);
+  const entry = batch.landings[0];
+  const plan = output(await f.landingCollect(entry));
+  f.pushFull(entry, plan);
+  assert.equal(output(await f.landingCollect(entry, "publish", plan)).assessment, "complete");
+  f.published(entry);
+  assert.equal(batchOutput(await f.push("summarize", batch), 1).landings[0].persisted, true);
+});
+
+test("ambiguous landing associations stay exceptions rather than choosing an arbitrary PR", async t => {
+  const f = await fixture(t);
+  const second = await f.land(68, true);
+  f.state.additional[69] = structuredClone(f.state.additional[68]);
+  Object.assign(f.state.additional[69].pr, { number: 69, merge_commit_sha: f.landing });
+  f.state.associations[f.landing] = [67, 69];
+  f.asPush(second);
+  const batch = output(await f.push("admit", null, { after: second }));
+  assert.deepEqual(batch.exceptions, [{ commit: f.landing, code: "push_landing_ambiguous" }]);
+  assert.deepEqual(batch.landings, [{ pr_number: 68, landing_commit: second }]);
+  const entry = batch.landings[0];
+  const plan = output(await f.landingCollect(entry));
+  f.pushFull(entry, plan);
+  assert.equal(output(await f.landingCollect(entry, "publish", plan)).assessment, "complete");
+  f.published(entry);
+  assert.equal(batchOutput(await f.push("summarize", batch), 1).landings[0].persisted, true);
+  assert.equal(f.state.comments.length, 0);
+  assert.equal(f.state.additional[69].comments.length, 0);
+});
+
+test("matrix capacity reports every landing and a visible exception instead of silently truncating the batch", async t => {
+  const f = await fixture(t);
+  let after = f.landing;
+  for (let number = 1000; number < 1257; number++) {
+    after = f.git("commit-tree", f.tree, "-p", after, "-m", `Synthetic target result ${number}`);
+    f.state.additional[number] = {
+      pr: { ...structuredClone(f.state.pr), number, merge_commit_sha: after },
+      comments: []
+    };
+    f.state.associations[after] = [number];
+  }
+  f.git("update-ref", "refs/heads/main", after);
+  f.git("push", "--quiet", "origin", "main");
+  f.asPush(after);
+  const batch = output(await f.push("admit", null, { before: f.landing, after }));
+  assert.equal(batch.schedulable, false);
+  assert.equal(batch.landings.length, 257);
+  assert.equal(batch.landings[0].pr_number, 1000);
+  assert.deepEqual(batch.landings.at(-1), { pr_number: 1256, landing_commit: after });
+  assert.deepEqual(batch.exceptions, [{ commit: null, code: "push_matrix_capacity_exceeded" }]);
+  assert.deepEqual(f.state.writes, []);
+});
+
+test("a persisted complete receipt does not conceal failure of that landing's publication job", async t => {
+  const f = await fixture(t);
+  f.asPush();
+  const batch = output(await f.push());
+  const entry = batch.landings[0];
+  const plan = output(await f.landingCollect(entry));
+  f.pushFull(entry, plan);
+  assert.equal(output(await f.landingCollect(entry, "publish", plan)).assessment, "complete");
+  f.published(entry, "failure");
+  const summary = batchOutput(await f.push("summarize", batch), 1);
+  assert.deepEqual(summary.landings.map(item => [item.persisted, item.assessment, item.blockers]),
+    [[true, "pending", ["push_publication_job_unsuccessful"]]]);
+  assert.equal(receipt(f.state).attempts[0].assessment, "complete");
+});
+
+test("an admitted landing pin cannot silently move to another result when preparation rereads the PR", async t => {
+  const f = await fixture(t);
+  f.asPush();
+  const batch = output(await f.push());
+  const changed = { ...batch.landings[0], landing_commit: f.base };
+  const plan = output(await f.landingCollect(changed));
+  assert.deepEqual(plan.blockers, ["admitted_landing_identity_changed"]);
+  assert.equal(plan.provenance.acceptance, null);
+  assert.deepEqual(f.state.writes, []);
+});
+
+test("automatic provenance blockers produce pending receipts without running Full on an unaccepted mapping", async t => {
+  for (const reason of ["nonhuman", "unexpected mapping"]) {
+    await t.test(reason, async t => {
+      const f = await fixture(t);
+      f.asPush();
+      if (reason === "nonhuman") f.state.pr.merged_by = bot;
+      else f.state.pr.head.sha = f.base;
+      const batch = output(await f.push());
+      const entry = batch.landings[0];
+      const plan = output(await f.landingCollect(entry));
+      assert.deepEqual(plan.blockers, [
+        reason === "nonhuman" ? "authorized_human_merge_required" : "unsupported_landing_mapping"
+      ]);
+      f.state.jobs.push({
+        id: 267, name: `Receipt PR 67 / ${f.landing} / Exact landing Full`, run_id: 100, run_attempt: 1,
+        head_sha: f.landing, status: "completed", conclusion: "skipped", steps: []
+      });
+      assert.equal(output(await f.landingCollect(entry, "publish", plan)).assessment, "pending");
+      f.published(entry);
+      const summary = batchOutput(await f.push("summarize", batch), 1);
+      assert.equal(summary.landings[0].persisted, true);
+      assert.equal(receipt(f.state).attempts[0].validation.outcome, "skipped");
+      assert.equal(receipt(f.state).attempts[0].validation.run_on_commit, null);
+    });
+  }
+});
+
+test("another landing's successful Full job cannot certify a missing exact-landing evaluation", async t => {
+  const f = await fixture(t);
+  const second = await f.land(68, true);
+  f.asPush(second);
+  const batch = output(await f.push("admit", null, { after: second }));
+  const plans = await Promise.all(batch.landings.map(entry => f.landingCollect(entry)));
+  f.pushFull(batch.landings[0], output(plans[0]));
+  for (const [index, entry] of batch.landings.entries()) {
+    const result = output(await f.landingCollect(entry, "publish", output(plans[index])));
+    assert.equal(result.assessment, index === 0 ? "complete" : "pending");
+    f.published(entry);
+  }
+  const summary = batchOutput(await f.push("summarize", batch), 1);
+  assert.deepEqual(summary.landings.map(item => item.assessment), ["complete", "pending"]);
+  assert.deepEqual(summary.landings[1].blockers, ["validation_job_unavailable"]);
+  assert.equal(receipt(f.state.additional[68]).attempts[0].validation.run_on_commit, null);
+});
+
+test("push collection preserves foreign Git state and foreign comments across admission and publication", async t => {
+  const f = await fixture(t);
+  f.asPush();
+  const foreign = join(f.directory, "foreign.git");
+  f.git("init", "--quiet", "--bare", "--template=", foreign);
+  await writeFile(join(foreign, "owner-state.txt"), "preserve foreign state\n");
+  const before = await snapshot(foreign);
+  const batch = output(await f.push("admit", null, {}, {
+    GIT_DIR: foreign, GIT_WORK_TREE: f.directory, GIT_COMMON_DIR: foreign,
+    GIT_INDEX_FILE: join(foreign, "foreign-index")
+  }));
+  const foreignComments = Array.from({ length: 100 }, (_, index) =>
+    ({ id: index + 1, user: human, body: `Owner bytes ${index}; keep unchanged.` }));
+  f.state.comments = structuredClone(foreignComments);
+  const entry = batch.landings[0];
+  const plan = output(await f.landingCollect(entry));
+  f.pushFull(entry, plan);
+  assert.equal(output(await f.landingCollect(entry, "publish", plan)).assessment, "complete");
+  f.published(entry);
+  assert.equal(batchOutput(await f.push("summarize", batch)).complete, true);
+  assert.deepEqual(f.state.comments.slice(0, 100), foreignComments);
+  assert.deepEqual(await snapshot(foreign), before);
 });
 
 test("a later failed Full updates the canonical receipt without hiding an earlier complete observation", async t => {

@@ -10,7 +10,7 @@ Verify the Git objects, landing tree and parents. For an ordinary merge, the sec
 
 ## 2. Collect a fresh exact-landing receipt
 
-Use [manual receipt collection](../delivery-receipts.md) for the identified human-merged PR. The workflow must already be human-landed on the default branch before dispatch is available. A newly checked-in workflow or fixture pass is not hosted activation.
+Inspect [automatic receipt collection](../delivery-receipts.md) for the event-bound push, including every landing and exception. Use manual dispatch for one identified human-merged PR when necessary. The workflows must already be human-landed on the default branch before hosted behavior is available. A newly checked-in workflow or fixture pass is not hosted activation.
 
 The read-only Windows validation job checks out the immutable landing and runs the existing setup and `scripts/validate.ps1 -Scope Full`. Record the actual run-on commit/tree, command, outcome and run/attempt. Every collection requires fresh Full: the PR's synthetic evaluation, another commit's green result, inherited checks and matching-tree reuse are not substitutes.
 
@@ -20,7 +20,7 @@ Trusted orchestration independently checks provenance and Actions run/job eviden
 
 One automation-owned PR comment contains a readable assessment and embedded essential evidence, including sequential attempt history. Check the latest attempt, not just a historical complete observation. Missing or cancelled Full, unavailable API/remote evidence, invalid ownership, exhausted comment capacity and failed writes remain explicit pending/failure outcomes. If persistence fails, report the failed collection run; do not claim a saved receipt.
 
-Absent declarations mean repository-change scope only. Explicit delivery markers/headings/fences, including malformed declarations, remain pending until ticket-scoped evaluation is implemented. Incidental issue mentions do not establish scope. This manual slice posts no ticket pointers, edits no PR metadata and closes no issues. Additional activation/device/review requirements remain independent gates.
+Absent declarations mean repository-change scope only. Explicit delivery markers/headings/fences, including malformed declarations, remain pending until ticket-scoped evaluation is implemented. Incidental issue mentions do not establish scope. This slice posts no ticket pointers, edits no PR metadata and closes no issues. Additional activation/device/review requirements remain independent gates.
 
 Report delivery only after every agreed condition is satisfied and its evidence is durable. A pending or failed latest attempt is not delivery. Use issue references, not automatic closing keywords, until closure is independently authorized and its gate satisfied.
 

@@ -64,7 +64,7 @@ It emits JSON on stdout/exit **0** for reachability or stderr/exit **1** otherwi
 
 The proof neither fetches nor changes files, branches, refs, `FETCH_HEAD`, configuration, or index flags. Reads remove inherited Git selectors, disable replacement/lazy objects, tracing and filesystem monitoring, suppress credential prompts, and have a 30-second per-command bound. Diagnostics, remote URLs and machine-private paths are excluded. This proves publication only, not acceptance, Full or ticket gates.
 
-Use the [manual receipt workflow and operator protocol](../delivery-receipts.md) for the complete path. It separates exact-landing validation from trusted comment publication and stores essential evidence plus sequential attempt history in one automation-owned PR comment. Explicit unsupported or malformed ticket declarations remain pending; this slice posts no ticket pointers.
+Use the [automatic/manual receipt workflows and operator protocol](../delivery-receipts.md) for the complete path. Inspect the event-bound push batch's per-landing outcomes and explicit exceptions; manual dispatch targets one identified PR. Each landing independently separates exact-landing validation from trusted comment publication and stores essential evidence plus sequential attempt history in one automation-owned PR comment. Hosted activation requires human/default-branch bootstrap and actual acceptance evidence. Explicit unsupported or malformed ticket declarations remain pending; this slice posts no ticket pointers.
 
 ### Legacy/local-target proof
 

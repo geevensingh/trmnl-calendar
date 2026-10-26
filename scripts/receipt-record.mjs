@@ -19,7 +19,7 @@ const codes = new Set([
   "exact_landing_checkout_unverified", "full_not_successful", "configured_remote_name_required",
   "remote_configuration_unavailable", "remote_not_configured", "invalid_remote_branch",
   "live_remote_unavailable", "live_remote_evidence_invalid", "landing_not_reachable_or_ancestry_unavailable",
-  "prepared_landing_identity_changed", "explicit_delivery_declaration_unsupported"
+  "prepared_landing_identity_changed", "explicit_delivery_declaration_unsupported", "admitted_landing_identity_changed"
 ]);
 const oneOf = values => value => values.includes(value);
 const nullable = check => value => value === null || check(value);

@@ -23,12 +23,12 @@ Resolve unmerged entries and index visibility restrictions before using the reci
 
 ## Freeze the snapshot
 
-The recipe returns `$review`, a manifest with immutable tree identities and frozen patches. Save its JSON outside the checkout with the spec/standards context and exclusions. The real index, working files, branch, and commits are left unchanged; Git may write candidate objects to its object database. Restore the alternate-index environment and remove only the named temporary index, even on failure.
+The recipe returns `$review`, a manifest with immutable tree identities and frozen patches. Save its JSON outside the checkout with the spec/standards context and exclusions. Use `git --no-replace-objects` throughout capture, frozen-file reads, and binding so identities describe actual objects rather than local replacements. The real index, working files, branch, and commits are left unchanged; Git may write candidate objects to its object database. Restore the alternate-index environment and remove only the named temporary index, even on failure.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
 function Invoke-ReviewGit {
-    $output = & git --no-optional-locks --no-pager --literal-pathspecs @args
+    $output = & git --no-replace-objects --no-optional-locks --no-pager --literal-pathspecs @args
     if ($LASTEXITCODE -ne 0) { throw "Review Git command failed: $($args[0]) ($LASTEXITCODE)." }
     $output
 }
@@ -110,15 +110,15 @@ $review = [ordered]@{
 $review | ConvertTo-Json -Depth 5
 ```
 
-The immutable comparison is `git --literal-pathspecs diff --binary --full-index --no-ext-diff --no-textconv <basis> <tree> -- <scope>`. Both axes receive the same saved manifest and bundle, not separate snapshots. Full file context is available through `git show <tree>:<path>`; deleted-file context comes from `<basis>:<path>`. The commit list can be empty in working-tree mode.
+The immutable comparison is `git --no-replace-objects --literal-pathspecs diff --binary --full-index --no-ext-diff --no-textconv <basis> <tree> -- <scope>`. Both axes receive the same saved manifest and bundle, not separate snapshots. Full file context is available through `git --no-replace-objects show <tree>:<path>`; deleted-file context comes from `<basis>:<path>` with the same option. The commit list can be empty in working-tree mode.
 
 The recipe is a point-in-time capture, not a lock. Reinventory task scope and repeat the capture before dispatch and before committing, comparing head, tree, scope, aggregate patch, and source context with the accepted bundle. Changes during capture require a fresh stable snapshot. Staging reviewed content can redistribute the layer patches without changing the candidate; that alone needs no renewed review. A newly added task file is a scope change even if the old scoped tree still matches. Excluded user edits remain excluded and preserved. For a task-only hunk candidate, repeat its isolation rather than using the whole-file overlay.
 
 ## Bind the resulting commit
 
-Commit only after the agreed validation and review gates. Retain the accepted manifest as `$review`; do not overwrite it with a fresh capture. Verify unchanged candidate content/scope/context first. When committing, select only task changes between `$review.head` and `$review.tree`, not unrelated staged files. For whole-file content candidates, stage each task path (`git --literal-pathspecs add --all -- <task-paths>`) only if it exists in the working tree or its literal index entry still exists, using the snapshot recipe's `Test-Path -LiteralPath` / `ls-files` condition. Already-staged deletions need no further add; retain them in the full task-path list for the path-limited commit (`git --literal-pathspecs commit --only -- <task-paths>`) if unrelated staged work exists. Keep literal matching through every scoped operation so filenames containing pattern characters cannot include excluded files.
+Commit only after the agreed validation and review gates. Retain the accepted manifest as `$review`; do not overwrite it with a fresh capture. Verify unchanged candidate content/scope/context first. When committing, select only task changes between `$review.head` and `$review.tree`, not unrelated staged files. For whole-file content candidates, stage each task path (`git --no-replace-objects --literal-pathspecs add --all -- <task-paths>`) only if it exists in the working tree or its literal index entry still exists, using the snapshot recipe's `Test-Path -LiteralPath` / `ls-files` condition. Already-staged deletions need no further add; retain them in the full task-path list for the path-limited commit (`git --no-replace-objects --literal-pathspecs commit --only -- <task-paths>`) if unrelated staged work exists, except for the index-only modes below. Keep literal matching through every scoped operation so filenames containing pattern characters cannot include excluded files.
 
-Git's path-limited commit can discard index-only executable modes when `core.filemode=false`. For those modes, use an ordinary commit only when the index contains task work alone. If unrelated staged work exists, use a separate temporary `GIT_INDEX_FILE` initialized with `git read-tree <reviewed-tree>`, commit that candidate, then restore the original index environment and refresh **only task paths** in its staging area from the new commit (`git --literal-pathspecs restore --staged --source=<commit> -- <task-paths>`). Preserve excluded staged entries and all working files; restore the environment and remove only the named temporary index in `finally`. Hunk-isolated candidates need an equally isolated commit and preserved excluded hunks, not the whole-file staging refresh.
+Git's path-limited commit can discard index-only executable modes when `core.filemode=false` and index-only symlink types when `core.symlinks=false` (plain link-target text in the working file, mode `120000` in the index). For either configuration, preserve the reviewed index mode with an ordinary `git --no-replace-objects commit` only when the index contains task work alone; avoid `--only` and `--all`. If unrelated staged work exists, use a separate temporary `GIT_INDEX_FILE` initialized with `git --no-replace-objects read-tree <reviewed-tree>`, commit that candidate with the same ordinary command, then restore the original index environment and refresh **only task paths** in its staging area from the new commit (`git --no-replace-objects --literal-pathspecs restore --staged --source=<commit> -- <task-paths>`). Preserve excluded staged entries and all working files; restore the environment and remove only the named temporary index in `finally`. Hunk-isolated candidates need an equally isolated commit and preserved excluded hunks, not the whole-file staging refresh.
 
 If the candidate tree already equals the pinned head tree, use that existing head; no empty or premature commit is necessary. Otherwise the eventual commit must have exactly the pinned head as its single parent and exactly the candidate's **whole tree**, not merely similar patch text or matching filenames. A rebase, intervening commit, squash, added path, mode change, or different file content invalidates this binding and needs renewed review/verification.
 
@@ -126,14 +126,14 @@ Set `$candidate` to the full resulting commit ID and run:
 
 ```powershell
 if ($candidate -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { throw 'Use a full implementation commit ID.' }
-$acceptedCommit = & git rev-parse --verify --end-of-options "$candidate^{commit}"
+$acceptedCommit = & git --no-replace-objects rev-parse --verify --end-of-options "$candidate^{commit}"
 if ($LASTEXITCODE -ne 0) { throw 'Implementation commit does not resolve.' }
-$acceptedTree = & git rev-parse "$acceptedCommit^{tree}"
+$acceptedTree = & git --no-replace-objects rev-parse "$acceptedCommit^{tree}"
 if ($LASTEXITCODE -ne 0) { throw 'Implementation tree does not resolve.' }
 if ($acceptedTree -ne $review.tree) { throw 'Content changed; renew review and verification.' }
 if ($acceptedCommit -ne $review.head) {
     if ($review.mode -ne 'working-tree') { throw 'Committed review accepts only its pinned head.' }
-    $line = & git rev-list --parents -n 1 $acceptedCommit
+    $line = & git --no-replace-objects rev-list --parents -n 1 $acceptedCommit
     if ($LASTEXITCODE -ne 0) { throw 'Implementation parents do not resolve.' }
     $identities = $line -split ' '
     if ($identities.Count -ne 2 -or $identities[1] -ne $review.head) {
@@ -151,4 +151,4 @@ Record this full accepted commit ID with both axis reports, scope/exclusions, an
 
 ## Disposable demonstrations
 
-`tests\validation\review-scope.test.mjs` executes these Markdown recipes with real Git in disposable repositories under Node's existing test runner. It covers committed-only and uncommitted-only changes, layered staged/unstaged edits, task untracked files, unrelated staged/unstaged/untracked work, recorded and invalid baselines, empty changes, staged executable modes with `core.filemode=false`, literal filenames containing pattern characters or dictionary member names, case-distinct Git paths, directory symlinks as single file entries, staged and unstaged deletions, renamed paths, and post-review content/scope/parent changes. Diagnostics identify each shared review snapshot and accepted commit; these are recipe demonstrations, not additional reviewers or acceptance of production changes.
+`tests\validation\review-scope.test.mjs` executes these Markdown recipes with real Git in disposable repositories under Node's existing test runner. It covers committed-only and uncommitted-only changes, layered staged/unstaged edits, task untracked files, unrelated staged/unstaged/untracked work, recorded and invalid baselines, empty changes, staged executable modes with `core.filemode=false`, index-only symlinks with `core.symlinks=false`, replacement objects affecting capture/frozen reads/binding, literal filenames containing pattern characters or dictionary member names, case-distinct Git paths, directory symlinks as single file entries, staged and unstaged deletions, renamed paths, and post-review content/scope/parent changes. Diagnostics identify each shared review snapshot and accepted commit; these are recipe demonstrations, not additional reviewers or acceptance of production changes.

@@ -25,6 +25,13 @@ function taskCommand(command, paths, commit) {
   return args;
 }
 
+function frozenFile(repo, tree, path) {
+  const snippet = [...reference.matchAll(/`git ([^`\r\n]+)`/g)]
+    .map(match => match[1]).find(value => value.endsWith("show <tree>:<path>"));
+  assert.ok(snippet, "Exercise the documented frozen-file read.");
+  return repo.git(...snippet.split(" ").map(value => value.replace("<tree>", tree).replace("<path>", path)));
+}
+
 async function repository(t) {
   const directory = await mkdtemp(join(tmpdir(), "agenda review scope "));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -181,6 +188,56 @@ test("uncommitted-only review reuses a recorded full baseline and accepts its un
   assert.equal(accepted.accepted_commit, commit);
   assert.equal(repo.git("rev-parse", `${commit}^{tree}`), review.tree);
   record(t, review, accepted);
+});
+
+test("replacement objects cannot change pinned snapshot content or frozen file reads", async t => {
+  for (const replacement of ["commit", "blob"]) {
+    await t.test(replacement, async t => {
+      const repo = await repository(t);
+      await repo.write("task.txt", "Actual committed task\n");
+      const head = repo.commit("task.txt");
+      const tree = repo.git("--no-replace-objects", "rev-parse", `${head}^{tree}`);
+      const originalBlob = repo.git("--no-replace-objects", "rev-parse", `${head}:task.txt`);
+      await repo.write("task.txt", "Replacement-only content\n");
+      repo.commit("task.txt");
+      const replacementTree = repo.git("rev-parse", "HEAD^{tree}");
+      const replacementCommit = repo.git("commit-tree", replacementTree, "-p", repo.baseline, "-m", "Replacement commit");
+      const replacementBlob = repo.git("rev-parse", `${replacementCommit}:task.txt`);
+      repo.git("switch", "--quiet", "--detach", head);
+      repo.git("replace", replacement === "commit" ? head : originalBlob,
+        replacement === "commit" ? replacementCommit : replacementBlob);
+      const indexBefore = await readFile(join(repo.checkout, ".git", "index"));
+      const review = manifest(repo.capture("committed"));
+
+      assert.equal(review.head, head);
+      assert.equal(review.tree, tree);
+      assert.match(review.patch.join("\n"), /\+Actual committed task/);
+      assert.doesNotMatch(review.patch.join("\n"), /Replacement-only/);
+      assert.equal(frozenFile(repo, review.tree, "task.txt"), "Actual committed task");
+      assert.deepEqual(await readFile(join(repo.checkout, ".git", "index")), indexBefore);
+      record(t, review, manifest(repo.bind(review, head)));
+    });
+  }
+});
+
+test("replacement objects cannot disguise a different implementation tree or parent during binding", async t => {
+  for (const difference of ["tree", "parent"]) {
+    await t.test(difference, async t => {
+      const repo = await repository(t);
+      await repo.write("task.txt", "Reviewed task\n");
+      const review = manifest(repo.capture());
+      const accepted = repo.commit("task.txt");
+      const baselineTree = repo.git("rev-parse", `${repo.baseline}^{tree}`);
+      const candidate = difference === "tree"
+        ? repo.git("commit-tree", baselineTree, "-p", review.head, "-m", "Wrong tree")
+        : repo.git("commit-tree", review.tree, "-m", "Wrong parent");
+      repo.git("replace", candidate, accepted);
+      rejected(repo.bind(review, candidate), difference === "tree"
+        ? /Content changed; renew review and verification/
+        : /Review head changed; renew review and verification/);
+      record(t, review, manifest(repo.bind(review, accepted)));
+    });
+  }
 });
 
 test("scoped filename Keys cannot shadow the staged-entry key collection", async t => {
@@ -410,6 +467,49 @@ test("an alternate-index commit preserves staged task modes without committing u
   assert.match(repo.git("status", "--porcelain"), /MM unrelated\.txt/);
   assert.match(repo.git("ls-tree", commit, "--", "task.txt"), /^100755 blob /);
   record(t, review, accepted);
+});
+
+test("index-only symlink types bind with core.symlinks false while preserving user staging", async t => {
+  for (const unrelated of [false, true]) {
+    await t.test(unrelated ? "alternate index" : "task-only index", async t => {
+      const repo = await repository(t);
+      repo.git("config", "core.symlinks", "false");
+      await repo.write("task.txt", "link-target\n");
+      repo.commit("task.txt");
+      const blob = repo.git("rev-parse", ":task.txt");
+      repo.git("update-index", "--cacheinfo", "120000", blob, "task.txt");
+      if (unrelated) {
+        await repo.write("unrelated.txt", "User staged\n");
+        repo.git("add", "--", "unrelated.txt");
+        await repo.write("unrelated.txt", "User staged\nUser unstaged\n");
+      }
+      const indexBefore = repo.git("ls-files", "--stage");
+      const review = manifest(repo.capture());
+      assert.match(repo.git("ls-tree", review.tree, "--", "task.txt"), /^120000 blob /);
+      assert.equal(repo.git("ls-files", "--stage"), indexBefore);
+
+      const commitIndex = join(repo.directory, "symlink-commit.index");
+      try {
+        if (unrelated) {
+          repo.env.GIT_INDEX_FILE = commitIndex;
+          repo.git("--no-replace-objects", "read-tree", review.tree);
+        }
+        repo.git("--no-replace-objects", "commit", "--quiet", "-m", "Preserve index-only symlink");
+      } finally {
+        delete repo.env.GIT_INDEX_FILE;
+        await rm(commitIndex, { force: true });
+      }
+      const commit = repo.git("--no-replace-objects", "rev-parse", "HEAD");
+      if (unrelated) repo.git(...taskCommand("restore --staged", ["task.txt"], commit));
+      assert.match(repo.git("ls-tree", commit, "--", "task.txt"), /^120000 blob /);
+      assert.equal(await readFile(join(repo.checkout, "task.txt"), "utf8"), "link-target\n");
+      if (unrelated) {
+        assert.equal(repo.git("show", ":unrelated.txt"), "User staged");
+        assert.equal(await readFile(join(repo.checkout, "unrelated.txt"), "utf8"), "User staged\nUser unstaged\n");
+      }
+      record(t, review, manifest(repo.bind(review, commit)));
+    });
+  }
 });
 
 test("literal task filenames cannot commit unrelated pattern-matching files", async t => {

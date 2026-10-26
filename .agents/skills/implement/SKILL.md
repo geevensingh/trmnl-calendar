@@ -10,7 +10,7 @@ Before implementation, establish the contract in `docs/agents/delivery.md`; use 
 
 If the user passes a ticket reference, fetch it from the issue tracker and state its title before starting. If the reference is ambiguous, ask.
 
-Before editing, record the full implementation-start commit (`git rev-parse --verify 'HEAD^{commit}'`), the originating ticket/spec, and the intended task scope in the session or issue. Reuse a valid baseline already recorded for this implementation. Keep this identity fixed across later commits.
+Before editing, record the full implementation-start commit (`git --no-replace-objects rev-parse --verify 'HEAD^{commit}'`), the originating ticket/spec, and the intended task scope in the session or issue. Reuse a valid baseline already recorded for this implementation. Keep this identity fixed across later commits.
 
 Call the Skill tool with "tdd" where possible, at pre-agreed seams.
 

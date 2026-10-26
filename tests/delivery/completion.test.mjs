@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,7 @@ const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const command = join(root, "scripts", "check-completion.mjs");
 
 async function repository(t) {
-  const directory = await mkdtemp(join(tmpdir(), "agenda-completion-"));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "agenda-completion-")));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const checkout = join(directory, "checkout");
   await mkdir(checkout);

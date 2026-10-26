@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,7 @@ const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const hookNames = ["pre-commit", "pre-merge-commit", "pre-push"];
 
 async function repository(t) {
-  const directory = await mkdtemp(join(tmpdir(), "agenda hook migration "));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "agenda hook migration ")));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const checkout = join(directory, "checkout with ' quotes");
   const template = join(directory, "empty-template");

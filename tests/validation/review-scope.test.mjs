@@ -253,6 +253,38 @@ test("scoped filename Keys cannot shadow the staged-entry key collection", async
   record(t, review, manifest(repo.bind(review, repo.commit("Keys"))));
 });
 
+test("binding checks actual parents despite grafts and shallow boundaries", async t => {
+  for (const graph of ["grafted root", "grafted merge", "shallow candidate"]) {
+    await t.test(graph, async t => {
+      const repo = await repository(t);
+      await repo.write("task.txt", "Reviewed task\n");
+      const review = manifest(repo.capture());
+      const valid = repo.commit("task.txt");
+      let candidate = valid;
+      if (graph === "shallow candidate") {
+        await writeFile(join(repo.checkout, ".git", "shallow"), `${candidate}\n`);
+        assert.equal(repo.git("rev-list", "--parents", "-n", "1", candidate), candidate);
+      } else {
+        candidate = graph === "grafted root"
+          ? repo.git("commit-tree", review.tree, "-m", `Wrong root\n\nparent ${review.head}`)
+          : repo.git("commit-tree", review.tree, "-p", review.head, "-p", valid, "-m", "Wrong merge");
+        await mkdir(join(repo.checkout, ".git", "info"), { recursive: true });
+        await writeFile(join(repo.checkout, ".git", "info", "grafts"), `${candidate} ${review.head}\n`);
+        assert.equal(repo.git("rev-list", "--parents", "-n", "1", candidate), `${candidate} ${review.head}`);
+      }
+      const raw = repo.git("--no-replace-objects", "cat-file", "commit", candidate);
+      const headers = raw.split("\n\n")[0].split("\n");
+      const parents = headers.filter(line => line.startsWith("parent "));
+      assert.equal(parents.length, graph === "grafted root" ? 0 : graph === "grafted merge" ? 2 : 1);
+      if (graph === "shallow candidate") {
+        record(t, review, manifest(repo.bind(review, candidate)));
+      } else {
+        rejected(repo.bind(review, candidate), /Review head changed; renew review and verification/);
+      }
+    });
+  }
+});
+
 test("case-distinct scoped Git paths retain separate index-only executable modes", async t => {
   const repo = await repository(t);
   repo.git("config", "core.ignorecase", "false");

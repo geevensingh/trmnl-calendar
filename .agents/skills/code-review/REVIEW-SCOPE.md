@@ -120,7 +120,7 @@ Commit only after the agreed validation and review gates. Retain the accepted ma
 
 Git's path-limited commit can discard index-only executable modes when `core.filemode=false` and index-only symlink types when `core.symlinks=false` (plain link-target text in the working file, mode `120000` in the index). For either configuration, preserve the reviewed index mode with an ordinary `git --no-replace-objects commit` only when the index contains task work alone; avoid `--only` and `--all`. If unrelated staged work exists, use a separate temporary `GIT_INDEX_FILE` initialized with `git --no-replace-objects read-tree <reviewed-tree>`, commit that candidate with the same ordinary command, then restore the original index environment and refresh **only task paths** in its staging area from the new commit (`git --no-replace-objects --literal-pathspecs restore --staged --source=<commit> -- <task-paths>`). Preserve excluded staged entries and all working files; restore the environment and remove only the named temporary index in `finally`. Hunk-isolated candidates need an equally isolated commit and preserved excluded hunks, not the whole-file staging refresh.
 
-If the candidate tree already equals the pinned head tree, use that existing head; no empty or premature commit is necessary. Otherwise the eventual commit must have exactly the pinned head as its single parent and exactly the candidate's **whole tree**, not merely similar patch text or matching filenames. A rebase, intervening commit, squash, added path, mode change, or different file content invalidates this binding and needs renewed review/verification.
+If the candidate tree already equals the pinned head tree, use that existing head; no empty or premature commit is necessary. Otherwise the eventual commit must have exactly the pinned head as its single parent and exactly the candidate's **whole tree**, not merely similar patch text or matching filenames. Read parent entries from the raw commit header: graph traversal can honor grafts or hide parents at shallow boundaries, and commit-message text is not a header. A rebase, intervening commit, squash, added path, mode change, or different file content invalidates this binding and needs renewed review/verification.
 
 Set `$candidate` to the full resulting commit ID and run:
 
@@ -133,10 +133,16 @@ if ($LASTEXITCODE -ne 0) { throw 'Implementation tree does not resolve.' }
 if ($acceptedTree -ne $review.tree) { throw 'Content changed; renew review and verification.' }
 if ($acceptedCommit -ne $review.head) {
     if ($review.mode -ne 'working-tree') { throw 'Committed review accepts only its pinned head.' }
-    $line = & git --no-replace-objects rev-list --parents -n 1 $acceptedCommit
+    $commitObject = @(& git --no-replace-objects cat-file commit $acceptedCommit)
     if ($LASTEXITCODE -ne 0) { throw 'Implementation parents do not resolve.' }
-    $identities = $line -split ' '
-    if ($identities.Count -ne 2 -or $identities[1] -ne $review.head) {
+    $parents = @()
+    foreach ($header in $commitObject) {
+        if ($header -eq '') { break }
+        if ($header -cmatch '^parent ([0-9a-f]{40}|[0-9a-f]{64})$') {
+            $parents += $Matches[1]
+        }
+    }
+    if ($parents.Count -ne 1 -or $parents[0] -ne $review.head) {
         throw 'Review head changed; renew review and verification.'
     }
 }
@@ -151,4 +157,4 @@ Record this full accepted commit ID with both axis reports, scope/exclusions, an
 
 ## Disposable demonstrations
 
-`tests\validation\review-scope.test.mjs` executes these Markdown recipes with real Git in disposable repositories under Node's existing test runner. It covers committed-only and uncommitted-only changes, layered staged/unstaged edits, task untracked files, unrelated staged/unstaged/untracked work, recorded and invalid baselines, empty changes, staged executable modes with `core.filemode=false`, index-only symlinks with `core.symlinks=false`, replacement objects affecting capture/frozen reads/binding, literal filenames containing pattern characters or dictionary member names, case-distinct Git paths, directory symlinks as single file entries, staged and unstaged deletions, renamed paths, and post-review content/scope/parent changes. Diagnostics identify each shared review snapshot and accepted commit; these are recipe demonstrations, not additional reviewers or acceptance of production changes.
+`tests\validation\review-scope.test.mjs` executes these Markdown recipes with real Git in disposable repositories under Node's existing test runner. It covers committed-only and uncommitted-only changes, layered staged/unstaged edits, task untracked files, unrelated staged/unstaged/untracked work, recorded and invalid baselines, empty changes, staged executable modes with `core.filemode=false`, index-only symlinks with `core.symlinks=false`, replacement objects affecting capture/frozen reads/binding, grafted and shallow parent graphs, literal filenames containing pattern characters or dictionary member names, case-distinct Git paths, directory symlinks as single file entries, staged and unstaged deletions, renamed paths, and post-review content/scope/parent changes. Diagnostics identify each shared review snapshot and accepted commit; these are recipe demonstrations, not additional reviewers or acceptance of production changes.

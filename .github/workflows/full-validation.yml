@@ -15,7 +15,7 @@ jobs:
       group: ${{ format('full-validation-{0}', github.event.pull_request.number || github.ref) }}
       cancel-in-progress: true
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: pwsh

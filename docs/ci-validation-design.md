@@ -1,6 +1,6 @@
 # Required CI and manual local validation
 
-**Status: implementation prepared; hosted execution and GitHub enforcement acceptance pending.** This implements the design agreed on 2026-10-25 and specified in [#39](https://github.com/geevensingh/trmnl-calendar/issues/39). A checked-in workflow is not proof that it has run or that merging is protected. The [local validation documentation](../README.md#local-validation) describes current commands and the explicit hook migration.
+**Status: implementation prepared; owner-authorized protection configured and read back; hosted Full success and behavioral enforcement acceptance pending.** This implements the design agreed on 2026-10-25 and specified in [#39](https://github.com/geevensingh/trmnl-calendar/issues/39). A checked-in workflow or a settings readback is not proof of successful Full execution or actual failing/stale-PR rejection. The [local validation documentation](../README.md#local-validation) describes current commands and the explicit hook migration.
 
 ## Validation and enforcement are separate
 
@@ -37,17 +37,29 @@ Coordinate with linked-worktree users, then run from a checkout containing this 
 
 Status is read-only. Removal recognizes only exact historical generated v1 bytes and is repeatable when hooks are absent. It removes unchanged hooks from Git's **common default hooks directory**, affecting every linked worktree using that directory, including older branches. It preserves foreign/edited hooks, unrelated files, linked entries/directories, effective `core.hooksPath` settings and all configured destinations without changing Git configuration. A preserved target produces explicit nonzero partial-removal failure, not a successful migration claim. Custom validation invocations require their owner's manual decision. Neither checkout, CI nor setup silently migrates a contributor's real hooks.
 
-## Owner-applied protection configuration (pending)
+## Owner-authorized protection configuration
 
-Settings changes require separate explicit human authorization; code/feature-branch permission does not authorize them. At the implementation-time read on **2026-10-26 UTC**, this public repository's protection endpoint returned `404 Branch not protected` and its repository ruleset list was empty. Repository metadata was visible with administrative access. These observations are visibility-limited and time-bound, not proof of future settings or an active guarantee.
+Settings changes require separate explicit human authorization; code/feature-branch permission does not authorize them. The initial implementation-time read on **2026-10-26 UTC** returned `404 Branch not protected` and an empty repository ruleset list. Later that day, the owner separately authorized the coordinator to configure protection. A subsequent independent read of `branches/main/protection` confirmed:
 
-After the genuine PR run below exposes the check, the owner can use **Settings > Branches > Add branch protection rule** (classic protection) for the exact pattern **`main`**:
+| Setting | Observed value |
+| --- | --- |
+| Required PR | Non-null `required_pull_request_reviews`, zero required approvals |
+| Required check/source | `Full validation`, GitHub Actions `app_id: 15368` |
+| Branch freshness | `required_status_checks.strict: true` |
+| Administrator enforcement | `enforce_admins.enabled: true` |
+| Additional review quota | No code-owner or last-push approval requirement |
+| Force pushes/deletions | Both disabled |
+| Standing bypass allowances | None configured; personal-repository response omits organization-only allowance fields |
+
+The implementation child did not change settings. These observations are time-bound configuration evidence, not yet behavioral acceptance for failing, missing or stale checks. The initial hosted run on PR #38 was started after feature integration; its successful outcome is still pending.
+
+For a new installation or separately authorized repair, use **Settings > Branches > Add branch protection rule** (classic protection) for the exact pattern **`main`**:
 
 1. Enable **Require a pull request before merging**. Do not add an approval quota, code-owner review requirement, last-push approval requirement or PR-bypass actor.
 2. Enable **Require status checks to pass before merging**, select **Full validation** from **GitHub Actions**, and enable **Require branches to be up to date before merging**.
 3. Enable **Do not allow bypassing the above settings** so administrators are included. Leave force pushes and deletions disallowed. Do not add standing bypass allowances. Save, then independently inspect effective settings and mergeability.
 
-The intended classic REST configuration has `required_status_checks.strict: true`, one check with `context: "Full validation"` and `app_id` equal to the **observed GitHub Actions app ID**, `enforce_admins.enabled: true`, and a non-null `required_pull_request_reviews` object with `required_approving_review_count: 0` and empty PR-bypass allowances. Force pushes/deletions remain disabled. Preserve any other existing protections; do not replace live settings blindly with a partial payload. For a ruleset instead, use **Active** enforcement, target only `refs/heads/main`, require PRs, the same app-bound check and strict freshness, and leave the **entire bypass list empty**, including administrators. Check overlapping rules/rulesets as well.
+The intended classic REST configuration has `required_status_checks.strict: true`, one check with `context: "Full validation"` and `app_id` equal to the **observed GitHub Actions app ID**, `enforce_admins.enabled: true`, and a non-null `required_pull_request_reviews` object with `required_approving_review_count: 0` and no PR-bypass allowances. Force pushes/deletions remain disabled. Personal repositories reject organization-only fields such as `bypass_pull_request_allowances`, even when their actor lists are empty; omit unsupported fields rather than adding an exemption. Preserve any other existing protections; do not replace live settings blindly with a partial payload. For a ruleset instead, use **Active** enforcement, target only `refs/heads/main`, require PRs, the same app-bound check and strict freshness, and leave the **entire bypass list empty**, including administrators. Check overlapping rules/rulesets as well.
 
 Public repositories support protection on GitHub Free; private visibility or plan changes can alter availability. A forbidden/unavailable API, unsupported plan, inability to bind the source app, bypass exemption or missing separate authorization is an **enforcement blocker**, never permission to weaken the requirement. Administrators can deliberately edit policy in an emergency, but that is a separate human-controlled policy change, not a permanent bypass.
 

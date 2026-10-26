@@ -77,7 +77,7 @@ This is the RubyGems `install bundler` operation, independent of another install
 
 **`scripts\validate.ps1` is the authoritative validation procedure**, for manual use and GitHub Actions. Run the shared entrypoint rather than maintaining another list of checks.
 
-The checked-in [Full validation workflow](.github/workflows/full-validation.yml) runs Full for PR creation and updates, including documentation-only changes, using a Windows runner and synthetic inputs. Repository-managed automatic hooks are retired; existing installations need the explicit migration below. **Hosted execution and required-check enforcement remain pending until separately verified.** See [Required CI and manual local validation](docs/ci-validation-design.md) for the stable check identity, provisioning, owner-applied protection configuration and acceptance evidence. Adding this workflow does not itself protect `main`.
+The checked-in [Full validation workflow](.github/workflows/full-validation.yml) runs Full for PR creation and updates, including documentation-only changes, using a Windows runner and synthetic inputs. Repository-managed automatic hooks are retired; existing installations need the explicit migration below. **Owner-authorized `main` protection is configured and read back; hosted Full success and behavioral enforcement acceptance remain pending.** See [Required CI and manual local validation](docs/ci-validation-design.md) for the stable check identity, provisioning, protection configuration and acceptance evidence. Adding a workflow alone does not establish enforcement.
 
 ### Setup once per worktree
 

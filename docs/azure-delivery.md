@@ -45,7 +45,7 @@ The deployment operator needs resource-group creation, listed resource writes, b
 
 ## Local checks and package
 
-Use the prerequisites, per-worktree setup, and authoritative [local validation procedure](../README.md#local-validation). Full validation is the local publication gate; it includes delivery checks and production rendering without Azure login or private inputs.
+Use the prerequisites, per-worktree setup, and authoritative [local validation procedure](../README.md#local-validation). Full validation is available manually and runs in PR CI; it includes delivery checks and production rendering without Azure login or private inputs. Automatic repository-managed Git hooks are retired; [explicitly migrate existing installations](../README.md#migrate-previously-installed-git-hooks). Required-check enforcement remains a separately verified GitHub setting.
 
 ```powershell
 .\scripts\validate.ps1 -Scope Full

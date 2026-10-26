@@ -1,52 +1,81 @@
 # Required CI and manual local validation
 
-**Status: agreed design; not implemented.** This document records the design agreed on 2026-10-25. It does not add a workflow, remove or uninstall hooks, or change GitHub protection settings. The [local validation documentation](../README.md#local-validation) remains the source of truth for current commands and behavior.
+**Status: implementation prepared; hosted execution and GitHub enforcement acceptance pending.** This implements the design agreed on 2026-10-25 and specified in [#39](https://github.com/geevensingh/trmnl-calendar/issues/39). A checked-in workflow is not proof that it has run or that merging is protected. The [local validation documentation](../README.md#local-validation) describes current commands and the explicit hook migration.
 
-## Current state and rationale
+## Validation and enforcement are separate
 
-The repository has a shared validation entrypoint, `scripts\validate.ps1`, and opt-in Git hooks that run Fast on commit and Full on push. There is no checked-in project CI workflow. During the design discussion, GitHub exposed a dynamic Copilot workflow, but not project validation; the branch-protection API reported `main` as unprotected, and the ruleset query returned no rulesets. Those observations are subject to API visibility and are not permanent proof of configuration.
+[`.github/workflows/full-validation.yml`](../.github/workflows/full-validation.yml) runs the existing `scripts\validate.ps1 -Scope Full` on PR creation, head updates, reopening, readiness changes and edits (including base retargeting). Draft and documentation-only PRs are included. There are no path or target-branch exemptions, conditional validation skips, successful fallback jobs or independent lists of checks.
 
-Validation and merge enforcement are different responsibilities. Hooks provide early local feedback, but contributors can omit or bypass them. They cannot establish a centrally enforced PR requirement. Required CI provides independent, visible evidence for a revision and can prevent merging when validation fails.
+The workflow uses the default `pull_request` checkout: GitHub's evaluated test-merge revision, not an explicitly selected older head. It never uses `pull_request_target`. Workflow name **Full validation**, job ID **full** and job/check name **Full validation** are stable. There is one non-matrix job; configure the actual check-run context **`Full validation`**, produced by **GitHub Actions**, as required. Do not require a setup-step name, a workflow-file path, a concatenated display label or an unrelated check with a similar name. Renaming this job requires a coordinated protection change, not a silent workflow edit.
 
-Keeping lightweight hooks would be reasonable for earlier feedback, but the agreed choice is to remove repository-managed automatic hooks. Manual validation retains that feedback option without hook-installation maintenance, duplicate local Full runs, or blocking a feature-branch backup on the local toolchain. The trade-off is that contributors who skip local checks learn of failures after pushing.
+Setup and Full execute in that same job with default failure propagation and a 45-minute timeout. A failed action, setup command, missing prerequisite, blocked component or nonzero validation exits unsuccessfully. No `continue-on-error` or conditional job permits an incomplete Full run to appear successful. Updating a PR cancels obsolete in-progress runs for that PR; the updated revision still needs its own successful run. A dispatch run is diagnostic evidence, not a substitute for the required check on the PR revision.
 
-## Agreed behavior
+CI is validation, not landing. Humans still merge; no auto-merge, merge queue, reviewer-approval quota or permission for agents to advance `main` is introduced. Full remains available manually; Fast is optional early feedback, not a replacement required check. Contributors who skip local checks learn of failures after pushing instead of blocking a feature-branch backup on their local toolchain.
 
-| Area | Required future behavior |
-| --- | --- |
-| CI execution | GitHub Actions runs the existing Full validation scope on every PR update, including documentation-only changes. No path-based exemption weakens the required gate. |
-| Shared checks | CI and manual local use invoke `scripts\validate.ps1`; do not introduce an independently maintained list of checks. |
-| Coverage | Full includes its Fast checks, complete formatting, production .NET/rendering tests, and delivery/guardrail tests. Removing hooks must not silently reduce unrelated coverage. |
-| Local feedback | Keep manual Fast and Full commands available. Remove repository-managed automatic hook execution rather than requiring local checks before a commit or push. |
-| Merge requirement | `main` requires a PR and a passing Full CI check. Failed, blocked, missing, or unfinished validation is not sufficient to merge. |
-| Freshness | Require the PR branch to be up to date with `main`. After another PR changes `main`, a stale PR must incorporate that change and pass again before merging. |
-| Bypasses | Apply the PR, required-check, and freshness requirements to administrators too, with no standing bypass exemption. An emergency policy change remains an explicit human-controlled action. |
-| Landing | A human performs the merge. Add no auto-merge, merge queue, or permission for agents to advance `main`. |
+## Runner provisioning and preserved coverage
 
-The implementation must select a stable required-check identity and verify that it corresponds to actual successful Full validation. A workflow existing or a run appearing green does not establish that GitHub enforces the check.
+The **windows-2025** GitHub-hosted image supplies PowerShell 7, Git, Azure CLI and native Windows support for the existing process interfaces. The workflow explicitly selects Node **22**, installs the SDK selected by **global.json** and the .NET **8** SDK/runtime needed by Functions tooling alongside the selected .NET/ASP.NET Core **10** runtime, and selects Ruby **4.0** with RubyInstaller's compatible MSYS2/Devkit through `ruby/setup-ruby`. Bundler comes from **Gemfile.lock** (**4.0.20**); action-level bundle restoration/caching is disabled so the existing setup owns worktree-local state.
 
-## CI setup and acceptance boundaries
+Explicit provisioning installs Functions Core Tools **v4**, verifies the runner's Azure CLI and installs/verifies its local Bicep compiler. This does not log in or compile/deploy live resources. As before, those tool families have no narrower repository version pin. Provisioning failure is fatal; runner-image drift must be repaired, not bypassed by dropping checks.
 
-Full validation uses synthetic fixtures and local substitutes. CI must not require the owner's private calendar or production credentials, mutate Azure resources, or deploy the application.
+Only then does `scripts\setup-display.ps1` restore frozen gems, including `trmnl-liquid` **0.8.2**, compile/load a native extension, acquire framework **3.4.3** and referenced fonts, restore/build the harness and install the Chromium revision selected by Microsoft.Playwright **1.56.0**. Existing SDK roll-forward, dependency constraints, runtime selection and asset pins remain unchanged. Setup acquires prerequisites; validation never installs/restores them as a fallback. Both suppress SDK certificate generation before the first SDK invocation.
 
-Full has a substantial toolchain, including the selected .NET SDK, PowerShell, Node.js, Ruby/Bundler and native tooling, pinned framework/fonts and Chromium, Functions Core Tools, and Azure CLI/Bicep. Runner selection and provisioning must demonstrate that the existing setup and Full entrypoint work together; toolchain difficulty is not permission to replace Full with a smaller suite or successful skips. Preserve existing version pins and explicit setup/readiness failures.
+Full includes complete read-only formatting, Fast build/syntax checks, the **unfiltered** production .NET suite using the real local Functions host, Liquid, framework/fonts and pinned Chromium, and all delivery/guardrail Node tests. Hook tests now exercise retirement/migration rather than obsolete installation/publication rules. Unrelated rendering, delivery, process-error and Git-isolation regressions remain in Full.
 
-Live Azure behavior, private-source checks, and physical-device acceptance remain separate, human-controlled evidence where required by the existing delivery contract. Neither a local Full pass nor a green required CI check establishes deployment or delivery completion. This design adds no deployment automation or reviewer-approval quota.
+The job has only `contents: read` token permission, does not persist checkout credentials, references no repository/production secrets and needs no Azure login, private calendar or TRMNL account. Inputs are synthetic, storage/HTTP substitutes are local and Git fixtures use disposable repositories/bare remotes. It performs no deployment or live Azure mutations. Live Azure/private-source/device acceptance and the [delivery contract](agents/delivery.md) remain independent gates.
 
-## Hook migration
+## Explicit hook migration
 
-Retiring repository-managed hooks requires a migration for hooks already installed in Git's shared common hooks directory. Deleting the installer or checked-in script alone does not uninstall those hooks and can leave linked worktrees calling missing tooling.
+Automatic repository-managed `pre-commit`, `pre-merge-commit` and `pre-push` installation is retired. `scripts\git-hooks.ps1 -Action Install` fails with manual-validation and migration guidance without writing hooks/configuration. The command remains as a **Status/Remove migration interface** so deleting tracked tooling cannot strand old installed hooks.
 
-The implementation must document removal using the existing managed-hook removal mechanism before its supporting tooling becomes unavailable. Preserve edited or foreign hooks, unrelated hooks, and effective `core.hooksPath` configuration; report incomplete removal rather than deleting them. Explain that managed-hook removal from one linked worktree affects other worktrees using the same common hooks directory. Do not silently uninstall hooks as part of this documentation change.
+Coordinate with linked-worktree users, then run from a checkout containing this migration:
 
-## Implementation and enforcement still pending
+```powershell
+.\scripts\git-hooks.ps1 -Action Status
+.\scripts\git-hooks.ps1 -Action Remove
+```
 
-This agreement authorizes documentation only. A later implementation must:
+Status is read-only. Removal recognizes only exact historical generated v1 bytes and is repeatable when hooks are absent. It removes unchanged hooks from Git's **common default hooks directory**, affecting every linked worktree using that directory, including older branches. It preserves foreign/edited hooks, unrelated files, linked entries/directories, effective `core.hooksPath` settings and all configured destinations without changing Git configuration. A preserved target produces explicit nonzero partial-removal failure, not a successful migration claim. Custom validation invocations require their owner's manual decision. Neither checkout, CI nor setup silently migrates a contributor's real hooks.
 
-1. Provision a suitable GitHub Actions runner and demonstrate successful Full validation through the shared entrypoint.
-2. Add PR validation without production credentials or deployment behavior.
-3. Retire automatic repository-managed hooks with the migration above, updating directly related documentation and tests without removing unrelated checks.
-4. Establish GitHub's required PR, Full-check, freshness, and no-standing-bypass enforcement for `main`, subject to repository feature availability and explicit settings authorization.
-5. Verify both successful validation and actual enforcement, including that a failing check or stale branch cannot satisfy the merge gate. Do not land a PR merely to demonstrate enforcement.
+## Owner-applied protection configuration (pending)
 
-Until the workflow and GitHub settings are applied and verified, describe this as an agreed future design, not a protected or CI-enforced repository.
+Settings changes require separate explicit human authorization; code/feature-branch permission does not authorize them. At the implementation-time read on **2026-10-26 UTC**, this public repository's protection endpoint returned `404 Branch not protected` and its repository ruleset list was empty. Repository metadata was visible with administrative access. These observations are visibility-limited and time-bound, not proof of future settings or an active guarantee.
+
+After the genuine PR run below exposes the check, the owner can use **Settings > Branches > Add branch protection rule** (classic protection) for the exact pattern **`main`**:
+
+1. Enable **Require a pull request before merging**. Do not add an approval quota, code-owner review requirement, last-push approval requirement or PR-bypass actor.
+2. Enable **Require status checks to pass before merging**, select **Full validation** from **GitHub Actions**, and enable **Require branches to be up to date before merging**.
+3. Enable **Do not allow bypassing the above settings** so administrators are included. Leave force pushes and deletions disallowed. Do not add standing bypass allowances. Save, then independently inspect effective settings and mergeability.
+
+The intended classic REST configuration has `required_status_checks.strict: true`, one check with `context: "Full validation"` and `app_id` equal to the **observed GitHub Actions app ID**, `enforce_admins.enabled: true`, and a non-null `required_pull_request_reviews` object with `required_approving_review_count: 0` and empty PR-bypass allowances. Force pushes/deletions remain disabled. Preserve any other existing protections; do not replace live settings blindly with a partial payload. For a ruleset instead, use **Active** enforcement, target only `refs/heads/main`, require PRs, the same app-bound check and strict freshness, and leave the **entire bypass list empty**, including administrators. Check overlapping rules/rulesets as well.
+
+Public repositories support protection on GitHub Free; private visibility or plan changes can alter availability. A forbidden/unavailable API, unsupported plan, inability to bind the source app, bypass exemption or missing separate authorization is an **enforcement blocker**, never permission to weaken the requirement. Administrators can deliberately edit policy in an emergency, but that is a separate human-controlled policy change, not a permanent bypass.
+
+## Hosted execution and enforcement acceptance (pending)
+
+Record full implementation/head/test-merge/base commit identities, UTC observation time and run/check URLs for each observation. Local or substituted-process tests do not prove runner readiness. A green hosted run does not prove protection.
+
+1. **Bootstrap on the existing integration PR.** The coordinator integrates the implementation into the feature branch of [PR #38](https://github.com/geevensingh/trmnl-calendar/pull/38) through its authorized review/integration process. A PR head update with the workflow present triggers `pull_request` even before the workflow lands on `main`. Inspect the evaluated revision and verify every provisioning/setup step and actual **Full** execution completes successfully on `windows-2025`; save its component summary, unfiltered .NET/Node totals and run URL. Do not mark this gate met with substitute tools.
+2. **Bootstrap constraints.** Pushing a child implementation branch without a PR does not trigger this PR-only workflow. `workflow_dispatch` is also provided for diagnostics, but GitHub requires the workflow to exist on the default branch before it can be dispatched by name with `--ref`. Do not bypass that by pushing to `main`, altering Actions settings or creating extra credentials. If Actions policy, fork approval, runner capacity, downloads or toolchain provisioning blocks execution, record that blocker and keep hosted acceptance pending.
+3. **Creation and documentation-only updates.** With authorized disposable PRs, observe a run on creation and push a docs-only commit; verify a new run/check evaluates the updated PR content. For fork PRs, any required approval to execute workflows is human-controlled; a waiting run is not a pass.
+4. **Failure propagation.** On an authorized disposable feature/test PR, introduce a deliberate C# formatting violation (or equivalent real Full failure) without changing the workflow/check contract. Confirm Full exits nonzero, its check concludes failure and merging cannot satisfy the requirement. Repair the change and confirm a new successful run on the new revision. Never merge or push this fixture to `main`.
+5. **Required-check evidence.** Once owner-applied settings are active, inspect protection and all effective rulesets. Verify PR requirement, strict freshness, the exact Actions app-bound check, administrator inclusion and absence of standing bypasses. Confirm missing, pending, cancelled and failed validation do not satisfy mergeability; do not infer this solely from a green run. A skipped/neutral check is not acceptable Full evidence even if GitHub would accept that conclusion; this workflow has no job-level skip path.
+6. **Freshness.** Use two authorized disposable PRs and an already-authorized **human** base update. Observe that a previously passing PR becomes stale and cannot merge, update its branch from current `main`, and verify Full runs again and the fresh passing revision becomes eligible. Do not land code, manufacture base changes, disable protections or invoke a privileged merge as an enforcement test.
+7. **Delivery.** Keep #39 open until genuine hosted success, failure/docs-only/creation evidence, effective required-check/freshness/no-bypass acceptance, two-axis review, human landing/publication and the existing delivery proof are all recorded. Successful feature-branch backup or implementation acceptance alone is not delivery.
+
+Read-only evidence commands (replace the example PR number for a disposable PR when appropriate):
+
+```powershell
+gh api repos/geevensingh/trmnl-calendar/pulls/38 `
+  --jq '{head: .head.sha, base: .base.sha, test_merge: .merge_commit_sha, mergeable, mergeable_state}'
+gh pr checks 38 --repo geevensingh/trmnl-calendar
+gh run list --repo geevensingh/trmnl-calendar --workflow full-validation.yml --event pull_request
+# Use the PR test-merge SHA reported above; inspect the head too if GitHub reports checks there.
+gh api repos/geevensingh/trmnl-calendar/commits/<evaluated-sha>/check-runs `
+  --jq '.check_runs[] | {name, head_sha, status, conclusion, details_url, app_id: .app.id, app_slug: .app.slug}'
+gh api repos/geevensingh/trmnl-calendar/branches/main/protection
+gh api repos/geevensingh/trmnl-calendar/rulesets
+gh api repos/geevensingh/trmnl-calendar/rules/branches/main
+```
+
+Inspect individual ruleset IDs and their bypass actors when present. PR `mergeable`/`mergeable_state` can initially be unknown; reread after GitHub recomputes. Correlate `Full validation` with `app.slug: "github-actions"`, the actual evaluated SHA and the successful run's logs; select that observed app in protection rather than hardcoding an unverified ID. If metadata access or an unrelated gate prevents observing rejection for the intended reason, record the limitation instead of claiming enforcement.

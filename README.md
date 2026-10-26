@@ -225,6 +225,10 @@ The shared version-controlled JSON catalogue in `display\scenarios` supplies the
 
 ## Local agenda UI workbench
 
+**Readiness first:** Review the [local prerequisites](#local-prerequisites) and [display setup](#setup-once-per-worktree) before choosing a preview approach, and check the available native tools and worktree-local assets. Keep missing prerequisites explicit. This navigation route does not authorize installations/repairs, new worktrees, commits, or production-template changes; existing task scope and permission requirements still apply.
+
+**Illustrative, sketch-only fallback:** When native tooling is unavailable or inappropriate for a quick layout question, label any mockup as a sketch and state the missing prerequisites or reason for using it. Its fonts, geometry, scaling, or event counts are not evidence of production native fitting, capacity, or capture readiness.
+
 After the existing [display setup](#setup-once-per-worktree), launch from this worktree:
 
 ```powershell
@@ -241,7 +245,7 @@ node .\scripts\agenda-workbench.mjs --baseline <commit-or-ref> --port 8898
 
 Only the committed templates are pinned, not the scenarios or an arbitrary historical runtime. Baselines must declare the current agenda schema in their committed contract and pin the same framework CSS/JavaScript in their renderer. Missing or incompatible history fails explicitly; the tool never checks out old files over your edits, moves its baseline, or silently uses current templates instead. `--port 0` allocates an available port; `--workspace <local-directory>` selects an isolated Git/input workspace while retaining this checkout's installed renderer and assets, as used by browser tests.
 
-The initial view is **Normal mixed agenda / OG Full / Fit to window**. Select one scenario and target for a focused baseline/working-copy pair, or open an on-demand overview of the selected scenario across exactly these targets:
+The initial view is **Normal mixed agenda / OG Full / Fit to window**. Select one scenario and target for a focused baseline/working-copy pair, or open an on-demand overview of the selected scenario across exactly these four targets:
 
 | Target | Native canvas |
 | --- | --- |
@@ -249,6 +253,8 @@ The initial view is **Normal mixed agenda / OG Full / Fit to window**. Select on
 | X / v2 Full | 1872 x 1404 |
 | X / v2 Half-horizontal | 1872 x 1404, with the production split wrapper |
 | X / v2 Half-vertical | 1872 x 1404, with the production split wrapper |
+
+This four-target interactive subset is intentional. For native-capacity or all-placement claims, use the existing [adaptive rendering checks](#adaptive-production-views), which cover all six device/placement combinations.
 
 Fit-to-window scales the completed native documents only. **100% (scroll)** exposes their unscaled native dimensions with scrolling; neither option changes wrapping, event admission, or fitting. X retains the framework's native 1.8 transform, not an additional browser-density scale. Every side/target is a separately sandboxed document. In an overview taller than the window, scroll through the four pairs to finish fitting them; offscreen previews remain explicitly pending rather than failing because the browser pauses their animation frames. Readiness timeouts pause while previews or the browser tab are not visible.
 

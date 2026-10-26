@@ -104,6 +104,7 @@
     <section class="evidence" aria-labelledby="evidence-heading">
       <h2 id="evidence-heading">What the examples mean</h2>
       <p><strong>Agreed behavior:</strong> Free overrides organizer role and acceptance. Declined and followed share the low end. Tentative and unanswered share the middle. Unknown sits outside the scale. Existing agenda exclusions, chronological order and counts do not change; the default <code>Following: </code> exclusion still applies.</p>
+      <p><strong>Label priority:</strong> Every displayed event keeps its explicit text label, without a legend. When space is tight, truncate the event title rather than hiding the label. The long Design review title demonstrates this trade-off in the sketch.</p>
       <div class="table-scroll">
         <table>
           <thead><tr><th>Sample event</th><th>Organizer</th><th>Your response</th><th>Availability</th><th>Expectation</th></tr></thead>
@@ -134,7 +135,7 @@
     const days = [
       { label: "Monday, Oct 26", events: [
         { time: "9:00 - 9:30 AM", title: "Weekly planning", level: "3", organizer: "You", response: "Not applicable", availability: "Busy" },
-        { time: "10:00 - 11:00 AM", title: "Design review", level: "2", organizer: "Someone else", response: "Accepted", availability: "Busy" },
+        { time: "10:00 - 11:00 AM", title: "Design review: cross-team integration and rollout planning", level: "2", organizer: "Someone else", response: "Accepted", availability: "Busy" },
         { time: "11:30 AM - 12:00 PM", title: "Roadmap sync", level: "1", organizer: "Someone else", response: "Tentative", availability: "Busy" },
         { time: "12:30 - 1:00 PM", title: "Product town hall", level: "0", organizer: "Someone else", response: "Accepted", availability: "Free" },
         { time: "1:30 - 2:00 PM", title: "Optional learning session", level: "0", organizer: "Someone else", response: "Declined", availability: "Busy" },

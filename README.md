@@ -1,5 +1,7 @@
 # TRMNL Calendar
 
+<!-- Disposable CI eligibility probe afdfa011-ad8b-4497-85b4-35adc3085cdc. Do not integrate this marker. -->
+
 The agenda slices for [#3](https://github.com/geevensingh/trmnl-calendar/issues/3) and [#4](https://github.com/geevensingh/trmnl-calendar/issues/4), native configurable title exclusions from [#5](https://github.com/geevensingh/trmnl-calendar/issues/5), adaptive production views from [#6](https://github.com/geevensingh/trmnl-calendar/issues/6), persistent stale-source fallback from [#7](https://github.com/geevensingh/trmnl-calendar/issues/7), and secure delivery tooling for [#8](https://github.com/geevensingh/trmnl-calendar/issues/8), under [spec #2](https://github.com/geevensingh/trmnl-calendar/issues/2). Delivery tooling and the protected source preflight from [#11](https://github.com/geevensingh/trmnl-calendar/issues/11) are not claims of live activation.
 
 The production path is a .NET 10 isolated Azure Function app, stable Ical.Net **5.2.3**, and a private TRMNL plugin. One internal timer refreshes the fixed configured source. The function-authenticated HTTP poll only reads persisted source/outcome and reevaluates the current exclusions, clock, timed/all-day occurrences, and two-working-day agenda in `America/Los_Angeles`; it neither fetches Outlook nor starts background work. OG and X support full-screen, half-horizontal, and half-vertical placements through the actual `trmnl-liquid` environment and pinned TRMNL framework **3.4.3**.

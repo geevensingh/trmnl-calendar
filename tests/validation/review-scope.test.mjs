@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -209,6 +209,29 @@ test("already-staged task deletion commits without restaging missing paths or in
   assert.equal(repo.git("show", ":unrelated.txt"), "User staged");
   assert.equal(await readFile(join(repo.checkout, "unrelated.txt"), "utf8"), "User staged\nUser unstaged\n");
   record(t, review, manifest(repo.bind(review, commit)));
+});
+
+test("directory symlinks are literal file scopes in committed and working-tree reviews", async t => {
+  for (const mode of ["committed", "working-tree"]) {
+    await t.test(mode, async t => {
+      const repo = await repository(t);
+      repo.git("config", "core.symlinks", "true");
+      await mkdir(join(repo.checkout, "target"));
+      await repo.write("target/nested.txt", "Directory contents are not the scoped link\n");
+      await symlink("target", join(repo.checkout, "directory-link"), "dir");
+      if (mode === "committed") repo.commit("directory-link");
+      const indexBefore = await readFile(join(repo.checkout, ".git", "index"));
+      const review = manifest(repo.capture(mode, ["directory-link"]));
+
+      assert.match(repo.git("ls-tree", review.tree, "--", "directory-link"), /^120000 blob /);
+      assert.equal(repo.git("show", `${review.tree}:directory-link`), "target");
+      assert.doesNotMatch(review.patch.join("\n"), /nested\.txt|Directory contents/);
+      assert.deepEqual(await readFile(join(repo.checkout, ".git", "index")), indexBefore);
+      rejected(repo.capture(mode, ["target"]), /Scope must contain individual file paths/);
+      const commit = mode === "committed" ? review.head : repo.commit("directory-link");
+      record(t, review, manifest(repo.bind(review, commit)));
+    });
+  }
 });
 
 test("one snapshot composes committed, staged, unstaged, and untracked task content while preserving user work", async t => {

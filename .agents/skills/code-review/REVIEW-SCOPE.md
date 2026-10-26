@@ -33,7 +33,8 @@ function Invoke-ReviewGit {
 if ($mode -notin @('committed', 'working-tree')) { throw 'Specify the review mode.' }
 if (@($paths).Count -eq 0) { throw 'Specify a nonempty literal file scope.' }
 foreach ($path in $paths) {
-    if (!$path -or (Test-Path -LiteralPath $path -PathType Container)) {
+    if (!$path -or ((Test-Path -LiteralPath $path -PathType Container) -and
+        (Get-Item -LiteralPath $path -Force).LinkType -ne 'SymbolicLink')) {
         throw 'Scope must contain individual file paths, not directories.'
     }
 }
@@ -138,4 +139,4 @@ Record this full accepted commit ID with both axis reports, scope/exclusions, an
 
 ## Disposable demonstrations
 
-`tests\validation\review-scope.test.mjs` executes these Markdown recipes with real Git in disposable repositories under Node's existing test runner. It covers committed-only and uncommitted-only changes, layered staged/unstaged edits, task untracked files, unrelated staged/unstaged/untracked work, recorded and invalid baselines, empty changes, staged executable modes with `core.filemode=false`, literal filenames containing pattern characters or dictionary member names, case-distinct Git paths, staged and unstaged deletions, renamed paths, and post-review content/scope/parent changes. Diagnostics identify each shared review snapshot and accepted commit; these are recipe demonstrations, not additional reviewers or acceptance of production changes.
+`tests\validation\review-scope.test.mjs` executes these Markdown recipes with real Git in disposable repositories under Node's existing test runner. It covers committed-only and uncommitted-only changes, layered staged/unstaged edits, task untracked files, unrelated staged/unstaged/untracked work, recorded and invalid baselines, empty changes, staged executable modes with `core.filemode=false`, literal filenames containing pattern characters or dictionary member names, case-distinct Git paths, directory symlinks as single file entries, staged and unstaged deletions, renamed paths, and post-review content/scope/parent changes. Diagnostics identify each shared review snapshot and accepted commit; these are recipe demonstrations, not additional reviewers or acceptance of production changes.

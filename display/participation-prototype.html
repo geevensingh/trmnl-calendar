@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Participation expectation - throwaway UI sketches</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #ededeb; color: #171717; font-family: Arial, sans-serif; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button { font: inherit; cursor: pointer; }
+    button:focus-visible, a:focus-visible { outline: 3px solid #444; outline-offset: 4px; }
+    .page { max-width: 1080px; margin: auto; padding: 32px 24px 110px; }
+    .eyebrow { margin: 0 0 8px; font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 0 0 12px; font-size: clamp(24px, 4vw, 34px); letter-spacing: -.035em; }
+    .intro { max-width: 780px; margin: 0; font-size: 15px; line-height: 1.6; color: #444; }
+    .notice { margin: 18px 0; padding: 12px 14px; border: 1px dashed #777; font-size: 13px; line-height: 1.5; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin: 22px 0; }
+    .toolbar button { padding: 10px 14px; border: 1px solid #777; border-radius: 6px; background: white; }
+    .toolbar button[aria-pressed="true"] { color: white; background: #171717; border-color: #171717; }
+    .option { padding: 22px; margin: 0 0 22px; background: #fafafa; border: 1px solid #ccc; border-radius: 10px; }
+    .option-heading { display: flex; gap: 12px; align-items: baseline; margin-bottom: 8px; }
+    .option-key { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid; font-weight: 700; flex-shrink: 0; }
+    h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
+    .tradeoff { margin: 0 0 18px; max-width: 800px; color: #444; font-size: 14px; line-height: 1.5; }
+    .preview-shell { width: 100%; max-width: 800px; aspect-ratio: 5 / 3; margin: auto; overflow: hidden; border: 1px solid #171717; background: white; }
+    .device { width: 800px; height: 480px; padding: 17px 19px 13px; color: black; background: white; transform: scale(var(--preview-scale, 1)); transform-origin: top left; display: flex; flex-direction: column; }
+    .device-heading { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; margin-bottom: 7px; border-bottom: 2px solid; }
+    .device-name { font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+    .source { font-size: 13px; }
+    .day + .day { margin-top: 11px; padding-top: 9px; border-top: 2px solid; }
+    .day-heading { display: flex; gap: 12px; align-items: baseline; margin-bottom: 5px; }
+    .day-heading strong { font-size: 21px; line-height: 1.4; }
+    .count { font-size: 13px; }
+    .event { display: flex; align-items: center; min-height: 32px; gap: 10px; }
+    .event-time { flex: 0 0 193px; white-space: nowrap; font-size: 18px; line-height: 1.4; }
+    .event-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 21px; line-height: 1.4; }
+    .meter { display: flex; gap: 4px; flex: 0 0 34px; align-items: center; justify-content: center; }
+    .dot { width: 8px; height: 8px; border: 1.5px solid black; border-radius: 50%; }
+    .dot.filled { background: black; }
+    .unknown { font-size: 20px; font-weight: 700; line-height: 1; }
+    .status-label { flex: 0 0 88px; text-align: center; padding: 3px 5px; border: 1px solid; border-radius: 3px; font-size: 12px; font-weight: 700; letter-spacing: .015em; }
+    .variant-B .event-time { flex-basis: 183px; }
+    .variant-B .level-3 .status-label { background: black; color: white; }
+    .variant-B .level-1 .status-label { border-style: dashed; }
+    .variant-B .level-0 .status-label { border-style: dotted; }
+    .variant-C .event { position: relative; padding-left: 14px; }
+    .variant-C .event::before { content: ""; position: absolute; top: 6px; bottom: 6px; left: 0; }
+    .variant-C .level-3::before { border-left: 6px solid black; }
+    .variant-C .level-2::before { border-left: 3px solid black; }
+    .variant-C .level-1::before { border-left: 2px dashed black; }
+    .variant-C .level-0::before { border-left: 1px dotted black; }
+    .variant-C .level-unknown::before { content: "?"; top: 7px; font-size: 17px; font-weight: 700; }
+    .device-legend { margin-top: auto; padding-top: 9px; border-top: 1px solid; display: flex; gap: 14px; align-items: center; justify-content: center; font-size: 11px; }
+    .legend-entry { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .device-legend .meter { flex-basis: auto; width: 30px; gap: 3px; }
+    .device-legend .dot { width: 6px; height: 6px; border-width: 1px; }
+    .device-legend .unknown { display: inline-block; width: 16px; text-align: center; font-size: 14px; }
+    .rule-sample { display: inline-block; height: 14px; width: 6px; }
+    .rule-sample.level-3 { border-left: 6px solid; }
+    .rule-sample.level-2 { border-left: 3px solid; }
+    .rule-sample.level-1 { border-left: 2px dashed; }
+    .rule-sample.level-0 { border-left: 1px dotted; }
+    .caption { margin: 12px 0 0; font-size: 12px; color: #555; text-align: center; line-height: 1.5; }
+    .evidence { margin-top: 28px; padding: 20px 22px; border: 1px solid #ccc; background: #fafafa; border-radius: 10px; }
+    .evidence p { font-size: 14px; line-height: 1.6; }
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid #ddd; vertical-align: top; }
+    th { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+    .switcher { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid #555; background: #171717; color: white; border-radius: 40px; box-shadow: 0 4px 20px #0003; z-index: 10; }
+    .switcher button { width: 40px; height: 40px; border: 1px solid #666; border-radius: 50%; background: #333; color: white; font-size: 22px; }
+    .switcher-label { min-width: 190px; text-align: center; font-size: 13px; line-height: 1.4; }
+    .switcher-label small { display: block; font-size: 10px; color: #ccc; }
+    [hidden] { display: none !important; }
+    @media (max-width: 600px) {
+      .page { padding: 22px 12px 100px; }
+      .option { padding: 14px 10px; }
+      .toolbar button { padding: 9px 10px; font-size: 13px; }
+      .evidence { padding: 18px 12px; }
+    }
+    @media print {
+      body { background: white; }
+      .toolbar, .switcher { display: none; }
+      .page { padding: 0; }
+      .option { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Throwaway: three agenda cue variants on one preview route, selected with ?variant=A|B|C. -->
+  <main class="page">
+    <p class="eyebrow">TRMNL Calendar / throwaway visual exploration</p>
+    <h1>One scale. Three ways to read it.</h1>
+    <p class="intro">Compare how participation expectation reads at a glance. Each option uses exactly the same synthetic agenda, with the same event order and counts. Nothing here changes production.</p>
+    <div class="notice"><strong>Sketch only, not a native rendering.</strong> These approximate an 800 x 480 agenda using system fonts. This worktree has no installed TRMNL framework/fonts or restored native renderer, so spacing, capacity and device legibility are not verified. The sample classifications are supplied examples, not results from your Outlook feed.</div>
+    <nav class="toolbar" aria-label="Prototype options">
+      <button type="button" data-variant="A">A / Dot meter</button>
+      <button type="button" data-variant="B">B / Text labels</button>
+      <button type="button" data-variant="C">C / Row treatment</button>
+      <button type="button" id="compare">Compare all three</button>
+    </nav>
+    <div id="options"></div>
+    <section class="evidence" aria-labelledby="evidence-heading">
+      <h2 id="evidence-heading">What the examples mean</h2>
+      <p><strong>Agreed behavior:</strong> Free overrides organizer role and acceptance. Declined and followed share the low end. Tentative and unanswered share the middle. Unknown sits outside the scale. Existing agenda exclusions, chronological order and counts do not change; the default <code>Following: </code> exclusion still applies.</p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Sample event</th><th>Organizer</th><th>Your response</th><th>Availability</th><th>Expectation</th></tr></thead>
+          <tbody id="evidence-rows"></tbody>
+        </table>
+      </div>
+      <p><strong>Still unverified:</strong> whether your published Outlook feed supplies enough owner-specific evidence to derive these levels reliably. These sketches test presentation only.</p>
+    </section>
+  </main>
+  <nav class="switcher" aria-label="Cycle prototype variants">
+    <button type="button" id="previous" aria-label="Previous variant">&larr;</button>
+    <div class="switcher-label" aria-live="polite"><span id="current-variant"></span><small>THROWAWAY SKETCH / arrow keys switch options</small></div>
+    <button type="button" id="next" aria-label="Next variant">&rarr;</button>
+  </nav>
+  <script>
+    const variants = [
+      { key: "A", name: "Dot meter", description: "A dedicated cue before the time. The filled dots communicate one ordered scale without shortening the title for a text badge. The trade-off: you need to learn the legend." },
+      { key: "B", name: "Text labels", description: "A right-hand label spells out the expectation. Most explicit and easiest to learn; the trade-off is less room for event titles and more visual weight on every row." },
+      { key: "C", name: "Row treatment", description: "The row's leading rule carries the expectation: heavy, thin, dashed or dotted. No extra status column and no faded event text. The trade-off: subtle differences are harder to distinguish." }
+    ];
+    const levels = [
+      { key: "3", label: "Definite", description: "Definitely participating", dots: 3 },
+      { key: "2", label: "Likely", description: "Probably participating", dots: 2 },
+      { key: "1", label: "Maybe", description: "Might participate", dots: 1 },
+      { key: "0", label: "Unlikely", description: "Probably not participating", dots: 0 },
+      { key: "unknown", label: "Unknown", description: "Insufficient evidence", dots: null }
+    ];
+    const days = [
+      { label: "Monday, Oct 26", events: [
+        { time: "9:00 - 9:30 AM", title: "Weekly planning", level: "3", organizer: "You", response: "Not applicable", availability: "Busy" },
+        { time: "10:00 - 11:00 AM", title: "Design review", level: "2", organizer: "Someone else", response: "Accepted", availability: "Busy" },
+        { time: "11:30 AM - 12:00 PM", title: "Roadmap sync", level: "1", organizer: "Someone else", response: "Tentative", availability: "Busy" },
+        { time: "12:30 - 1:00 PM", title: "Product town hall", level: "0", organizer: "Someone else", response: "Accepted", availability: "Free" },
+        { time: "1:30 - 2:00 PM", title: "Optional learning session", level: "0", organizer: "Someone else", response: "Declined", availability: "Busy" },
+        { time: "2:30 - 3:00 PM", title: "Calendar hold", level: "unknown", organizer: "Not supplied", response: "Not supplied", availability: "Not supplied" }
+      ] },
+      { label: "Tuesday, Oct 27", events: [
+        { time: "9:00 - 10:00 AM", title: "Dependency review", level: "1", organizer: "Someone else", response: "Unanswered", availability: "Busy" },
+        { time: "11:00 AM - 12:00 PM", title: "Partner office hours", level: "0", organizer: "You", response: "Not applicable", availability: "Free" }
+      ] }
+    ];
+    const levelFor = key => levels.find(level => level.key === key);
+    function meter(level) {
+      if (level.dots === null) return '<span class="meter unknown" aria-hidden="true">?</span>';
+      return `<span class="meter" aria-hidden="true">${[0, 1, 2].map(index => `<span class="dot${index < level.dots ? " filled" : ""}"></span>`).join("")}</span>`;
+    }
+    function legend(variant) {
+      return levels.map(level => {
+        const symbol = variant === "A" ? meter(level)
+          : variant === "C" ? (level.key === "unknown" ? '<span class="unknown">?</span>' : `<span class="rule-sample level-${level.key}"></span>`)
+          : "";
+        return `<span class="legend-entry">${symbol}<span>${level.label}</span></span>`;
+      }).join("");
+    }
+    function eventRow(event, variant) {
+      const level = levelFor(event.level);
+      return `<div class="event level-${level.key}" aria-label="${event.time}, ${event.title}, ${level.description}">
+        ${variant === "A" ? meter(level) : ""}
+        <span class="event-time">${event.time}</span>
+        <span class="event-title">${event.title}</span>
+        ${variant === "B" ? `<span class="status-label">${level.key === "unknown" ? "? " : ""}${level.label}</span>` : ""}
+      </div>`;
+    }
+    document.querySelector("#options").innerHTML = variants.map(variant => `
+      <section class="option" id="option-${variant.key}" aria-labelledby="heading-${variant.key}">
+        <div class="option-heading"><span class="option-key">${variant.key}</span><h2 id="heading-${variant.key}">${variant.name}</h2></div>
+        <p class="tradeoff">${variant.description}</p>
+        <div class="preview-shell">
+          <div class="device variant-${variant.key}" id="mockup-${variant.key}">
+            <div class="device-heading"><span class="device-name">Calendar</span><span class="source">Source checked: Oct 26, 8:55 AM</span></div>
+            ${days.map(day => `<section class="day">
+              <div class="day-heading"><strong>${day.label}</strong><span class="count">${day.events.length} of ${day.events.length} events shown</span></div>
+              ${day.events.map(event => eventRow(event, variant.key)).join("")}
+            </section>`).join("")}
+            <div class="device-legend">${legend(variant.key)}</div>
+          </div>
+        </div>
+        <p class="caption">Synthetic 800 x 480 sketch, scaled to fit this panel. Same eight events in every option.</p>
+      </section>`).join("");
+    document.querySelector("#evidence-rows").innerHTML = days.flatMap(day => day.events).map(event => `
+      <tr><td>${event.title}</td><td>${event.organizer}</td><td>${event.response}</td><td>${event.availability}</td><td>${levelFor(event.level).description}</td></tr>`).join("");
+    function state() {
+      const params = new URLSearchParams(location.search);
+      const key = params.get("variant") ?? "A";
+      return { variant: variants.find(variant => variant.key === key) ?? variants[0], compare: params.get("view") === "compare" };
+    }
+    function render() {
+      const current = state();
+      document.querySelectorAll(".option").forEach(option => {
+        option.hidden = !current.compare && option.id !== `option-${current.variant.key}`;
+      });
+      document.querySelectorAll("[data-variant]").forEach(button => {
+        button.setAttribute("aria-pressed", String(!current.compare && button.dataset.variant === current.variant.key));
+      });
+      document.querySelector("#compare").setAttribute("aria-pressed", String(current.compare));
+      document.querySelector("#current-variant").textContent = current.compare ? "Comparing A / B / C" : `${current.variant.key} / ${current.variant.name}`;
+      document.title = `${current.compare ? "Compare all options" : `${current.variant.key} - ${current.variant.name}`} / participation sketches`;
+    }
+    function selectVariant(key) {
+      const params = new URLSearchParams(location.search);
+      params.set("variant", key);
+      params.delete("view");
+      history.replaceState(null, "", `?${params}`);
+      render();
+    }
+    function cycle(direction) {
+      const index = variants.findIndex(variant => variant.key === state().variant.key);
+      selectVariant(variants[(index + direction + variants.length) % variants.length].key);
+    }
+    document.querySelectorAll("[data-variant]").forEach(button => button.addEventListener("click", () => selectVariant(button.dataset.variant)));
+    document.querySelector("#compare").addEventListener("click", () => {
+      const params = new URLSearchParams(location.search);
+      params.set("view", "compare");
+      history.replaceState(null, "", `?${params}`);
+      render();
+    });
+    document.querySelector("#previous").addEventListener("click", () => cycle(-1));
+    document.querySelector("#next").addEventListener("click", () => cycle(1));
+    document.addEventListener("keydown", event => {
+      if (event.target.closest("input, textarea, select, [contenteditable]") || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        cycle(event.key === "ArrowLeft" ? -1 : 1);
+      }
+    });
+    window.addEventListener("popstate", render);
+    const observer = new ResizeObserver(entries => entries.forEach(entry => {
+      if (entry.contentRect.width > 0) entry.target.style.setProperty("--preview-scale", entry.contentRect.width / 800);
+    }));
+    document.querySelectorAll(".preview-shell").forEach(shell => observer.observe(shell));
+    render();
+  </script>
+</body>
+</html>

@@ -10,18 +10,9 @@ permissions:
 
 jobs:
   full:
-    # Metadata skips must neither satisfy the required check nor cancel validation.
-    name: >-
-      ${{ (github.event_name != 'pull_request' || github.event.action != 'edited' ||
-      github.event.changes.base.ref.from != '') && 'Full validation' || 'PR metadata only (not validation)' }}
-    if: >-
-      github.event_name != 'pull_request' || github.event.action != 'edited' ||
-      github.event.changes.base.ref.from != ''
+    name: Full validation
     concurrency:
-      group: >-
-        ${{ (github.event_name == 'pull_request' && github.event.action == 'edited' &&
-        github.event.changes.base.ref.from == '') && format('full-validation-metadata-{0}', github.run_id) ||
-        format('full-validation-{0}', github.event.pull_request.number || github.ref) }}
+      group: ${{ format('full-validation-{0}', github.event.pull_request.number || github.ref) }}
       cancel-in-progress: true
     runs-on: windows-2025
     timeout-minutes: 45

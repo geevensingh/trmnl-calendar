@@ -1,4 +1,5 @@
-name: Full validation
+# Disposable hosted fixture. Never merge or use this check as required Full evidence.
+name: Node portability diagnostic (not Full validation)
 
 on:
   pull_request:
@@ -9,19 +10,19 @@ permissions:
   contents: read
 
 jobs:
-  full:
+  node-portability-diagnostic:
     # Metadata skips must neither satisfy the required check nor cancel validation.
     name: >-
       ${{ (github.event_name != 'pull_request' || github.event.action != 'edited' ||
-      github.event.changes.base.ref.from != '') && 'Full validation' || 'PR metadata only (not validation)' }}
+      github.event.changes.base.ref.from != '') && 'Node portability diagnostic (not Full validation)' || 'Node probe metadata only (not validation)' }}
     if: >-
       github.event_name != 'pull_request' || github.event.action != 'edited' ||
       github.event.changes.base.ref.from != ''
     concurrency:
       group: >-
         ${{ (github.event_name == 'pull_request' && github.event.action == 'edited' &&
-        github.event.changes.base.ref.from == '') && format('full-validation-metadata-{0}', github.run_id) ||
-        format('full-validation-{0}', github.event.pull_request.number || github.ref) }}
+        github.event.changes.base.ref.from == '') && format('node-portability-diagnostic-metadata-{0}', github.run_id) ||
+        format('node-portability-diagnostic-{0}', github.event.pull_request.number || github.ref) }}
       cancel-in-progress: true
     runs-on: windows-2025
     timeout-minutes: 45
@@ -82,5 +83,56 @@ jobs:
       - name: Restore locked display dependencies and pinned Chromium
         run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\setup-display.ps1
 
-      - name: Run the shared Full validation
-        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full
+      - name: Record native temporary directory and evaluated source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'node-portability-evidence'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          node --input-type=module -e 'import { tmpdir } from "node:os"; import { realpathSync } from "node:fs"; console.log(JSON.stringify({ tmpdir: tmpdir(), realpath: realpathSync(tmpdir()) }, null, 2));' |
+            Tee-Object -FilePath (Join-Path $evidence 'native-temp.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Native temporary directory diagnostic failed.' }
+          $evaluated = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve evaluated commit.' }
+          git diff --exit-code 2192d0f7edd96b961c27ef7fa743ba30540c35a3 HEAD -- scripts tests
+          if ($LASTEXITCODE -ne 0) { throw 'Scripts or tests differ from the reviewed candidate.' }
+          @{
+            reviewed_source = '2192d0f7edd96b961c27ef7fa743ba30540c35a3'
+            head_commit = '${{ github.event.pull_request.head.sha || github.sha }}'
+            base_commit = '${{ github.event.pull_request.base.sha }}'
+            evaluated_commit = "$evaluated"
+            scripts_and_tests_identical = $true
+          } | ConvertTo-Json | Tee-Object -FilePath (Join-Path $evidence 'source.json')
+
+      - name: Run authoritative Fast validation including required build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Fast 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'node-portability-evidence\fast.log')
+          if ($LASTEXITCODE -ne 0) { throw "Fast validation exited with code $LASTEXITCODE." }
+
+      - name: Run the entire shared Full Node file selection only
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = (Get-Location).Path
+          $files = @(foreach ($directory in @('tests\delivery', 'tests\validation')) {
+            $tests = @(Get-ChildItem -LiteralPath (Join-Path $root $directory) -Filter '*.test.mjs' -File |
+              Sort-Object Name)
+            if ($tests.Count -eq 0) { throw "No Node tests found in $directory; refusing an empty test run." }
+            $tests.FullName
+          })
+          $evidence = Join-Path $env:RUNNER_TEMP 'node-portability-evidence'
+          $files | Set-Content -LiteralPath (Join-Path $evidence 'node-files.txt')
+          $arguments = @('--test') + $files
+          node @arguments 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'node.log')
+          $nodeExitCode = $LASTEXITCODE
+          @{ exit_code = $nodeExitCode; file_count = $files.Count } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'node-exit.json')
+          if ($nodeExitCode -ne 0) { throw "Node tests exited with code $nodeExitCode." }
+
+      - name: Preserve disposable diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-portability-diagnostic-${{ github.run_id }}
+          path: ${{ runner.temp }}\node-portability-evidence
+          if-no-files-found: error

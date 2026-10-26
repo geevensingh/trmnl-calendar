@@ -134,6 +134,68 @@ public sealed class AdaptiveDisplayTests
         }
     }
 
+    [Fact]
+    public async Task Raster_ink_requires_painted_inverse_and_ordinary_text_not_just_background()
+    {
+        var view = new NativeView("og", "full", 800, 480, 1, 780, 460);
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        await page.RouteAsync("http://trmnl.local/", route => route.FulfillAsync(new()
+        {
+            Body = """
+                <!doctype html>
+                <style>
+                  body { margin: 0; }
+                  .view { width: 800px; height: 480px; overflow: hidden; }
+                  span { display: block; padding: 8px; font: bold 24px/32px sans-serif; }
+                  .inverse { background: black; color: white; }
+                  .ordinary { background: white; color: black; }
+                </style>
+                <main class="view">
+                  <span class="inverse">Inverse title</span>
+                  <span class="inverse">IN PROGRESS</span>
+                  <span class="inverse">11:00 AM - 12:00 PM</span>
+                  <span class="ordinary">Ordinary title</span>
+                </main>
+                """,
+            ContentType = "text/html"
+        }));
+        await page.RouteAsync("http://trmnl.local/workbench/layout-checks.mjs", route => route.FulfillAsync(new()
+        {
+            Path = Path.Combine(DisplayTests.Root, "display", "workbench", "layout-checks.mjs"),
+            ContentType = "application/javascript"
+        }));
+        await page.GotoAsync("http://trmnl.local/");
+        var required = await page.Locator("span").AllAsync();
+        await VisibleInk(page, "painted-foreground", view, required);
+        foreach (var content in required)
+        {
+            var originalStyle = await content.GetAttributeAsync("style");
+            try
+            {
+                await content.EvaluateAsync("""
+                    element => element.style.setProperty("-webkit-text-fill-color", "transparent", "important")
+                    """);
+                await Assert.ThrowsAsync<Xunit.Sdk.TrueException>(() =>
+                    VisibleInk(page, "unpainted-foreground", view, new[] { content }));
+            }
+            finally
+            {
+                await content.EvaluateAsync("""
+                    (element, style) => {
+                      if (style === null) element.removeAttribute("style");
+                      else element.setAttribute("style", style);
+                    }
+                    """, originalStyle);
+            }
+        }
+    }
+
     [Theory]
     [MemberData(nameof(Views))]
     public async Task Emphasized_secondary_event_is_admitted_ahead_of_ordinary_primary_overflow(NativeView view)
@@ -1008,13 +1070,20 @@ public sealed class AdaptiveDisplayTests
         }
         Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
         var image = Path.Combine(DisplayTests.Root, "artifacts", $"{name}.png");
+        var comparison = Path.Combine(DisplayTests.Root, "artifacts", $"{name}-no-text.png");
         var screenshot = await page.ScreenshotAsync(new() { Path = image });
         Assert.Equal(view.PhysicalWidth, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
         Assert.Equal(view.PhysicalHeight, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
+        await page.ScreenshotAsync(new()
+        {
+            Path = comparison,
+            Style = "* { -webkit-text-fill-color: transparent !important; text-shadow: none !important; }"
+        });
         using var ink = JsonDocument.Parse(DisplayTests.RunRuby(
-            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image, regions }));
+            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"),
+            new { image, comparison_image = comparison, regions }));
         foreach (var region in ink.RootElement.EnumerateArray())
-            Assert.True(region.GetProperty("dark_pixels").GetInt32() >= 20,
+            Assert.True(region.GetProperty("different_pixels").GetInt32() >= 20,
                 $"Required text has no readable raster ink: {region.GetProperty("text").GetString()}");
     }
 

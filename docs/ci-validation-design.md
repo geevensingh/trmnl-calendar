@@ -34,6 +34,12 @@ Full includes complete read-only formatting, Fast build/syntax checks, the **unf
 
 The job has only `contents: read` token permission, does not persist checkout credentials, references no repository/production secrets and needs no Azure login, private calendar or TRMNL account. Inputs are synthetic, storage/HTTP substitutes are local and Git fixtures use disposable repositories/bare remotes. It performs no deployment or live Azure mutations. Live Azure/private-source/device acceptance and the [delivery contract](agents/delivery.md) remain independent gates.
 
+## Separate post-merge receipt validation
+
+The [manual receipt workflow](delivery-receipts.md) is a separate post-human-merge path, not the required PR check. It runs genuine shared Full afresh on an immutable landing in an isolated Windows job with read-only contents permission; trusted orchestration resolves acceptance, checks Actions run/attempt provenance and publishes the durable PR comment in a different job. The required workflow above, literal **Full validation** check identity, triggers, synthetic evaluation and failure propagation remain unchanged.
+
+An older reachable landing is supported and a newer landing does not cancel its Full. This first slice has no automatic push admission, ticket-gate evaluation or concurrent/interrupted reconciliation. Manual collections for one PR must finish sequentially. Actual hosted dispatch, exact-landing Full, permissions and comment creation/update require separate acceptance after human/default-branch bootstrap; fixture success is not hosted evidence.
+
 ## Explicit hook migration
 
 Automatic repository-managed `pre-commit`, `pre-merge-commit` and `pre-push` installation is retired. `scripts\git-hooks.ps1 -Action Install` fails with manual-validation and migration guidance without writing hooks/configuration. The command remains as a **Status/Remove migration interface** so deleting tracked tooling cannot strand old installed hooks.

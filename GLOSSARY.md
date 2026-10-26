@@ -16,6 +16,10 @@ _Avoid_: Displayed event (when referring to every qualifying event)
 An eligible event whose details are visible on the device.
 _Avoid_: Eligible event (when referring only to visible details)
 
+**Ongoing event**:
+A timed eligible event whose scheduled start has arrived and whose scheduled end has not. It describes calendar timing, not actual attendance, and does not include all-day events.
+_Avoid_: Meeting I'm in (when inferring attendance from scheduled time)
+
 **Exclusion rule**:
 A configurable condition that identifies calendar events to omit from the agenda.
 _Avoid_: Hide rule

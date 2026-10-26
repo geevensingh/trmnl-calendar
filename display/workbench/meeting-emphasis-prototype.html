@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meeting emphasis - throwaway sketches</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px 24px 110px; background: #e9e9e6; color: #171717; font: 15px Arial, sans-serif; }
+    main { max-width: 1160px; margin: auto; }
+    h1 { margin: 0 0 8px; font-size: 25px; }
+    .notice { max-width: 950px; line-height: 1.5; margin: 8px 0 18px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; margin-bottom: 18px; }
+    label { display: grid; gap: 5px; font-weight: bold; }
+    select, button { font: inherit; padding: 9px 12px; border: 1px solid #777; border-radius: 5px; background: white; color: #171717; cursor: pointer; }
+    button:focus-visible, select:focus-visible { outline: 3px solid #2765cb; outline-offset: 3px; }
+    .state { padding: 12px 16px; background: white; border: 1px solid #ccc; line-height: 1.6; margin-bottom: 20px; }
+    .previews { display: grid; gap: 22px; }
+    .previews.compare { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .preview { min-width: 0; }
+    .preview h2 { font-size: 19px; margin: 0 0 7px; }
+    .preview p { margin: 0 0 12px; line-height: 1.45; }
+    .viewport { position: relative; background: white; overflow: hidden; box-shadow: 0 2px 12px #0002; }
+    .device { position: absolute; inset: 0 auto auto 0; transform-origin: top left; background: white; color: black; padding: 18px 22px; display: flex; flex-direction: column; font-family: Arial, sans-serif; }
+    .device-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid black; padding-bottom: 9px; margin-bottom: 10px; font-size: 15px; }
+    .brand { font-size: 20px; font-weight: 800; letter-spacing: 1px; }
+    .agenda { flex: 1; min-height: 0; overflow: hidden; }
+    .day { display: flex; justify-content: space-between; align-items: baseline; font-weight: bold; font-size: 18px; padding: 5px 0 6px; }
+    .count { font-size: 13px; font-weight: normal; }
+    .secondary { border-top: 2px solid black; padding-top: 8px; margin-top: 9px; }
+    .event { display: grid; grid-template-columns: 218px minmax(0, 1fr); align-items: center; min-height: 43px; padding: 7px 0; border-bottom: 1px solid #ccc; gap: 8px; }
+    .time, .title { font-size: 21px; }
+    .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .8px; display: block; margin-bottom: 3px; }
+    .device-footer { border-top: 1px solid black; padding-top: 7px; margin-top: 9px; display: flex; justify-content: space-between; font-size: 12px; }
+    .variant-a .focused { min-height: 67px; }
+    .variant-a .focused .title { font-size: 30px; font-weight: 800; }
+    .variant-a .focused .time { font-weight: bold; }
+    .variant-b .focused { border-left: 7px solid black; padding-left: 10px; grid-template-columns: 201px minmax(0, 1fr); }
+    .variant-b .focused .title { font-weight: 800; font-size: 24px; }
+    .variant-b .focused .status { display: inline-block; border: 1px solid black; padding: 2px 4px; margin: 0 7px 0 0; font-size: 10px; vertical-align: 3px; }
+    .variant-c .focused { background: black; color: white; padding: 10px 12px; min-height: 76px; border: none; margin: 4px 0; grid-template-columns: 206px minmax(0, 1fr); }
+    .variant-c .focused .title { font-size: 28px; font-weight: 800; }
+    .focus-panel { border: 3px solid black; padding: 10px 13px; margin: 2px 0 12px; }
+    .focus-panel .panel-title { font-size: 31px; font-weight: 800; margin: 3px 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .focus-panel .panel-time { font-size: 19px; }
+    .narrow .event { grid-template-columns: 112px minmax(0, 1fr); gap: 6px; }
+    .narrow .time { font-size: 16px; }
+    .narrow .title { font-size: 19px; }
+    .narrow.variant-a .focused .title, .narrow.variant-c .focused .title { font-size: 25px; }
+    .narrow.variant-b .focused { grid-template-columns: 95px minmax(0, 1fr); }
+    .narrow.variant-b .focused .status { display: block; width: fit-content; margin-bottom: 3px; }
+    .narrow.variant-c .focused { grid-template-columns: 100px minmax(0, 1fr); }
+    .short { padding: 10px 18px; }
+    .short .device-header { margin-bottom: 5px; padding-bottom: 6px; }
+    .short .brand { font-size: 17px; }
+    .short .day { font-size: 16px; padding: 3px 0; }
+    .short .secondary { margin-top: 5px; padding-top: 5px; }
+    .short .device-footer { margin-top: 5px; padding-top: 5px; }
+    .short .focus-panel { padding: 5px 10px; margin-bottom: 5px; }
+    .short .panel-title { font-size: 24px; margin: 2px 0; }
+    .short .panel-time { font-size: 16px; }
+    .switcher { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; padding: 9px; background: #171717; color: white; border-radius: 12px; box-shadow: 0 4px 20px #0005; z-index: 2; }
+    .switcher button { border: none; }
+    .switcher output { min-width: 190px; text-align: center; font-weight: bold; }
+    @media (max-width: 760px) { body { padding: 16px 12px 110px; } .previews.compare { grid-template-columns: 1fr; } .switcher { gap: 5px; } .switcher output { min-width: 150px; font-size: 13px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Which meeting should catch your eye?</h1>
+    <p class="notice"><strong>Throwaway visual sketches, not production renders.</strong> This worktree has no restored native Ruby gems or pinned TRMNL framework/fonts. These use substitute fonts and illustrative fitting; sizes and visible event counts do not prove native capacity. No production templates or polling behavior are changed.</p>
+    <div class="controls">
+      <label>Calendar moment
+        <select id="moment">
+          <option value="ongoing">10:25 - an event is ongoing</option>
+          <option value="soon">10:55 - next event starts in 5 minutes</option>
+          <option value="idle">10:50 - next event is 10 minutes away</option>
+        </select>
+      </label>
+      <label>Sketch canvas
+        <select id="size">
+          <option value="full">Wide - 800 x 480</option>
+          <option value="short">Short - 800 x 240</option>
+          <option value="narrow">Narrow - 400 x 480</option>
+        </select>
+      </label>
+      <button id="compare" type="button" aria-pressed="false">Compare all four</button>
+    </div>
+    <div class="state" id="state" aria-live="polite"></div>
+    <div class="previews" id="previews"></div>
+  </main>
+  <nav class="switcher" aria-label="Prototype variants">
+    <button id="previous" type="button" aria-label="Previous variant">&larr;</button>
+    <output id="variant-label"></output>
+    <button id="next" type="button" aria-label="Next variant">&rarr;</button>
+  </nav>
+  <script>
+    // Four throwaway agenda treatments on one route, switchable via ?variant=A through D.
+    const variants = [
+      { key: 'A', name: 'Bigger + bolder', detail: 'A larger title anchors the existing chronological list. Simple, but the enlarged row takes more height.' },
+      { key: 'B', name: 'Rail + status', detail: 'A dark rail and compact label create a clear scan target with less growth. The title gets a modest increase.' },
+      { key: 'C', name: 'Inverse card', detail: 'White-on-black emphasis is unmistakable on a monochrome screen. More visual weight and padding than a normal row.' },
+      { key: 'D', name: 'Pinned focus panel', detail: 'A dedicated panel puts the focus first, above both days. Its original row is omitted here to avoid duplication; that policy is not yet agreed.' },
+    ];
+    const events = [
+      { id: 'all-day', title: 'Planning week', time: 'All day', end: Infinity },
+      { id: 'design', title: 'Product design review', time: '10:00 - 10:45', end: 645 },
+      { id: 'platform', title: 'Platform sync', time: '11:00 - 11:30', end: 690 },
+      { id: 'lunch', title: 'Lunch with Sam', time: '12:00 - 13:00', end: 780 },
+      { id: 'roadmap', title: 'Roadmap planning', time: '14:00 - 15:00', end: 900 },
+    ];
+    const secondary = [
+      { id: 'standup', title: 'Team standup', time: '09:30 - 10:00' },
+      { id: 'customer', title: 'Customer feedback', time: '11:00 - 12:00' },
+    ];
+    const moments = {
+      ongoing: { clock: '10:25', minutes: 625, focus: 'design', status: 'In progress', explanation: 'Scheduled 10:00-10:45; attendance is not inferred.' },
+      soon: { clock: '10:55', minutes: 655, focus: 'platform', status: 'Starts soon', explanation: 'No ongoing event; the next event starts at 11:00, exactly five minutes away.' },
+      idle: { clock: '10:50', minutes: 650, focus: null, status: 'No emphasis', explanation: 'No ongoing event; the next event is ten minutes away, outside the proposed five-minute window.' },
+    };
+    const dimensions = { full: [800, 480], short: [800, 240], narrow: [400, 480] };
+    const params = new URLSearchParams(location.search);
+    let current = Math.max(0, variants.findIndex(v => v.key === params.get('variant')));
+    let compare = params.get('compare') === '1';
+    const momentSelect = document.querySelector('#moment');
+    const sizeSelect = document.querySelector('#size');
+    if (Object.hasOwn(moments, params.get('moment'))) momentSelect.value = params.get('moment');
+    if (Object.hasOwn(dimensions, params.get('size'))) sizeSelect.value = params.get('size');
+    const previews = document.querySelector('#previews');
+    const escape = value => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+
+    function row(event, focused, moment) {
+      return `<div class="event${focused ? ' focused' : ''}" data-event="${event.id}"><div class="time">${escape(event.time)}</div><div class="title">${focused ? `<span class="status">${moment.status}</span>` : ''}${escape(event.title)}</div></div>`;
+    }
+
+    function renderVariant(variant, moment, eligible, width, height) {
+      const selected = eligible.find(event => event.id === moment.focus);
+      const pinned = variant.key === 'D' && selected;
+      const article = document.createElement('article');
+      article.className = 'preview';
+      article.innerHTML = `<h2>${variant.key}. ${variant.name}</h2><p>${variant.detail}</p>
+        <div class="viewport"><div class="device variant-${variant.key.toLowerCase()}${width < 600 ? ' narrow' : ''}${height < 300 ? ' short' : ''}" style="width:${width}px;height:${height}px">
+          <div class="device-header"><span class="brand">AGENDA</span><span>MON OCT 26</span></div>
+          <div class="agenda">
+            ${pinned ? `<div class="focus-panel"><span class="status">${moment.status}</span><div class="panel-title">${escape(selected.title)}</div><div class="panel-time">${selected.time}</div></div>` : ''}
+            <div class="day">Monday, October 26 <span class="count primary-count"></span></div>
+            <div class="primary-rows">${eligible.filter(event => !pinned || event.id !== selected.id).map(event => row(event, event.id === moment.focus, moment)).join('')}</div>
+            <div class="day secondary">Tuesday, October 27 <span class="count secondary-count"></span></div>
+            <div class="secondary-rows">${secondary.map(event => row(event, false, moment)).join('')}</div>
+          </div>
+          <div class="device-footer"><span>Source checked 10:20 AM</span><span>Rendered ${moment.clock} AM</span></div>
+        </div></div>`;
+      previews.append(article);
+      const device = article.querySelector('.device');
+      const agenda = article.querySelector('.agenda');
+      const primaryRows = [...article.querySelectorAll('.primary-rows .event')];
+      const secondaryRows = [...article.querySelectorAll('.secondary-rows .event')];
+      const fits = () => agenda.scrollHeight <= agenda.clientHeight;
+      for (const event of [...secondaryRows].reverse()) {
+        if (fits()) break;
+        event.hidden = true;
+        event.style.display = 'none';
+      }
+      for (const event of [...primaryRows].reverse().filter(event => !event.classList.contains('focused'))) {
+        if (fits()) break;
+        event.hidden = true;
+        event.style.display = 'none';
+      }
+      const visiblePrimary = primaryRows.filter(event => !event.hidden).length + (pinned ? 1 : 0);
+      const visibleSecondary = secondaryRows.filter(event => !event.hidden).length;
+      const count = (visible, total) => visible === total ? `${total} events` : `${visible} of ${total} shown`;
+      article.querySelector('.primary-count').textContent = count(visiblePrimary, eligible.length);
+      article.querySelector('.secondary-count').textContent = count(visibleSecondary, secondary.length);
+      const viewport = article.querySelector('.viewport');
+      const scale = Math.min(1, viewport.clientWidth / width);
+      device.style.transform = `scale(${scale})`;
+      viewport.style.height = `${height * scale}px`;
+    }
+
+    function render() {
+      const moment = moments[momentSelect.value];
+      const [width, height] = dimensions[sizeSelect.value];
+      const eligible = events.filter(event => event.end > moment.minutes);
+      const focused = events.find(event => event.id === moment.focus);
+      previews.replaceChildren();
+      previews.classList.toggle('compare', compare);
+      document.querySelector('#compare').textContent = compare ? 'Show selected only' : 'Compare all four';
+      document.querySelector('#compare').setAttribute('aria-pressed', String(compare));
+      document.querySelector('#variant-label').textContent = `${variants[current].key} - ${variants[current].name}`;
+      document.querySelector('#state').textContent = `Synthetic snapshot: Monday Oct 26, 2026, ${moment.clock} AM, America/Los_Angeles. ${moment.status}${focused ? `: ${focused.title}` : ''}. ${moment.explanation} ${eligible.length} primary-day eligible events, ${secondary.length} secondary-day events. Display polls every 15 minutes; this is not a live countdown. Sketches prioritize keeping the focused event visible. Overlap selection and final fitting policy remain undecided.`;
+      for (const variant of compare ? variants : [variants[current]]) renderVariant(variant, moment, eligible, width, height);
+      const next = new URLSearchParams({ variant: variants[current].key, moment: momentSelect.value, size: sizeSelect.value });
+      if (compare) next.set('compare', '1');
+      history.replaceState(null, '', `?${next}`);
+    }
+
+    function cycle(delta) {
+      current = (current + delta + variants.length) % variants.length;
+      compare = false;
+      render();
+    }
+    document.querySelector('#previous').onclick = () => cycle(-1);
+    document.querySelector('#next').onclick = () => cycle(1);
+    document.querySelector('#compare').onclick = () => { compare = !compare; render(); };
+    momentSelect.onchange = render;
+    sizeSelect.onchange = render;
+    document.addEventListener('keydown', event => {
+      if (event.target.closest('input, textarea, select, [contenteditable]')) return;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        cycle(event.key === 'ArrowLeft' ? -1 : 1);
+      }
+    });
+    window.addEventListener('resize', render);
+    render();
+  </script>
+</body>
+</html>

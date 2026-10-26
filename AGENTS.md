@@ -23,3 +23,5 @@ Before implementation, Git/worktree/PR writes, accepting implementation dependen
 ### Local validation
 
 For code validation or Git-hook setup/removal, follow [Local validation](README.md#local-validation). `scripts\validate.ps1` is the authoritative entrypoint.
+
+For a user-invoked skill whose instructions are supplied in context, see `.agents/skills/writing-for-agents/SKILL-MECHANICS.md` for the invocation/load distinction.

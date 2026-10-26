@@ -38,7 +38,7 @@ The job has only `contents: read` token permission, does not persist checkout cr
 
 The [manual receipt workflow](delivery-receipts.md) is a separate post-human-merge path, not the required PR check. It runs genuine shared Full afresh on an immutable landing in an isolated Windows job with read-only contents permission; trusted orchestration resolves acceptance, checks Actions run/attempt provenance and publishes the durable PR comment in a different job. The required workflow above, literal **Full validation** check identity, triggers, synthetic evaluation and failure propagation remain unchanged.
 
-An older reachable landing is supported and a newer landing does not cancel its Full. This first slice has no automatic push admission, ticket-gate evaluation or concurrent/interrupted reconciliation. Manual collections for one PR must finish sequentially. Actual hosted dispatch, exact-landing Full, permissions and comment creation/update require separate acceptance after human/default-branch bootstrap; fixture success is not hosted evidence.
+An older reachable landing is supported and a newer landing does not cancel its Full. Manual collection evaluates optional declared ticket gates and publishes issue pointers with the existing publisher's `issues: write`; validation retains only `contents: read`. Repository-change and ticket assessments remain separate. Automatic push admission and concurrent/interrupted reconciliation are separate slices; manual collections for one PR must finish sequentially. Actual hosted dispatch, exact-landing Full, permissions, pending/reconciled ticket evidence and PR/issue comment effects require separate acceptance after human/default-branch bootstrap; fixture success is not hosted evidence.
 
 ## Explicit hook migration
 

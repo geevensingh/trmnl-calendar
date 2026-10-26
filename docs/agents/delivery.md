@@ -64,7 +64,7 @@ It emits JSON on stdout/exit **0** for reachability or stderr/exit **1** otherwi
 
 The proof neither fetches nor changes files, branches, refs, `FETCH_HEAD`, configuration, or index flags. Reads remove inherited Git selectors, disable replacement/lazy objects, tracing and filesystem monitoring, suppress credential prompts, and have a 30-second per-command bound. Diagnostics, remote URLs and machine-private paths are excluded. This proves publication only, not acceptance, Full or ticket gates.
 
-Use the [manual receipt workflow and operator protocol](../delivery-receipts.md) for the complete path. It separates exact-landing validation from trusted comment publication and stores essential evidence plus sequential attempt history in one automation-owned PR comment. Explicit unsupported or malformed ticket declarations remain pending; this slice posts no ticket pointers.
+Use the [manual receipt workflow and operator protocol](../delivery-receipts.md) for the complete path. It separates exact-landing validation from trusted comment publication and stores essential evidence plus sequential attempt history in one automation-owned PR comment. Optional version-1 declarations explicitly associate tickets and their acceptance/review gates; malformed, ambiguous or unsupported declarations remain pending. Only declared issues receive idempotent receipt pointers, with state and substantive requirements unchanged. Repository-change success does not waive missing ticket evidence or pointer persistence.
 
 ### Legacy/local-target proof
 

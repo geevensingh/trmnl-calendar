@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { commit, fullCommit, git, ReceiptError, requireEvidence } from "./receipt-git.mjs";
 import { publicationProof } from "./check-publication.mjs";
 import { assertReceiptRecord, fullCommand, timestamp, identifier, login, validationOutcomes } from "./receipt-record.mjs";
+import { declaration, ticketScope, assessTickets, publishPointers } from "./receipt-tickets.mjs";
 
 const workflow = ".github/workflows/delivery-receipt.yml";
 const marker = "<!-- delivery-receipt:v1\n";
@@ -125,9 +126,7 @@ async function provenance(options, api) {
     if (!(error instanceof ReceiptError)) throw error;
     blockers.push(error.message);
   }
-  return { provenance: result,
-    declaration: /(?:<!--\s*delivery\b|^[ \t]*#{1,6}[ \t]+delivery\b|(?:`{3,}|~{3,})[ \t]*delivery\b)/im.test(pr.body ?? ""),
-    blockers };
+  return { provenance: result, declaration: declaration(pr.body ?? ""), blockers };
 }
 
 async function validation(options, api, plan) {
@@ -165,7 +164,7 @@ async function validation(options, api, plan) {
   }
 }
 
-async function persist(options, api, attempt) {
+async function persist(options, api, attempt, replace = false) {
   const matches = (await api.pages(`/issues/${options.pr}/comments`)).filter(comment => comment.body?.includes(marker));
   requireEvidence(matches.length <= 1, "canonical_receipt_ambiguous");
   const existing = matches[0];
@@ -183,9 +182,11 @@ async function persist(options, api, attempt) {
       record.pr_number === options.pr && record.landing_commit === attempt.provenance.landing_commit &&
       Array.isArray(record.attempts), "canonical_receipt_identity_invalid");
     assertReceiptRecord(record, options.repository, options.pr, attempt.provenance.landing_commit);
-    requireEvidence(!record.attempts.some(previous => previous.id === attempt.id), "attempt_already_recorded");
+    requireEvidence(replace ? record.latest_attempt === attempt.id :
+      !record.attempts.some(previous => previous.id === attempt.id), "attempt_already_recorded");
   }
-  record.attempts.push(attempt);
+  if (replace) record.attempts[record.attempts.length - 1] = attempt;
+  else record.attempts.push(attempt);
   record.latest_attempt = attempt.id;
   assertReceiptRecord(record, options.repository, options.pr, attempt.provenance.landing_commit);
   const historical = record.attempts.slice(0, -1).some(previous => previous.assessment === "complete");
@@ -200,6 +201,11 @@ async function persist(options, api, attempt) {
     `Live publication: ${attempt.publication.reachable ? "reachable" : "pending"}, ` +
     `observed \`${attempt.publication.remote_commit ?? "unavailable"}\` at ${attempt.publication.checked_at}.\n\n` +
     `Blockers: ${attempt.blockers.length ? attempt.blockers.join(", ") : "none"}.\n\n` +
+    `Repository-change: **${attempt.repository_change.assessment}**. ` +
+    (attempt.ticket_scope ? `Ticket scope: **${attempt.ticket_scope.assessment}**; declaration **${attempt.ticket_scope.declaration.status}**.\n\n` +
+      attempt.ticket_scope.tickets.map(ticket => `Issue #${ticket.issue}: **${ticket.assessment}**; ` +
+        `gates: ${ticket.gates.map(gate => `${gate.id}=${gate.assessment}`).join(", ") || "none declared"}; ` +
+        `pointer ${ticket.pointer.outcome}.\n\n`).join("") : "\n\n") +
     `Earlier complete observation: ${historical ? "yes; not the latest assessment" : "none"}.\n\n` +
     `${marker}${JSON.stringify(record)}\n-->`;
   requireEvidence(Buffer.byteLength(body, "utf8") <= 60_000, "receipt_capacity_exceeded");
@@ -237,16 +243,24 @@ try {
     const full = await validation(options, api, prepared);
     const publication = publicationProof(plan.provenance.landing_commit);
     const blockers = [...plan.blockers, ...full.blockers, ...publication.errors];
-    if (plan.declaration) blockers.push("explicit_delivery_declaration_unsupported");
     const failed = ["failure", "timed_out", "startup_failure"].includes(full.validation.outcome);
     const assessment = failed ? "failed" : blockers.length ? "pending" : "complete";
     const attempt = { id: `${options.run}:${options.attempt}`, checked_at: new Date().toISOString(),
-      scope: plan.declaration ? "ticket-scoped" : "repository-change", assessment,
+      scope: plan.declaration.status === "absent" ? "repository-change" : "ticket-scoped", assessment,
       repository_change: { assessment: failed ? "failed" :
         plan.blockers.length || full.blockers.length || publication.errors.length ? "pending" : "complete" },
-      provenance: plan.provenance, validation: full.validation, publication, blockers };
+      provenance: plan.provenance, validation: full.validation, publication, blockers,
+      ticket_scope: await ticketScope(options, api, plan.declaration, plan.provenance) };
+    assessTickets(attempt, blockers);
     const commentId = await persist(options, api, attempt);
-    console.log(JSON.stringify({ persisted: true, assessment, comment_id: commentId, attempt_id: attempt.id, blockers }));
+    if (attempt.ticket_scope.tickets.length) {
+      const pointersPublished = await publishPointers(options, api, attempt, commentId);
+      assessTickets(attempt, blockers);
+      await persist(options, api, attempt, true);
+      requireEvidence(pointersPublished, "ticket_pointer_publication_failed");
+    }
+    console.log(JSON.stringify({ persisted: true, assessment: attempt.assessment, comment_id: commentId,
+      attempt_id: attempt.id, blockers: attempt.blockers }));
   }
 } catch (error) {
   console.error(JSON.stringify({ persisted: false, assessment: "pending",

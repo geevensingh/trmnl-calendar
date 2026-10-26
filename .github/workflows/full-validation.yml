@@ -65,5 +65,15 @@ jobs:
       - name: Restore locked display dependencies and pinned Chromium
         run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\setup-display.ps1
 
+      - name: Disposable CI acceptance probe - remove one generated prerequisite (do not merge)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $asset = '.tools\framework\js\3.4.3\plugins.js'
+          if (!(Test-Path -LiteralPath $asset -PathType Leaf)) {
+            throw 'Probe requires the normally provisioned pinned framework asset.'
+          }
+          Remove-Item -LiteralPath $asset
+          Write-Host 'Acceptance probe removed only the generated runner-local plugins.js asset.'
+
       - name: Run the shared Full validation
         run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full

@@ -92,7 +92,7 @@
   <main class="page">
     <p class="eyebrow">TRMNL Calendar / throwaway visual exploration</p>
     <h1>One scale. Three ways to read it.</h1>
-    <p class="intro">Compare how participation expectation reads at a glance. Each option uses exactly the same synthetic agenda, with the same event order and counts. Nothing here changes production.</p>
+    <p class="intro"><strong>Chosen direction: B / explicit text labels, without a legend.</strong> A and C remain available for comparison. Each option uses exactly the same synthetic agenda, with the same event order and counts. Nothing here changes production.</p>
     <div class="notice"><strong>Sketch only, not a native rendering.</strong> These approximate an 800 x 480 agenda using system fonts. This worktree has no installed TRMNL framework/fonts or restored native renderer, so spacing, capacity and device legibility are not verified. The sample classifications are supplied examples, not results from your Outlook feed.</div>
     <nav class="toolbar" aria-label="Prototype options">
       <button type="button" data-variant="A">A / Dot meter</button>
@@ -121,7 +121,7 @@
   <script>
     const variants = [
       { key: "A", name: "Dot meter", description: "A dedicated cue before the time. The filled dots communicate one ordered scale without shortening the title for a text badge. The trade-off: you need to learn the legend." },
-      { key: "B", name: "Text labels", description: "A right-hand label spells out the expectation. Most explicit and easiest to learn; the trade-off is less room for event titles and more visual weight on every row." },
+      { key: "B", name: "Text labels", description: "A right-hand label spells out the expectation, so no legend is needed. Most explicit and easiest to learn; the trade-off is less room for event titles and more visual weight on every row." },
       { key: "C", name: "Row treatment", description: "The row's leading rule carries the expectation: heavy, thin, dashed or dotted. No extra status column and no faded event text. The trade-off: subtle differences are harder to distinguish." }
     ];
     const levels = [
@@ -178,7 +178,7 @@
               <div class="day-heading"><strong>${day.label}</strong><span class="count">${day.events.length} of ${day.events.length} events shown</span></div>
               ${day.events.map(event => eventRow(event, variant.key)).join("")}
             </section>`).join("")}
-            <div class="device-legend">${legend(variant.key)}</div>
+            ${variant.key === "B" ? "" : `<div class="device-legend">${legend(variant.key)}</div>`}
           </div>
         </div>
         <p class="caption">Synthetic 800 x 480 sketch, scaled to fit this panel. Same eight events in every option.</p>
@@ -187,8 +187,8 @@
       <tr><td>${event.title}</td><td>${event.organizer}</td><td>${event.response}</td><td>${event.availability}</td><td>${levelFor(event.level).description}</td></tr>`).join("");
     function state() {
       const params = new URLSearchParams(location.search);
-      const key = params.get("variant") ?? "A";
-      return { variant: variants.find(variant => variant.key === key) ?? variants[0], compare: params.get("view") === "compare" };
+      const key = params.get("variant") ?? "B";
+      return { variant: variants.find(variant => variant.key === key) ?? variants[1], compare: params.get("view") === "compare" };
     }
     function render() {
       const current = state();

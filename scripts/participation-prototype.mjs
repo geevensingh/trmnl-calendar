@@ -25,5 +25,5 @@ const server = createServer((request, response) => {
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(readFileSync(page));
 });
 server.listen(port, "127.0.0.1", () => {
-  console.log(`Throwaway participation mockups: http://127.0.0.1:${server.address().port}/?variant=A&view=compare`);
+  console.log(`Throwaway participation mockups: http://127.0.0.1:${server.address().port}/?variant=B`);
 });

@@ -33,21 +33,30 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       AZURE_BICEP_CHECK_VERSION: 'false'
     steps:
-      - name: Check out the evaluated PR revision
+      - name: Check out the event-pinned head or dispatch revision
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Prepare and verify the event-pinned PR merge
+        if: github.event_name == 'pull_request'
+        env:
+          PR_HEAD_COMMIT: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        run: node .\scripts\prepare-ci.mjs --head-commit "$env:PR_HEAD_COMMIT" --base-commit "$env:PR_BASE_COMMIT"
 
       - name: Set up the selected .NET SDK and host runtime
         uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
           dotnet-version: 8.0.x
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '22'
 
       - name: Set up Ruby with Devkit and locked Bundler
         uses: ruby/setup-ruby@v1

@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 export async function checkout(t) {
-  const directory = await mkdtemp(join(tmpdir(), "agenda display setup "));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "agenda display setup ")));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await cp(join(root, "scripts"), join(directory, "scripts"), { recursive: true });
   for (const file of ["Gemfile", "Gemfile.lock"])

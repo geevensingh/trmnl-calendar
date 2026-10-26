@@ -125,7 +125,8 @@ async function provenance(options, api) {
     if (!(error instanceof ReceiptError)) throw error;
     blockers.push(error.message);
   }
-  return { provenance: result, declaration: /(?:<!--\s*delivery\b|^#{1,6}\s+delivery\b|```delivery\b)/im.test(pr.body ?? ""),
+  return { provenance: result,
+    declaration: /(?:<!--\s*delivery\b|^[ \t]*#{1,6}[ \t]+delivery\b|(?:`{3,}|~{3,})[ \t]*delivery\b)/im.test(pr.body ?? ""),
     blockers };
 }
 

@@ -318,7 +318,10 @@ test("missing objects retain the authoritative full landing and head identities 
 });
 
 test("unsupported or malformed explicit declarations remain pending without inferring ticket scope from incidental mentions", async t => {
-  for (const declaration of ["<!-- delivery\n{not json", "## Delivery\nTickets: #8", "```delivery\n{}"]) {
+  for (const declaration of [
+    "<!-- delivery\n{not json", "## Delivery\nTickets: #8", "```delivery\n{}",
+    "``` delivery\n{not json", "   ## Delivery\nTickets: #8", "~~~delivery\n{}"
+  ]) {
     await t.test(declaration.split("\n")[0], async t => {
       const f = await fixture(t);
       f.state.pr.body = declaration;

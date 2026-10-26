@@ -55,7 +55,7 @@ if ($mode -eq 'working-tree') {
     $stagedPatch = @(Invoke-ReviewGit diff --binary --full-index --no-ext-diff --no-textconv --cached $reviewHead '--' @paths)
     $unstagedPatch = @(Invoke-ReviewGit diff --binary --full-index --no-ext-diff --no-textconv '--' @paths)
     $untracked = @(Invoke-ReviewGit ls-files --others --exclude-standard '--' @paths)
-    $stagedEntries = @{}
+    $stagedEntries = [System.Collections.Generic.Dictionary[string, string[]]]::new([System.StringComparer]::Ordinal)
     foreach ($path in $paths) {
         $entry = @(Invoke-ReviewGit ls-files '--format=%(objectmode) %(objectname)' '--' $path)
         if ($entry.Count -gt 1) { throw 'Scope must identify individual index entries.' }
@@ -67,7 +67,7 @@ if ($mode -eq 'working-tree') {
         $env:GIT_INDEX_FILE = $snapshotIndex
         Invoke-ReviewGit read-tree $reviewHead
         Invoke-ReviewGit update-index --force-remove '--' @paths
-        foreach ($path in $stagedEntries.Keys) {
+        foreach ($path in $stagedEntries.psbase.Keys) {
             $entry = $stagedEntries[$path]
             Invoke-ReviewGit update-index --add --cacheinfo $entry[0] $entry[1] $path
         }
@@ -103,7 +103,7 @@ The recipe is a point-in-time capture, not a lock. Reinventory task scope and re
 
 ## Bind the resulting commit
 
-Commit only after the agreed validation and review gates. Retain the accepted manifest as `$review`; do not overwrite it with a fresh capture. Verify unchanged candidate content/scope/context first. When committing, select only task changes between `$review.head` and `$review.tree`, not unrelated staged files. For whole-file content candidates, explicitly stage those task paths (`git --literal-pathspecs add --all -- <task-paths>`) and use a path-limited commit (`git --literal-pathspecs commit --only -- <task-paths>`) if unrelated staged work exists. Keep literal matching through every scoped operation so filenames containing pattern characters cannot include excluded files.
+Commit only after the agreed validation and review gates. Retain the accepted manifest as `$review`; do not overwrite it with a fresh capture. Verify unchanged candidate content/scope/context first. When committing, select only task changes between `$review.head` and `$review.tree`, not unrelated staged files. For whole-file content candidates, stage each task path (`git --literal-pathspecs add --all -- <task-paths>`) only if it exists in the working tree or its literal index entry still exists, using the snapshot recipe's `Test-Path -LiteralPath` / `ls-files` condition. Already-staged deletions need no further add; retain them in the full task-path list for the path-limited commit (`git --literal-pathspecs commit --only -- <task-paths>`) if unrelated staged work exists. Keep literal matching through every scoped operation so filenames containing pattern characters cannot include excluded files.
 
 Git's path-limited commit can discard index-only executable modes when `core.filemode=false`. For those modes, use an ordinary commit only when the index contains task work alone. If unrelated staged work exists, use a separate temporary `GIT_INDEX_FILE` initialized with `git read-tree <reviewed-tree>`, commit that candidate, then restore the original index environment and refresh **only task paths** in its staging area from the new commit (`git --literal-pathspecs restore --staged --source=<commit> -- <task-paths>`). Preserve excluded staged entries and all working files; restore the environment and remove only the named temporary index in `finally`. Hunk-isolated candidates need an equally isolated commit and preserved excluded hunks, not the whole-file staging refresh.
 
@@ -138,4 +138,4 @@ Record this full accepted commit ID with both axis reports, scope/exclusions, an
 
 ## Disposable demonstrations
 
-`tests\validation\review-scope.test.mjs` executes these Markdown recipes with real Git in disposable repositories under Node's existing test runner. It covers committed-only and uncommitted-only changes, layered staged/unstaged edits, task untracked files, unrelated staged/unstaged/untracked work, recorded and invalid baselines, empty changes, staged executable modes with `core.filemode=false`, literal filenames containing pattern characters, deleted/renamed paths, and post-review content/scope/parent changes. Diagnostics identify each shared review snapshot and accepted commit; these are recipe demonstrations, not additional reviewers or acceptance of production changes.
+`tests\validation\review-scope.test.mjs` executes these Markdown recipes with real Git in disposable repositories under Node's existing test runner. It covers committed-only and uncommitted-only changes, layered staged/unstaged edits, task untracked files, unrelated staged/unstaged/untracked work, recorded and invalid baselines, empty changes, staged executable modes with `core.filemode=false`, literal filenames containing pattern characters or dictionary member names, case-distinct Git paths, staged and unstaged deletions, renamed paths, and post-review content/scope/parent changes. Diagnostics identify each shared review snapshot and accepted commit; these are recipe demonstrations, not additional reviewers or acceptance of production changes.

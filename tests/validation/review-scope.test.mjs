@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -78,7 +79,11 @@ async function repository(t) {
       ${bindingRecipe}
     `, { REVIEW_SNAPSHOT: JSON.stringify(review), REVIEW_COMMIT: candidate });
   const commit = (...paths) => {
-    git("--literal-pathspecs", "add", "--all", "--", ...paths);
+    for (const path of paths) {
+      if (existsSync(join(checkout, path)) || git("--literal-pathspecs", "ls-files", "--", path)) {
+        git(...taskCommand("add --all", [path]));
+      }
+    }
     git(...taskCommand("commit --only", paths));
     return git("rev-parse", "HEAD");
   };
@@ -152,6 +157,58 @@ test("uncommitted-only review reuses a recorded full baseline and accepts its un
   assert.equal(accepted.accepted_commit, commit);
   assert.equal(repo.git("rev-parse", `${commit}^{tree}`), review.tree);
   record(t, review, accepted);
+});
+
+test("scoped filename Keys cannot shadow the staged-entry key collection", async t => {
+  const repo = await repository(t);
+  await repo.write("Keys", "Original named task\n");
+  repo.commit("Keys");
+  await repo.write("Keys", "Reviewed named task\n");
+  const indexBefore = await readFile(join(repo.checkout, ".git", "index"));
+
+  const review = manifest(repo.capture("working-tree", ["Keys"]));
+  assert.equal(repo.git("show", `${review.tree}:Keys`), "Reviewed named task");
+  assert.deepEqual(await readFile(join(repo.checkout, ".git", "index")), indexBefore);
+  record(t, review, manifest(repo.bind(review, repo.commit("Keys"))));
+});
+
+test("case-distinct scoped Git paths retain separate index-only executable modes", async t => {
+  const repo = await repository(t);
+  repo.git("config", "core.ignorecase", "false");
+  repo.git("config", "core.filemode", "false");
+  await repo.write("tool.sh", "Shared script content\n");
+  await repo.write("TOOL.sh", "Shared script content\n");
+  repo.git("--literal-pathspecs", "add", "--", "tool.sh");
+  const blob = repo.git("rev-parse", ":tool.sh");
+  repo.git("update-index", "--add", "--cacheinfo", "100644", blob, "TOOL.sh");
+  repo.git("commit", "--quiet", "-m", "Case-distinct paths");
+  repo.git("--literal-pathspecs", "update-index", "--chmod=+x", "--", "tool.sh");
+  const indexBefore = await readFile(join(repo.checkout, ".git", "index"));
+
+  const review = manifest(repo.capture("working-tree", ["tool.sh", "TOOL.sh"]));
+  assert.match(repo.git("--literal-pathspecs", "ls-tree", review.tree, "--", "tool.sh"), /^100755 /);
+  assert.match(repo.git("--literal-pathspecs", "ls-tree", review.tree, "--", "TOOL.sh"), /^100644 /);
+  assert.deepEqual(await readFile(join(repo.checkout, ".git", "index")), indexBefore);
+  repo.git("commit", "--quiet", "-m", "Reviewed case-distinct mode");
+  record(t, review, manifest(repo.bind(review)));
+});
+
+test("already-staged task deletion commits without restaging missing paths or including user staging", async t => {
+  const repo = await repository(t);
+  repo.git("rm", "--", "task.txt");
+  await repo.write("unrelated.txt", "User staged\n");
+  repo.git("add", "--", "unrelated.txt");
+  await repo.write("unrelated.txt", "User staged\nUser unstaged\n");
+  const indexBefore = await readFile(join(repo.checkout, ".git", "index"));
+  const review = manifest(repo.capture());
+  assert.equal(repo.git("ls-tree", "--name-only", review.tree, "--", "task.txt"), "");
+  assert.deepEqual(await readFile(join(repo.checkout, ".git", "index")), indexBefore);
+
+  const commit = repo.commit("task.txt");
+  assert.equal(repo.git("ls-tree", "--name-only", commit, "--", "task.txt"), "");
+  assert.equal(repo.git("show", ":unrelated.txt"), "User staged");
+  assert.equal(await readFile(join(repo.checkout, "unrelated.txt"), "utf8"), "User staged\nUser unstaged\n");
+  record(t, review, manifest(repo.bind(review, commit)));
 });
 
 test("one snapshot composes committed, staged, unstaged, and untracked task content while preserving user work", async t => {

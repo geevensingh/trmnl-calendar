@@ -7,13 +7,13 @@ import { parseArgs } from "node:util";
 import { isolatedGitEnvironment } from "./git-environment.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+// Match checkout's on-disk normalization settings while removing inherited Git selectors.
 const environment = isolatedGitEnvironment({
-  GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
   GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0"
 });
 const report = {
   preparation_succeeded: false, head_commit: null, base_commit: null,
-  evaluated_commit: null, evaluated_tree: null, evaluated_parents: null, errors: []
+  evaluated_commit: null, evaluated_tree: null, evaluated_parents: null, checkout_state: null, errors: []
 };
 
 function git(args, failure, options = {}) {
@@ -28,7 +28,11 @@ function assertCleanCheckout() {
   const status = git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
     "checkout_status_unavailable");
   const index = git(["ls-files", "-v", "-z"], "checkout_index_unavailable");
-  if (status !== "" || index.split("\0").some(entry => /^[a-zS] /.test(entry)))
+  report.checkout_state = {
+    status_nonempty: status !== "",
+    index_visibility_restricted: index.split("\0").some(entry => /^[a-zS] /.test(entry))
+  };
+  if (report.checkout_state.status_nonempty || report.checkout_state.index_visibility_restricted)
     throw new Error("clean_visible_checkout_required");
 }
 
@@ -79,7 +83,8 @@ try {
     throw new Error("prepared_revision_identity_mismatch");
   const hooks = mkdtempSync(join(tmpdir(), "agenda CI hooks "));
   try {
-    git(["-c", `core.hooksPath=${hooks}`, "checkout", "--quiet", "--detach", evaluated], "prepared_checkout_failed");
+    git(["-c", `core.hooksPath=${hooks}`, "checkout", "--quiet", "--detach", "--no-overwrite-ignore", evaluated],
+      "prepared_checkout_failed");
   } finally {
     rmSync(hooks, { recursive: true, force: true });
   }

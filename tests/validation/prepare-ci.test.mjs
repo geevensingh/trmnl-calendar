@@ -31,6 +31,7 @@ async function repository(t) {
   checked("config", "user.name", "Synthetic maintainer");
   checked("config", "user.email", "synthetic@example.invalid");
   checked("config", "commit.gpgSign", "false");
+  checked("config", "core.autocrlf", "false");
   await cp(join(root, "scripts"), join(checkout, "scripts"), { recursive: true });
   await writeFile(join(checkout, "shared.txt"), "original content\n");
   checked("add", ".");
@@ -136,6 +137,74 @@ test("PR preparation does not run or modify configured foreign hooks", async t =
   assert.equal(await readFile(hook, "utf8"), bytes);
   assert.deepEqual(await readFile(join(fixture.checkout, ".git", "config")), configuration);
   assert.equal(fixture.checked("config", "core.hooksPath"), hooks);
+});
+
+test("PR preparation preserves an ignored configured foreign hook when the pinned base tracks a colliding path", async t => {
+  const fixture = await repository(t);
+  fixture.checked("checkout", "--quiet", "--detach", fixture.head);
+  await writeFile(join(fixture.checkout, ".gitignore"), "artifacts/\n");
+  fixture.checked("add", ".gitignore");
+  fixture.checked("commit", "--quiet", "-m", "Ignore generated artifacts");
+  const head = fixture.checked("rev-parse", "HEAD");
+  const relativeHooks = join("artifacts", "foreign-hooks");
+  const relativeHook = join(relativeHooks, "post-checkout");
+  const hook = join(fixture.checkout, relativeHook);
+  fixture.checked("checkout", "--quiet", "--detach", fixture.base);
+  await mkdir(join(fixture.checkout, relativeHooks), { recursive: true });
+  await writeFile(hook, "#!/bin/sh\nprintf 'incoming tracked hook\\n'\n");
+  fixture.checked("add", "--force", "--", relativeHook);
+  fixture.checked("commit", "--quiet", "-m", "Track an incoming hook-path collision");
+  const base = fixture.checked("rev-parse", "HEAD");
+  fixture.checked("checkout", "--quiet", "--detach", head);
+  await mkdir(join(fixture.checkout, relativeHooks), { recursive: true });
+  const foreignBytes = Buffer.from("#!/bin/sh\nprintf 'preserve foreign hook bytes\\n'\n");
+  await writeFile(hook, foreignBytes);
+  await chmod(hook, 0o755);
+  fixture.checked("config", "core.hooksPath", relativeHooks);
+  fixture.checked("check-ignore", "--quiet", "--", relativeHook);
+  assert.equal(fixture.checked("status", "--porcelain"), "");
+  const configuration = await readFile(join(fixture.checkout, ".git", "config"));
+  const refs = fixture.checked("for-each-ref", "--format=%(refname) %(objectname)");
+  const result = fixture.prepare(["--head-commit", head, "--base-commit", base]);
+  assert.deepEqual(await readFile(hook), foreignBytes, result.stdout + result.stderr);
+  assert.deepEqual(await readFile(join(fixture.checkout, ".git", "config")), configuration);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const report = JSON.parse(result.stderr);
+  assert.equal(report.preparation_succeeded, false);
+  assert.deepEqual(report.errors, ["prepared_checkout_failed"]);
+  assert.equal(report.evaluated_commit, null);
+  assert.equal(fixture.checked("rev-parse", "HEAD"), head);
+  assert.equal(fixture.checked("for-each-ref", "--format=%(refname) %(objectname)"), refs);
+  assert.equal(fixture.checked("status", "--porcelain"), "");
+});
+
+test("PR preparation accepts a fresh CRLF checkout under normal on-disk global Git configuration", async t => {
+  const fixture = await repository(t);
+  const home = join(fixture.directory, "synthetic runner home");
+  await mkdir(home);
+  delete fixture.environment.GIT_CONFIG_GLOBAL;
+  Object.assign(fixture.environment, { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config") });
+  fixture.checked("config", "--unset", "core.autocrlf");
+  fixture.checked("config", "--global", "core.autocrlf", "true");
+  fixture.checked("checkout", "--quiet", "--detach", fixture.base);
+  fixture.checked("checkout", "--quiet", "--detach", fixture.staleMerge);
+  assert.equal(await readFile(join(fixture.checkout, "head-only.txt"), "utf8"), "submitted head content\r\n");
+  assert.equal(fixture.checked("status", "--porcelain"), "");
+  const globalConfiguration = await readFile(join(home, ".gitconfig"));
+  const result = fixture.prepare();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(JSON.parse(result.stdout).preparation_succeeded, true);
+  assert.equal(fixture.checked("status", "--porcelain"), "");
+  assert.equal(await readFile(join(fixture.checkout, "base-only.txt"), "utf8"), "new base content\r\n");
+  await writeFile(join(fixture.checkout, "shared.txt"), "preserve a real tracked CRLF edit\r\n");
+  const dirty = fixture.prepare();
+  assert.equal(dirty.status, 1, dirty.stdout + dirty.stderr);
+  assert.deepEqual(JSON.parse(dirty.stderr).checkout_state, {
+    status_nonempty: true, index_visibility_restricted: false
+  });
+  assert.deepEqual(JSON.parse(dirty.stderr).errors, ["clean_visible_checkout_required"]);
+  assert.equal(await readFile(join(fixture.checkout, "shared.txt"), "utf8"), "preserve a real tracked CRLF edit\r\n");
+  assert.deepEqual(await readFile(join(home, ".gitconfig")), globalConfiguration);
 });
 
 test("PR preparation ignores inherited foreign Git selectors and leaves the owner unchanged", async t => {

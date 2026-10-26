@@ -105,9 +105,12 @@ public sealed class AdaptiveDisplayTests
             var data = AgendaScenarios.Load(scenario);
             await DisplayTests.Show(page, data, view.Placement, view.Device);
             await NativeBounds(page, view);
-            if (scenario.StartsWith("emphasis-", StringComparison.Ordinal))
+            var emphases = new[] { "primary", "secondary" }
+                .SelectMany(name => data[name]!["occurrences"]!.AsArray())
+                .Select(item => item!["emphasis"]?.GetValue<string>()).OfType<string>().Distinct();
+            foreach (var emphasis in emphases)
             {
-                var status = scenario == "emphasis-in-progress" ? "IN PROGRESS" : "UPCOMING";
+                var status = emphasis == "in_progress" ? "IN PROGRESS" : "UPCOMING";
                 Assert.True(await page.Locator(".agenda-emphasized:visible").CountAsync() > 0,
                     $"{scenario}/{view.Device}/{view.Placement} must retain an emphasized card.");
                 await Assertions.Expect(page.GetByText(status, new() { Exact = true }).First).ToBeVisibleAsync();
@@ -136,6 +139,7 @@ public sealed class AdaptiveDisplayTests
     public async Task Emphasized_secondary_event_is_admitted_ahead_of_ordinary_primary_overflow(NativeView view)
     {
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
+        data["schema_version"] = 2;
         var secondary = data["secondary"]!["occurrences"]!.AsArray()[0]!.DeepClone();
         secondary["id"] = "secondary-emphasized";
         secondary["title"] = "Upcoming secondary event";
@@ -163,8 +167,9 @@ public sealed class AdaptiveDisplayTests
     [MemberData(nameof(Views))]
     public async Task Emphasized_overflow_is_admitted_in_chronological_order_before_ordinary_rows(NativeView view)
     {
-        var data = Agenda(primaryRows: 14, secondaryRows: 0);
-        foreach (var occurrence in data["primary"]!["occurrences"]!.AsArray())
+        var data = Agenda(primaryRows: 56, secondaryRows: 0);
+        data["schema_version"] = 2;
+        foreach (var occurrence in data["primary"]!["occurrences"]!.AsArray().Skip(32))
             occurrence!["emphasis"] = "in_progress";
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync();
@@ -177,11 +182,12 @@ public sealed class AdaptiveDisplayTests
 
         var visible = page.Locator(".agenda-primary tbody tr.agenda-emphasized:visible");
         var visibleCount = await visible.CountAsync();
-        Assert.InRange(visibleCount, 1, 14);
+        Assert.InRange(visibleCount, 1, 23);
+        Assert.Equal(32, await page.Locator(".agenda-primary tbody tr:not([data-agenda-emphasis])").CountAsync());
         Assert.Equal(0, await page.Locator(".agenda-primary tbody tr:not([data-agenda-emphasis]):visible").CountAsync());
         var ids = await visible.EvaluateAllAsync<string[]>("rows => rows.map(row => row.dataset.agendaId)");
-        Assert.Equal(Enumerable.Range(1, visibleCount).Select(index => $"primary-{index:D3}"), ids);
-        await DayCount(page, "primary", 14);
+        Assert.Equal(Enumerable.Range(33, visibleCount).Select(index => $"primary-{index:D3}"), ids);
+        await DayCount(page, "primary", 56);
         await NativeBounds(page, view);
     }
 
@@ -714,7 +720,7 @@ public sealed class AdaptiveDisplayTests
             ("configuration_invalid", "Configuration error", "Rule configuration is missing or malformed.", false),
             ("source_unavailable", "Source error", "The calendar source could not be checked.", false),
             ("compatibility_unsupported", "Compatibility error", "The source contains unsupported calendar semantics.", false),
-            ("agenda_too_large", "Agenda error", "The complete agenda exceeds the response budget.", true),
+            ("agenda_too_large", "Agenda error", "The agenda metadata exceeds the polling response budget.", true),
             ("future_error", "Agenda error", "Synthetic failure <img src=x onerror=window.pwn=1> & \"quoted\".", false)
         })
         {

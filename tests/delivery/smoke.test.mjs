@@ -18,8 +18,11 @@ const current = {
   error: null
 };
 
-test("agenda contract permits only optional timed emphasis", () => {
+test("agenda contract preserves ordinary schema 1 and permits timed emphasis only in schema 2", () => {
+  assert.equal(validateAgenda(structuredClone(current)).schema_version, 1);
+  assert.equal(validateAgenda({ ...structuredClone(current), schema_version: 2 }).schema_version, 2);
   const ongoing = structuredClone(current);
+  ongoing.schema_version = 2;
   ongoing.primary.occurrences = [
     { time_kind: "timed", id: "in-progress", title: "Current", start_at: "2026-10-19T17:00:00Z",
       end_at: "2026-10-19T19:00:00Z", emphasis: "in_progress" },
@@ -28,14 +31,20 @@ test("agenda contract permits only optional timed emphasis", () => {
   ];
   ongoing.primary.eligible_total = ongoing.primary.occurrences.length;
   assert.equal(validateAgenda(ongoing).primary.occurrences[0].emphasis, "in_progress");
+  const legacy = structuredClone(ongoing);
+  legacy.schema_version = 1;
+  delete legacy.primary.occurrences[0].emphasis;
+  assert.equal(validateAgenda(legacy).primary.occurrences.length, 2);
 
   const upcoming = structuredClone(current);
+  upcoming.schema_version = 2;
   upcoming.primary.occurrences = [
     { time_kind: "timed", id: "upcoming", title: "Next", start_at: "2026-10-19T18:10:00Z",
       end_at: "2026-10-19T19:00:00Z", emphasis: "upcoming" }
   ];
   upcoming.primary.eligible_total = 1;
   assert.equal(validateAgenda(upcoming).primary.occurrences[0].emphasis, "upcoming");
+  assert.throws(() => validateAgenda({ ...upcoming, schema_version: 1 }), AgendaContractError);
   assert.throws(() => validateAgenda({
     ...upcoming,
     primary: { ...upcoming.primary, occurrences: [
@@ -262,7 +271,7 @@ test("malformed or unknown first responses retain transport evidence but no unva
     ["invalid_polling_contract", null],
     ["invalid_polling_contract", [current]],
     ["invalid_polling_contract", { ...unavailable(), state: "private_calendar_state" }],
-    ["invalid_polling_contract", { ...unavailable(), schema_version: 2 }],
+    ["invalid_polling_contract", { ...unavailable(), schema_version: 3 }],
     ["invalid_polling_contract", { ...unavailable(), source_url: "CONFIDENTIAL_SOURCE_URL" }],
     ["invalid_polling_contract", { ...unavailable(), error: { code: { private: "CONFIDENTIAL" }, message: "CONFIDENTIAL" } }],
     ["invalid_polling_contract", { ...unavailable(), generated_at: "2026-10-19T24:00:00Z" }],

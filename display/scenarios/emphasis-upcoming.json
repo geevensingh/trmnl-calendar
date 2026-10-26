@@ -3,7 +3,7 @@
   "name": "Upcoming emphasis",
   "description": "The earliest tied future start-time group receives the shared inverse-card treatment.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "current",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-23T18:00:00Z",

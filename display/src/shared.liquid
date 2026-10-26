@@ -82,7 +82,9 @@
           <table class="table table--large">
             <tbody>
               {% for occurrence in day.occurrences %}
-                <tr hidden data-agenda-id="{{ occurrence.id | escape }}"{% if occurrence.emphasis %} class="agenda-emphasized" data-agenda-emphasis="{{ occurrence.emphasis | escape }}"{% endif %}>
+                {% assign occurrence_emphasis = nil %}
+                {% if schema_version == 2 and occurrence contains "emphasis" %}{% assign occurrence_emphasis = occurrence.emphasis %}{% endif %}
+                <tr hidden data-agenda-id="{{ occurrence.id | escape }}"{% if occurrence_emphasis %} class="agenda-emphasized" data-agenda-emphasis="{{ occurrence_emphasis | escape }}"{% endif %}>
                   <td class="agenda-time">
                     {% if occurrence.time_kind == "all_day" %}
                       <span class="label label--large">All day</span>
@@ -94,9 +96,9 @@
                   </td>
                   <td>
                     <span class="title">{{ occurrence.title | escape }}</span>
-                    {% if occurrence.emphasis == "in_progress" %}
+                    {% if occurrence_emphasis == "in_progress" %}
                       <span class="label agenda-status">IN PROGRESS</span>
-                    {% elsif occurrence.emphasis == "upcoming" %}
+                    {% elsif occurrence_emphasis == "upcoming" %}
                       <span class="label agenda-status">UPCOMING</span>
                     {% endif %}
                     {% if occurrence.location and occurrence.location != empty %}

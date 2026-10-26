@@ -439,7 +439,7 @@ public sealed partial class AgendaFunction
             return Fail("source_invalid", "The calendar source could not be interpreted.");
         }
         occurrences = ApplyEmphasis(occurrences, now);
-        var result = new AgendaResult(1, AgendaState.Current, TimeZoneId, now, now,
+        var result = new AgendaResult(2, AgendaState.Current, TimeZoneId, now, now,
             SelectDay(primary, occurrences), SelectDay(secondary, occurrences), null);
         cancellationToken.ThrowIfCancellationRequested();
         return result;
@@ -550,17 +550,15 @@ public sealed partial class AgendaFunction
         var now = clock.GetUtcNow();
         var primary = NextWorkingDay(DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, AgendaTimeZone).DateTime));
         var secondary = NextWorkingDay(primary.AddDays(1));
-        return new AgendaResult(1, AgendaState.Error, TimeZoneId, now, sourceSucceededAt,
+        return new AgendaResult(2, AgendaState.Error, TimeZoneId, now, sourceSucceededAt,
             SelectDay(primary, []) with { EligibleTotal = null },
             SelectDay(secondary, []) with { EligibleTotal = null }, new AgendaError(code, message));
     }
 
     private ContentResult Respond(AgendaResult result)
     {
+        result = BoundResult(result);
         var json = JsonSerializer.Serialize(result, JsonOptions);
-        if (result.State != AgendaState.Error && Encoding.UTF8.GetByteCount(json) > 95_000)
-            return Respond(Fail("agenda_too_large", "The complete agenda exceeds the polling response budget.",
-                result.SourceSucceededAt));
         if (result.Error is not null)
             logger.LogWarning("Agenda failed with code {ErrorCode}.", result.Error.Code);
         return new ContentResult
@@ -568,6 +566,45 @@ public sealed partial class AgendaFunction
             StatusCode = StatusCodes.Status200OK,
             ContentType = "application/json",
             Content = json
+        };
+    }
+
+    private AgendaResult BoundResult(AgendaResult result)
+    {
+        const int limit = 95_000;
+        var envelope = result with
+        {
+            Primary = result.Primary with { Occurrences = [] },
+            Secondary = result.Secondary with { Occurrences = [] }
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(envelope, JsonOptions).Length;
+        if (bytes > limit)
+            return Fail("agenda_too_large", "The agenda metadata exceeds the polling response budget.",
+                result.SourceSucceededAt);
+        var days = new[] { result.Primary, result.Secondary };
+        var admitted = new[] { new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal) };
+        var candidates = days.SelectMany((day, index) =>
+                day.Occurrences.Select(occurrence => (Occurrence: occurrence, Day: index)))
+            .OrderByDescending(item => item.Occurrence is TimedOccurrence { Emphasis: not null });
+        foreach (var (occurrence, day) in candidates)
+        {
+            var size = JsonSerializer.SerializeToUtf8Bytes(occurrence, JsonOptions).Length
+                + (admitted[day].Count > 0 ? 1 : 0);
+            if (size > limit - bytes)
+                break;
+            bytes += size;
+            admitted[day].Add(occurrence.Id);
+        }
+        return result with
+        {
+            Primary = result.Primary with
+            {
+                Occurrences = result.Primary.Occurrences.Where(item => admitted[0].Contains(item.Id)).ToArray()
+            },
+            Secondary = result.Secondary with
+            {
+                Occurrences = result.Secondary.Occurrences.Where(item => admitted[1].Contains(item.Id)).ToArray()
+            }
         };
     }
 

@@ -4,6 +4,12 @@ This is the repeatable procedure for [ticket #8](https://github.com/geevensingh/
 
 Git landing, publication, completion reporting, and ticket closure follow the [delivery contract](agents/delivery.md). The live activation evidence below is an additional gate, not proof of landing on the target branch.
 
+The owner-confirmed [automated Azure/TRMNL delivery design](automated-delivery.md)
+defines a future main-triggered release system, including reviewed infrastructure
+changes within `rg-trmnl-calendar`. It is not implemented or activated; this
+runbook remains the current operator procedure. Its fixed resource plan is the
+starting configuration, not the future CD system's permanent authorization limit.
+
 ## Approved scope and permissions
 
 The owner's private resource plan supplies the subscription, exact resource names, and alert recipient. Do not commit those inputs or put them in issues. The approved location is **West US 2**, the monthly alert budget is **$20**, and always-ready capacity is **zero**. A different region, additional resource/role, increased scale, or paid warming requires renewed approval; a deployment error is not permission to change this plan.

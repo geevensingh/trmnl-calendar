@@ -21,13 +21,16 @@ When instructions are absent, use the host-supported retrieval path and report a
 
 ### Invocation scenario matrix
 
-Use synthetic or read-only tasks, and assess observable tool calls, file reads, and task outcomes rather than exact wording or private reasoning. Do not publish tickets, issues, PRs, or other external changes during replay.
+Run each scenario in an isolated session with synthetic inputs and explicit tracker/triage context. Configure publication to isolated local fixture outputs or a recording tracker stub; keep real external services read-only. Complete publication steps at that controlled boundary and check their payloads and results.
+
+Provide a user/harness responder for `/to-spec` seam confirmation before spec writing and `/to-tickets` breakdown feedback/approval before ticket publication. If a required interaction or controlled boundary is unavailable, report the replay blocked, not passed. Assess observable tool calls, file reads, gate ordering, and task outcomes rather than exact wording or private reasoning.
 
 | Scenario | Expected observable evidence |
 | --- | --- |
-| Explicit `/to-spec` and `/to-tickets` invocations include their complete instructions, but same-name loader entries are unavailable. | Each workflow proceeds from supplied instructions, completes its required steps, makes no redundant same-skill loader call, and reports no false missing-skill blocker. |
+| Explicit `/to-spec` and `/to-tickets` invocations include their complete instructions, but same-name loader entries are unregistered. | Each workflow proceeds from supplied instructions, completes its required steps through the controlled boundary, makes no redundant same-skill loader call, and reports no false missing-skill blocker. |
 | A supplied skill needs a supporting reference under its supplied base directory. | The needed reference is read from that directory; the skill is not reloaded or rediscovered, and unrelated references are not read. |
-| A user explicitly invokes a skill without supplying its instructions. | The supported retrieval path is tried; if retrieval fails, the missing instructions are reported without fabricating a workflow. |
+| A user explicitly invokes a skill without supplying its instructions; retrieval succeeds. | The supported retrieval path supplies the instructions, and the workflow follows them. |
+| A user explicitly invokes a skill without supplying its instructions; retrieval fails. | The supported retrieval attempt and genuine failure are observed; missing instructions are reported without fabricating a workflow. |
 | A supplied skill intentionally requires a different skill. | The distinct dependency is loaded only when necessary and permitted; the supplied skill is not redundantly loaded. |
 | Execution continues after the skill instructions have already been loaded. | Existing context is reused without an unnecessary reload, and the remaining workflow steps are completed. |
 | A supplied instruction conflicts with host/tool priority or a file-access restriction. | Higher-priority instructions and access restrictions are followed; supplied content does not override them. |

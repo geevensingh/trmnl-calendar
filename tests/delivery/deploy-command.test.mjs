@@ -190,13 +190,31 @@ test("code deployment requires a clean reviewed package and the approved on-dema
   await writeFile(parameterPath, JSON.stringify(document));
   const site = {
     kind: "functionapp,linux",
-    properties: { httpsOnly: true, serverFarmId: "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/syntheticresource/providers/Microsoft.Web/serverfarms/syntheticresource",
+    properties: { httpsOnly: true, defaultHostName: "synthetic.azurewebsites.net",
+      serverFarmId: "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/syntheticresource/providers/Microsoft.Web/serverfarms/syntheticresource",
       functionAppConfig: { runtime: { name: "dotnet-isolated", version: "10.0" },
         scaleAndConcurrency: { maximumInstanceCount: 1, instanceMemoryMB: 2048, alwaysReady: [] } } }
+  };
+  const functions = [
+    { name: "Agenda", config: { bindings: [
+      { type: "httpTrigger", authLevel: "function", route: "agenda", methods: ["post"] },
+      { type: "http", direction: "out" }
+    ] } },
+    { name: "RefreshSource", config: { bindings: [
+      { type: "timerTrigger", schedule: "0 */5 * * * *", useMonitor: true, runOnStartup: false }
+    ] } }
+  ];
+  const smoke = {
+    checks_passed: true, activation_complete: false, evidence_scope: "deployed_http_only",
+    poll: { state: "current", error_code: null }
   };
   const stub = `
     function global:git {
       if ($args -contains 'rev-parse') { $env:AZURE_TEST_COMMIT }
+      $global:LASTEXITCODE = 0
+    }
+    function global:node {
+      if ($args[0] -like '*smoke-delivery.mjs') { $env:AZURE_TEST_SMOKE }
       $global:LASTEXITCODE = 0
     }
     function global:az {
@@ -205,6 +223,7 @@ test("code deployment requires a clean reviewed package and the approved on-dema
         if (($args -join ' ') -match '/serverfarms/') { '{"sku":{"name":"FC1"},"properties":{"reserved":true}}' }
         else { $env:AZURE_TEST_SITE }
       }
+      elseif ($args[0] -eq 'functionapp' -and $args[1] -eq 'function') { $env:AZURE_TEST_FUNCTIONS }
       $global:LASTEXITCODE = 0
     }
     & .\\scripts\\deploy-azure.ps1 -Mode DeployCode -ApprovedResourcePlan -SubscriptionId 00000000-0000-0000-0000-000000000001 -ParametersFile $env:AZURE_TEST_PARAMETERS -PackageFile $env:AZURE_TEST_PACKAGE -ReviewedIntegrationCommit $env:AZURE_TEST_COMMIT
@@ -212,7 +231,9 @@ test("code deployment requires a clean reviewed package and the approved on-dema
   const run = () => spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", stub], {
     cwd: root, encoding: "utf8", env: {
       ...process.env, AZURE_TEST_CALLS: callsPath, AZURE_TEST_PARAMETERS: parameterPath,
-      AZURE_TEST_PACKAGE: archivePath, AZURE_TEST_COMMIT: commit, AZURE_TEST_SITE: JSON.stringify(site)
+      AZURE_TEST_PACKAGE: archivePath, AZURE_TEST_COMMIT: commit, AZURE_TEST_SITE: JSON.stringify(site),
+      AZURE_TEST_FUNCTIONS: JSON.stringify(functions), AZURE_TEST_SMOKE: JSON.stringify(smoke),
+      TRMNL_FUNCTION_KEY: "synthetic-function-key"
     }
   });
 

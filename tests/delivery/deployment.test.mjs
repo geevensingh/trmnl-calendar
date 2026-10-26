@@ -28,6 +28,21 @@ test("Functions diagnostics disable automatic URL capture and bound allowed tele
   });
 });
 
+test("release-stack parameters example supplies every required resource parameter", async () => {
+  const template = await readFile(join(root, "infra", "resources.bicep"), "utf8");
+  const example = JSON.parse(await readFile(join(root, "infra", "parameters.example.json"), "utf8"));
+  const script = await readFile(join(root, "scripts", "deploy-release-infrastructure.ps1"), "utf8");
+  const nameBlock = script.match(/\$names = @\(([\s\S]*?)\)/)?.[1] ?? "";
+  const acceptedNames = [...nameBlock.matchAll(/'([A-Za-z]\w*)'/g)].map(([, name]) => name);
+  const required = [...template.matchAll(/^param\s+([A-Za-z]\w*)\s+\w+\s*$/gm)]
+    .map(([, name]) => name);
+  for (const name of required) {
+    assert.ok(Object.hasOwn(example.parameters, name), `missing required resource parameter: ${name}`);
+    assert.notEqual(example.parameters[name].value, undefined, `missing value for resource parameter: ${name}`);
+    assert.ok(acceptedNames.includes(name), `release stack script omits resource parameter: ${name}`);
+  }
+});
+
 test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and separate identities", () => {
     const build = spawnSync("pwsh", [
       "-NoProfile", "-NonInteractive", "-Command",
@@ -81,12 +96,22 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
       "'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'",
       "'0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'",
       "'ba92f5b4-2d11-453d-a403-e96b0029c9fe'",
+      "'ba92f5b4-2d11-453d-a403-e96b0029c9fe'",
+      "'ba92f5b4-2d11-453d-a403-e96b0029c9fe'",
       "'4633458b-17de-408a-b874-0445c86b69e6'",
       "'3913510d-42f4-4e42-8a64-420c390055eb'"
     ].sort());
     const cacheRole = roles.find(role => role.properties.roleDefinitionId.includes("ba92f5b4"));
     assert.match(cacheRole.scope, /cacheContainerName/);
     assert.match(cacheRole.properties.principalId, /Microsoft\.Web\/sites.*identity\.principalId/);
+    const controllerRoles = roles.filter(role =>
+      role.properties.principalId.includes("releaseControllerPrincipalId"));
+    assert.equal(controllerRoles.length, 2);
+    assert.ok(controllerRoles.every(role =>
+      role.condition && role.properties.principalId.includes("releaseControllerPrincipalId")));
+    assert.ok(controllerRoles.some(role => role.scope.includes("releaseControlContainerName")));
+    assert.ok(controllerRoles.some(role => role.scope.includes("releaseArtifactContainerName")));
+    assert.equal(resource("Microsoft.Storage/storageAccounts/blobServices/containers").length, 4);
     assert.match(roles.find(role => role.properties.roleDefinitionId.includes("0a9a7e1f")).condition,
       /retainHostDiagnostics/);
     const [blobService] = resource("Microsoft.Storage/storageAccounts/blobServices");

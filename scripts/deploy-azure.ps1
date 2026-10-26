@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
 $root = Split-Path $PSScriptRoot -Parent
 $template = Join-Path $root 'infra\main.bicep'
@@ -72,7 +73,8 @@ $required = @(
     'budgetName', 'budgetAlertEmail', 'budgetStartDate'
 )
 $allowed = $required + @(
-    'sourceSecretName', 'cacheContainerName', 'deploymentContainerName', 'retainHostDiagnostics'
+    'sourceSecretName', 'cacheContainerName', 'deploymentContainerName', 'retainHostDiagnostics',
+    'releaseControlContainerName', 'releaseControllerPrincipalId'
 )
 foreach ($name in $parameters.Keys) {
     if ($name -notin $allowed) {
@@ -83,6 +85,13 @@ foreach ($name in $required) {
     if (!$parameters.ContainsKey($name) -or !$parameters[$name].ContainsKey('value') -or
         $parameters[$name].value -isnot [string] -or [string]::IsNullOrWhiteSpace($parameters[$name].value)) {
         throw "Missing runtime parameter: $name."
+    }
+    if ($parameters.ContainsKey('releaseControllerPrincipalId') -and
+        $parameters.releaseControllerPrincipalId.value -ne '') {
+        $controllerPrincipalId = [guid]::Empty
+        if (![guid]::TryParse($parameters.releaseControllerPrincipalId.value, [ref]$controllerPrincipalId)) {
+            throw 'releaseControllerPrincipalId must be the owner-verified OIDC service-principal object ID.'
+        }
     }
 }
 if ($parameters.location.value -ne 'westus2') {
@@ -101,6 +110,14 @@ if (![System.Net.Mail.MailAddress]::TryCreate($parameters.budgetAlertEmail.value
 }
 
 if ($Mode -eq 'DeployCode') {
+    if ([string]::IsNullOrWhiteSpace($env:TRMNL_FUNCTION_KEY)) {
+        throw 'A function-scoped TRMNL_FUNCTION_KEY is required for post-deployment verification.'
+    }
+    $functionKey = $env:TRMNL_FUNCTION_KEY
+    Remove-Item Env:TRMNL_FUNCTION_KEY -ErrorAction SilentlyContinue
+    if (!(Get-Command node -ErrorAction SilentlyContinue)) {
+        throw 'Node.js is required to run the existing redacted deployed-service smoke check.'
+    }
     if (!$PackageFile -or $ReviewedIntegrationCommit -notmatch '^[a-f0-9]{40}$') {
         throw 'Supply -PackageFile and the full -ReviewedIntegrationCommit after reviewing the integration branch.'
     }
@@ -149,7 +166,73 @@ if ($Mode -eq 'DeployCode') {
         '--resource-group', $parameters.resourceGroupName.value, '--name', $parameters.functionAppName.value,
         '--src', $archive, '--build-remote', 'false', '--timeout', '600', '--output', 'none'
     )
-    Write-Output 'Azure accepted the reviewed package. Retention, authentication, cache, source and TRMNL/device evidence still require the live checks.'
+    $expectedFunctions = @('Agenda', 'RefreshSource')
+    $functions = @()
+    $bindingsVerified = $false
+    for ($attempt = 0; $attempt -lt 24; $attempt++) {
+        $functions = @(Invoke-Azure -Stage 'Deployed function indexing verification' -Json -Arguments @(
+            'functionapp', 'function', 'list', '--subscription', $SubscriptionId,
+            '--resource-group', $parameters.resourceGroupName.value,
+            '--name', $parameters.functionAppName.value, '--output', 'json'
+        ))
+        $names = @($functions | ForEach-Object { ([string]$_.name).Split('/')[-1] } | Sort-Object)
+        if ($names.Count -eq 2 -and
+            @($expectedFunctions | Where-Object { $_ -cnotin $names }).Count -eq 0) {
+            $agenda = @($functions | Where-Object { ([string]$_.name).Split('/')[-1] -ceq 'Agenda' })
+            $refresh = @($functions | Where-Object { ([string]$_.name).Split('/')[-1] -ceq 'RefreshSource' })
+            $agendaBindings = @($agenda[0].config.bindings)
+            $refreshBindings = @($refresh[0].config.bindings)
+            $httpTrigger = @($agendaBindings | Where-Object type -CEQ 'httpTrigger')
+            $httpOutput = @($agendaBindings | Where-Object type -CEQ 'http')
+            $timerTrigger = @($refreshBindings | Where-Object type -CEQ 'timerTrigger')
+            $methods = if ($httpTrigger.Count -eq 1) {
+                @($httpTrigger[0].methods | ForEach-Object { [string]$_ } | Sort-Object)
+            } else { @() }
+            if ($httpTrigger.Count -eq 1 -and $httpOutput.Count -eq 1 -and
+                $agendaBindings.Count -eq 2 -and
+                $httpTrigger[0].authLevel -CEQ 'function' -and
+                $httpTrigger[0].route -CEQ 'agenda' -and
+                $methods.Count -eq 1 -and $methods[0] -CEQ 'post' -and
+                $timerTrigger.Count -eq 1 -and $refreshBindings.Count -eq 1 -and
+                $timerTrigger[0].schedule -CEQ '0 */5 * * * *' -and
+                $timerTrigger[0].useMonitor -eq $true -and
+                $timerTrigger[0].runOnStartup -eq $false) {
+                $bindingsVerified = $true
+                break
+            }
+        }
+        Start-Sleep -Seconds 5
+    }
+    if (!$bindingsVerified) {
+        throw 'Deployed Azure function indexing or expected authenticated HTTP/timer bindings could not be verified.'
+    }
+    $hostName = [string]$site.properties.defaultHostName
+    if ($hostName -notmatch '^[A-Za-z0-9.-]+$') {
+        throw 'The deployed Azure HTTPS host could not be safely identified for the redacted smoke check.'
+    }
+    $env:TRMNL_FUNCTION_KEY = $functionKey
+    try {
+        $smokeOutput = & node (Join-Path $root 'scripts\smoke-delivery.mjs') `
+            --endpoint "https://$hostName/api/agenda" --expected-state current 2>$null
+    }
+    finally {
+        Remove-Item Env:TRMNL_FUNCTION_KEY -ErrorAction SilentlyContinue
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Azure deployed-service smoke verification failed; raw response and diagnostics were withheld.'
+    }
+    try {
+        $smoke = ($smokeOutput -join "`n") | ConvertFrom-Json
+    }
+    catch {
+        throw 'Azure deployed-service smoke verification returned unusable evidence.'
+    }
+    if ($smoke.checks_passed -ne $true -or $smoke.activation_complete -ne $false -or
+        $smoke.evidence_scope -ne 'deployed_http_only' -or $smoke.poll.state -ne 'current' -or
+        $smoke.poll.error_code -ne $null) {
+        throw 'Azure deployed-service smoke verification did not establish the expected current agenda and authentication checks.'
+    }
+    Write-Output 'Azure package deployment, expected function bindings and redacted current-agenda/authentication smoke checks passed. TRMNL publication and physical-device refresh remain separate.'
     return
 }
 

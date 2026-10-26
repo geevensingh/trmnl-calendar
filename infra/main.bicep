@@ -21,6 +21,10 @@ param budgetStartDate string
 param sourceSecretName string = 'calendar-source-url'
 param cacheContainerName string = 'source-cache'
 param deploymentContainerName string = 'app-packages'
+param releaseControlContainerName string = 'release-control'
+param releaseArtifactContainerName string = 'release-artifacts'
+@description('Object ID of the OIDC release controller service principal; empty until owner bootstrap.')
+param releaseControllerPrincipalId string = ''
 
 @description('Retain the Functions host startup diagnostics using its documented Table data role.')
 param retainHostDiagnostics bool = false
@@ -48,6 +52,9 @@ module calendar './resources.bicep' = {
     sourceSecretName: sourceSecretName
     cacheContainerName: cacheContainerName
     deploymentContainerName: deploymentContainerName
+    releaseControlContainerName: releaseControlContainerName
+    releaseArtifactContainerName: releaseArtifactContainerName
+    releaseControllerPrincipalId: releaseControllerPrincipalId
     retainHostDiagnostics: retainHostDiagnostics
   }
 }
@@ -55,5 +62,7 @@ module calendar './resources.bicep' = {
 output agendaEndpoint string = calendar.outputs.agendaEndpoint
 output cacheContainerResourceId string = calendar.outputs.cacheContainerResourceId
 output deploymentContainerResourceId string = calendar.outputs.deploymentContainerResourceId
+output releaseControlContainerResourceId string = calendar.outputs.releaseControlContainerResourceId
+output releaseArtifactContainerResourceId string = calendar.outputs.releaseArtifactContainerResourceId
 output functionPrincipalId string = calendar.outputs.functionPrincipalId
 output sourceSecretName string = sourceSecretName

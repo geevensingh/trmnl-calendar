@@ -15,6 +15,10 @@ param budgetStartDate string
 param sourceSecretName string
 param cacheContainerName string
 param deploymentContainerName string
+param releaseControlContainerName string = 'release-control'
+param releaseArtifactContainerName string = 'release-artifacts'
+@description('Object ID of the OIDC release controller service principal; empty until owner bootstrap.')
+param releaseControllerPrincipalId string = ''
 param retainHostDiagnostics bool
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
@@ -67,6 +71,22 @@ resource cacheContainer 'Microsoft.Storage/storageAccounts/blobServices/containe
 resource packages 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: blobs
   name: deploymentContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource releaseControl 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobs
+  name: releaseControlContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource releaseArtifacts 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobs
+  name: releaseArtifactContainerName
   properties: {
     publicAccess: 'None'
   }
@@ -270,6 +290,26 @@ resource cacheAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+resource releaseControllerAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(releaseControllerPrincipalId)) {
+  name: guid(releaseControl.id, releaseControllerPrincipalId, 'release-controller-data-contributor')
+  scope: releaseControl
+  properties: {
+    principalId: releaseControllerPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+  }
+}
+
+resource releaseArtifactAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(releaseControllerPrincipalId)) {
+  name: guid(releaseArtifacts.id, releaseControllerPrincipalId, 'release-controller-artifact-contributor')
+  scope: releaseArtifacts
+  properties: {
+    principalId: releaseControllerPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+  }
+}
+
 resource sourceSecretAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(vault.id, app.id, 'source-secrets-user')
   scope: vault
@@ -335,4 +375,6 @@ resource budget 'Microsoft.Consumption/budgets@2024-08-01' = {
 output agendaEndpoint string = 'https://${app.properties.defaultHostName}/api/agenda'
 output cacheContainerResourceId string = cacheContainer.id
 output deploymentContainerResourceId string = packages.id
+output releaseControlContainerResourceId string = releaseControl.id
+output releaseArtifactContainerResourceId string = releaseArtifacts.id
 output functionPrincipalId string = app.identity.principalId

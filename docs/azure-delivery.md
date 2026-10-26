@@ -211,6 +211,35 @@ Keep the editor text a **string**, including malformed JSON. Do not interpolate 
 
 In the actual native editor, verify quotes/newlines survive, malformed/unsupported rules produce a visible `configuration_invalid` state, `[]` deliberately clears exclusions, and subsequent valid edits affect subsequent polls without deployment. Restore intended exclusions afterward. Select OG/X and the required full, half-horizontal and half-vertical arrangements, including intended mashup placement. Confirm private device rendering and the source timestamp without saving private screenshots or bodies. A website preview is not device delivery.
 
+## Coordinated Azure/TRMNL releases
+
+`.github/workflows/coordinated-release.yml` is a separate production release controller, not a CI workflow. It scans first-parent `main` history on pushes and every 15 minutes, admits qualifying commits in order, and drains the durable queue under an Azure Blob lease. The scheduled scan recovers missed push events. Azure deploys and passes its redacted live smoke before TRMNL is updated; deployment records are created per target. Retries use the original immutable artifacts, failed releases block successors, and a skip requires an attributed manual operation. The controller never creates or deletes the resource group.
+
+Before enabling this workflow, the owner must complete and record the initial Azure bootstrap, TRMNL existing-plugin configuration, and synthetic-plugin configured-value-preservation test described above. Bootstrap the release OIDC identity, private `release-control` container, and container-scoped Blob Data Contributor role before workflow activation. Configure a federated credential for audience `api://AzureADTokenExchange` and subject `repo:geevensingh/trmnl-calendar:ref:refs/heads/main`. Grant the identity only the resource-group deployment permissions required to reconcile the already-existing approved group, including its required role-assignment permissions; separately, the Bicep assigns its Blob role only to the release-control and deployment-package containers. Do not grant subscription-wide Contributor for routine releases.
+
+Set these GitHub repository variables:
+
+| Variable | Value |
+|---|---|
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Federated release identity client ID, tenant ID, and approved subscription ID. |
+| `AZURE_RESOURCE_GROUP_NAME` | The owner-approved, pre-existing application resource group. |
+| `AZURE_STORAGE_ACCOUNT`, `AZURE_RELEASE_CONTAINER`, `AZURE_ARTIFACT_CONTAINER` | The storage account, private `release-control` ledger container, and private `release-artifacts` immutable artifact container. The release identity has separate container-scoped Blob Data Contributor roles. |
+| `AZURE_BOOTSTRAP_VERIFIED` | Set to `true` only after the owner verifies the separate Azure bootstrap and required live evidence. |
+| `TRMNL_PLUGIN_ID` | The existing production plugin ID; never leave this blank or allow `trmnlp` to create a plugin. |
+| `TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID` | The same ID only after the owner has completed and recorded the synthetic-plugin preservation test. This gate does not itself prove preservation. |
+
+Set these GitHub Actions secrets:
+
+| Secret | Value |
+|---|---|
+| `AZURE_PARAMETERS_JSON` | The complete owner-reviewed deployment parameter document based on `infra/parameters.example.json`, including the exact resource group and release identity **service-principal object ID**. Keep the document private; the runner writes it to a mode-restricted temporary file and removes it after use. |
+| `TRMNL_API_KEY` | The TRMNL publishing key. It is passed only to the isolated `trmnlp` process. |
+| `TRMNL_FUNCTION_KEY` | The dedicated function-scoped key for the existing `/api/agenda` trigger, never a host/master key. |
+
+The first manual `activate` operation on `main` publishes and verifies both targets at the selected reviewed main commit before recording target baselines. It refuses to activate unless the evidence variables are set, the plugin IDs match, and the reason is attributed. It does not run the synthetic preservation test or establish missing live evidence on the owner's behalf. Do not set either evidence variable until the corresponding owner verification is complete.
+
+Use **Actions > Coordinated production release > Run workflow** on `main` for `status`, `activate`, `retry`, or `skip`. Supply a concise reason for activation/retry/skip. A retry reuses the original commit and artifacts; a skip records the actor and reason without advancing either target baseline. `main` is the normal automatic operation. Never manually edit the Blob ledger or delete retained release artifacts to clear a barrier. Keep GitHub deployment permissions enabled for the workflow; do not add CI checks or rerun unrelated CI as part of release recovery.
+
 ## Redacted HTTP smoke and live limits
 
 Read the nonsecret endpoint output into memory after infrastructure deployment:

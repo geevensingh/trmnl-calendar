@@ -1,0 +1,98 @@
+name: Coordinated production release
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Release operation
+        type: choice
+        required: true
+        default: main
+        options:
+          - main
+          - status
+          - activate
+          - retry
+          - skip
+      reason:
+        description: Required attribution for activation, retry, or skip
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  deployments: write
+  id-token: write
+
+concurrency:
+  group: coordinated-production-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out complete main history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore the reviewed Azure function
+        run: dotnet restore tests/CalendarAgenda.Tests/CalendarAgenda.Tests.csproj
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+
+      - name: Verify release tooling
+        run: |
+          pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
+          az bicep version || az bicep install
+          az bicep version
+
+      - name: Sign in to Azure with workload identity federation
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install the pinned TRMNL publisher
+        run: gem install trmnl_preview --version 0.32.3 --no-document
+
+      - name: Run coordinated release operation
+        run: node scripts/release-runner.mjs --operation "$RELEASE_OPERATION" --reason "$RELEASE_REASON"
+        env:
+          RELEASE_OPERATION: ${{ github.event.inputs.operation || 'main' }}
+          RELEASE_REASON: ${{ github.event.inputs.reason || '' }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_RELEASE_CONTAINER: ${{ vars.AZURE_RELEASE_CONTAINER }}
+          AZURE_ARTIFACT_CONTAINER: ${{ vars.AZURE_ARTIFACT_CONTAINER }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RESOURCE_GROUP_NAME: ${{ vars.AZURE_RESOURCE_GROUP_NAME }}
+          AZURE_PARAMETERS_JSON: ${{ secrets.AZURE_PARAMETERS_JSON }}
+          AZURE_BOOTSTRAP_VERIFIED: ${{ vars.AZURE_BOOTSTRAP_VERIFIED }}
+          TRMNL_PLUGIN_ID: ${{ vars.TRMNL_PLUGIN_ID }}
+          TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID: ${{ vars.TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID }}
+          TRMNL_API_KEY: ${{ secrets.TRMNL_API_KEY }}
+          TRMNL_FUNCTION_KEY: ${{ secrets.TRMNL_FUNCTION_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}

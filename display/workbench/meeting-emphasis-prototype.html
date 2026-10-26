@@ -39,11 +39,14 @@
     .variant-b .focused { border-left: 7px solid black; padding-left: 10px; grid-template-columns: 201px minmax(0, 1fr); }
     .variant-b .focused .title { font-weight: 800; font-size: 24px; }
     .variant-b .focused .status { display: inline-block; border: 1px solid black; padding: 2px 4px; margin: 0 7px 0 0; font-size: 10px; vertical-align: 3px; }
+    .variant-b.inverse .focused { background: black; color: white; border-left-color: white; }
+    .variant-b.inverse .focused .status { border-color: white; }
     .variant-c .focused { background: black; color: white; padding: 10px 12px; min-height: 76px; border: none; margin: 4px 0; grid-template-columns: 206px minmax(0, 1fr); }
     .variant-c .focused .title { font-size: 28px; font-weight: 800; }
     .focus-panel { border: 3px solid black; padding: 10px 13px; margin: 2px 0 12px; }
     .focus-panel .panel-title { font-size: 31px; font-weight: 800; margin: 3px 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .focus-panel .panel-time { font-size: 19px; }
+    .variant-d.inverse .focus-panel { background: black; color: white; border-color: black; }
     .narrow .event { grid-template-columns: 112px minmax(0, 1fr); gap: 6px; }
     .narrow .time { font-size: 16px; }
     .narrow .title { font-size: 19px; }
@@ -86,6 +89,7 @@
         </select>
       </label>
       <button id="compare" type="button" aria-pressed="false">Compare all four</button>
+      <button id="inverse" type="button" aria-pressed="false">Invert B and D</button>
     </div>
     <div class="state" id="state" aria-live="polite"></div>
     <div class="previews" id="previews"></div>
@@ -123,6 +127,7 @@
     const params = new URLSearchParams(location.search);
     let current = Math.max(0, variants.findIndex(v => v.key === params.get('variant')));
     let compare = params.get('compare') === '1';
+    let inverse = params.get('inverse') === '1';
     const momentSelect = document.querySelector('#moment');
     const sizeSelect = document.querySelector('#size');
     if (Object.hasOwn(moments, params.get('moment'))) momentSelect.value = params.get('moment');
@@ -137,10 +142,14 @@
     function renderVariant(variant, moment, eligible, width, height) {
       const selected = eligible.find(event => event.id === moment.focus);
       const pinned = variant.key === 'D' && selected;
+      const inverted = inverse && (variant.key === 'B' || variant.key === 'D');
+      const detail = inverted && variant.key === 'B'
+        ? 'The same compact row, title size, and inline status badge as B, with white-on-black emphasis and a white rail.'
+        : variant.detail;
       const article = document.createElement('article');
       article.className = 'preview';
-      article.innerHTML = `<h2>${variant.key}. ${variant.name}</h2><p>${variant.detail}</p>
-        <div class="viewport"><div class="device variant-${variant.key.toLowerCase()}${width < 600 ? ' narrow' : ''}${height < 300 ? ' short' : ''}" style="width:${width}px;height:${height}px">
+      article.innerHTML = `<h2>${variant.key}. ${variant.name}${inverted ? ' - inverted' : ''}</h2><p>${detail}${inverted && variant.key === 'D' ? ' Same panel geometry, now white on black.' : ''}</p>
+        <div class="viewport"><div class="device variant-${variant.key.toLowerCase()}${inverted ? ' inverse' : ''}${width < 600 ? ' narrow' : ''}${height < 300 ? ' short' : ''}" style="width:${width}px;height:${height}px">
           <div class="device-header"><span class="brand">AGENDA</span><span>MON OCT 26</span></div>
           <div class="agenda">
             ${pinned ? `<div class="focus-panel"><span class="status">${moment.status}</span><div class="panel-title">${escape(selected.title)}</div><div class="panel-time">${selected.time}</div></div>` : ''}
@@ -187,11 +196,14 @@
       previews.classList.toggle('compare', compare);
       document.querySelector('#compare').textContent = compare ? 'Show selected only' : 'Compare all four';
       document.querySelector('#compare').setAttribute('aria-pressed', String(compare));
-      document.querySelector('#variant-label').textContent = `${variants[current].key} - ${variants[current].name}`;
+      document.querySelector('#inverse').textContent = inverse ? 'Restore original B and D' : 'Invert B and D';
+      document.querySelector('#inverse').setAttribute('aria-pressed', String(inverse));
+      document.querySelector('#variant-label').textContent = `${variants[current].key} - ${variants[current].name}${inverse && (variants[current].key === 'B' || variants[current].key === 'D') ? ' (inverted)' : ''}`;
       document.querySelector('#state').textContent = `Synthetic snapshot: Monday Oct 26, 2026, ${moment.clock} AM, America/Los_Angeles. ${moment.status}${focused ? `: ${focused.title}` : ''}. ${moment.explanation} ${eligible.length} primary-day eligible events, ${secondary.length} secondary-day events. Display polls every 15 minutes; this is not a live countdown. Sketches prioritize keeping the focused event visible. Overlap selection and final fitting policy remain undecided.`;
       for (const variant of compare ? variants : [variants[current]]) renderVariant(variant, moment, eligible, width, height);
       const next = new URLSearchParams({ variant: variants[current].key, moment: momentSelect.value, size: sizeSelect.value });
       if (compare) next.set('compare', '1');
+      if (inverse) next.set('inverse', '1');
       history.replaceState(null, '', `?${next}`);
     }
 
@@ -203,6 +215,7 @@
     document.querySelector('#previous').onclick = () => cycle(-1);
     document.querySelector('#next').onclick = () => cycle(1);
     document.querySelector('#compare').onclick = () => { compare = !compare; render(); };
+    document.querySelector('#inverse').onclick = () => { inverse = !inverse; render(); };
     momentSelect.onchange = render;
     sizeSelect.onchange = render;
     document.addEventListener('keydown', event => {

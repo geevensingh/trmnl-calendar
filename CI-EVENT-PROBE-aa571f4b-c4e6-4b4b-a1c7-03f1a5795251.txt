@@ -1,0 +1,1 @@
+DISPOSABLE CI EVENT PROBE ONLY. Session aa571f4b-c4e6-4b4b-a1c7-03f1a5795251. Synthetic base sentinel; never integrate.

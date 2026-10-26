@@ -12,6 +12,10 @@ Triage uses the default five-role label vocabulary. Before triaging issues, see 
 
 Domain docs use a single-context layout. Before exploring the codebase, see `docs/agents/domain.md`.
 
+### Agenda UI
+
+Agenda UI layout, visual comparison, or prototyping: check [native workbench readiness](README.md#local-agenda-ui-workbench) before choosing a preview approach.
+
 ### Delivery
 
 Before implementation, Git/worktree/PR writes, accepting implementation dependencies, reporting completion, or closing delivery tickets, follow `docs/agents/delivery.md` for standing feature-branch authorization, PR handoff, human-only landing, and delivery evidence.

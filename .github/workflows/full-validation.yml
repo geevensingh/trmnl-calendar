@@ -52,6 +52,10 @@ jobs:
           PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
         run: node .\scripts\prepare-ci.mjs --head-commit "$env:PR_HEAD_COMMIT" --base-commit "$env:PR_BASE_COMMIT"
 
+      - name: DISPOSABLE PROBE ONLY - independently assert prepared fixture
+        if: github.event_name == 'pull_request'
+        run: node .\scripts\ci-event-probe-aa571f4b.mjs
+
       - name: Set up the selected .NET SDK and host runtime
         uses: actions/setup-dotnet@v5
         with:

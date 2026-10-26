@@ -4,6 +4,7 @@ import { commit, fullCommit, git, ReceiptError, requireEvidence } from "./receip
 import { publicationProof } from "./check-publication.mjs";
 import { assertReceiptRecord, fullCommand, timestamp, identifier, login, validationOutcomes } from "./receipt-record.mjs";
 import { declaration, ticketScope, assessTickets, publishPointers } from "./receipt-tickets.mjs";
+import { github } from "./receipt-github.mjs";
 
 const workflow = ".github/workflows/delivery-receipt.yml";
 const marker = "<!-- delivery-receipt:v1\n";
@@ -19,7 +20,8 @@ function arguments_() {
     parsed = parseArgs({ allowPositionals: true, tokens: true, options: {
       repository: { type: "string" }, pr: { type: "string" }, "run-id": { type: "string" },
       attempt: { type: "string" }, "orchestration-commit": { type: "string" },
-      "api-url": { type: "string", default: "https://api.github.com" }, plan: { type: "string" }
+      "api-url": { type: "string", default: "https://api.github.com" }, plan: { type: "string" },
+      "landing-commit": { type: "string" }
     } });
   } catch {
     throw new ReceiptError("invalid_arguments");
@@ -30,49 +32,16 @@ function arguments_() {
     ["prepare", "publish"].includes(positionals[0]), "invalid_arguments");
   requireEvidence(/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(v.repository ?? "") &&
     [v.pr, v["run-id"], v.attempt].every(value => /^[1-9]\d*$/.test(value ?? "") && identifier(Number(value))) &&
-    fullCommit(v["orchestration-commit"]), "invalid_arguments");
+    fullCommit(v["orchestration-commit"]) &&
+    (v["landing-commit"] === undefined || fullCommit(v["landing-commit"])), "invalid_arguments");
   const url = new URL(v["api-url"]);
   requireEvidence(v["api-url"] === "https://api.github.com" ||
     (url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname) &&
       !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash),
   "unsupported_github_api");
   return { phase: positionals[0], repository: v.repository, pr: Number(v.pr), run: Number(v["run-id"]),
-    attempt: Number(v.attempt), orchestration: v["orchestration-commit"], api: url.origin, plan: v.plan };
-}
-
-function github(options) {
-  const prefix = `/repos/${options.repository}`;
-  async function request(path, method = "GET", payload) {
-    let response, text;
-    try {
-      response = await fetch(`${options.api}${prefix}${path}`, {
-        method, headers: {
-          Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
-          Authorization: `Bearer ${process.env.GH_TOKEN ?? ""}`, "Content-Type": "application/json"
-        },
-        body: payload === undefined ? undefined : JSON.stringify(payload),
-        signal: AbortSignal.timeout(30_000), redirect: "error"
-      });
-      text = await response.text();
-    } catch {
-      throw new ReceiptError(method === "GET" ? "github_evidence_unavailable" : "receipt_write_failed");
-    }
-    requireEvidence(response.ok, method === "GET" ? "github_evidence_unavailable" : "receipt_write_failed");
-    requireEvidence(text.length <= 8 * 1024 * 1024, "github_response_too_large");
-    try { return JSON.parse(text); } catch { throw new ReceiptError("github_evidence_invalid"); }
-  }
-  async function pages(path, field) {
-    const all = [];
-    for (let page = 1; page <= 100; page++) {
-      const response = await request(`${path}?per_page=100&page=${page}`);
-      const items = field ? response[field] : response;
-      requireEvidence(Array.isArray(items) && items.length <= 100, "github_page_invalid");
-      all.push(...items);
-      if (items.length < 100) return all;
-    }
-    throw new ReceiptError("github_pagination_limit");
-  }
-  return { request, pages };
+    attempt: Number(v.attempt), orchestration: v["orchestration-commit"], api: url.origin, plan: v.plan,
+    landing: v["landing-commit"] };
 }
 
 async function provenance(options, api) {
@@ -90,6 +59,8 @@ async function provenance(options, api) {
     commit(result.final_head);
     commit(result.api_base);
     commit(result.landing_commit);
+    requireEvidence(options.landing === undefined || options.landing === result.landing_commit,
+      "admitted_landing_identity_changed");
     result.landing_tree = git(["rev-parse", `${result.landing_commit}^{tree}`], "landing_tree_unavailable");
     result.landing_parents = git(["show", "-s", "--format=%P", result.landing_commit], "landing_parents_unavailable").split(" ");
     requireEvidence(timestamp(pr.merged_at), "merge_timestamp_unavailable");
@@ -137,10 +108,15 @@ async function validation(options, api, plan) {
     const run = await api.request(`/actions/runs/${options.run}/attempts/${options.attempt}`);
     requireEvidence(run.id === options.run && run.run_attempt === options.attempt &&
       run.repository?.full_name === options.repository && run.head_sha === options.orchestration &&
-      run.head_branch === "main" && run.event === "workflow_dispatch" && run.path === workflow,
+      run.head_branch === "main" &&
+      ((run.event === "workflow_dispatch" && run.path === workflow) ||
+        (run.event === "push" && run.path === ".github/workflows/delivery-receipt-push.yml" &&
+          fullCommit(options.landing) && options.landing === plan.provenance.landing_commit)),
     "validation_run_provenance_invalid");
+    const jobName = run.event === "push"
+      ? `Receipt PR ${options.pr} / ${options.landing} / Exact landing Full` : "Exact landing Full";
     const jobs = (await api.pages(`/actions/runs/${options.run}/attempts/${options.attempt}/jobs`, "jobs"))
-      .filter(job => job.name === "Exact landing Full");
+      .filter(job => job.name === jobName);
     requireEvidence(jobs.length === 1 && identifier(jobs[0].id), "validation_job_unavailable");
     const job = jobs[0];
     requireEvidence(job.run_id === options.run && job.run_attempt === options.attempt &&

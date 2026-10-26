@@ -1,6 +1,14 @@
 name: Post-merge delivery receipt
 
 on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      landing_commit:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       pr_number:
@@ -47,12 +55,15 @@ jobs:
           RECEIPT_RUN: ${{ github.run_id }}
           RECEIPT_ATTEMPT: ${{ github.run_attempt }}
           ORCHESTRATION_COMMIT: ${{ github.sha }}
+          ADMITTED_LANDING: ${{ inputs.landing_commit }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:PR_NUMBER -notmatch '^[1-9][0-9]*$') { throw 'A numeric PR number is required.' }
           git fetch --no-tags --no-write-fetch-head origin "refs/pull/$env:PR_NUMBER/head"
           if ($LASTEXITCODE -ne 0) { throw 'Final PR head objects are unavailable.' }
-          $json = node ./scripts/delivery-receipt.mjs prepare --repository "$env:RECEIPT_REPOSITORY" --pr "$env:PR_NUMBER" --run-id "$env:RECEIPT_RUN" --attempt "$env:RECEIPT_ATTEMPT" --orchestration-commit "$env:ORCHESTRATION_COMMIT"
+          $pin = @()
+          if ($env:ADMITTED_LANDING) { $pin = @('--landing-commit', $env:ADMITTED_LANDING) }
+          $json = node ./scripts/delivery-receipt.mjs prepare --repository "$env:RECEIPT_REPOSITORY" --pr "$env:PR_NUMBER" --run-id "$env:RECEIPT_RUN" --attempt "$env:RECEIPT_ATTEMPT" --orchestration-commit "$env:ORCHESTRATION_COMMIT" @pin
           if ($LASTEXITCODE -ne 0) { throw 'Landing preparation failed; no receipt has been persisted.' }
           $plan = $json | ConvertFrom-Json
           "plan=$json" >> $env:GITHUB_OUTPUT
@@ -163,6 +174,7 @@ jobs:
           RECEIPT_ATTEMPT: ${{ github.run_attempt }}
           ORCHESTRATION_COMMIT: ${{ github.sha }}
           PREPARED_PLAN: ${{ needs.prepare.outputs.plan }}
+          ADMITTED_LANDING: ${{ inputs.landing_commit }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:PR_NUMBER -notmatch '^[1-9][0-9]*$') { throw 'A numeric PR number is required.' }
@@ -170,5 +182,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Landing/publication objects are unavailable; collection remains pending.' }
           $planFile = Join-Path $env:RUNNER_TEMP 'delivery-prepared-plan.json'
           $env:PREPARED_PLAN | Set-Content -LiteralPath $planFile -Encoding utf8
-          node ./scripts/delivery-receipt.mjs publish --repository "$env:RECEIPT_REPOSITORY" --pr "$env:PR_NUMBER" --run-id "$env:RECEIPT_RUN" --attempt "$env:RECEIPT_ATTEMPT" --orchestration-commit "$env:ORCHESTRATION_COMMIT" --plan "$planFile"
+          $pin = @()
+          if ($env:ADMITTED_LANDING) { $pin = @('--landing-commit', $env:ADMITTED_LANDING) }
+          node ./scripts/delivery-receipt.mjs publish --repository "$env:RECEIPT_REPOSITORY" --pr "$env:PR_NUMBER" --run-id "$env:RECEIPT_RUN" --attempt "$env:RECEIPT_ATTEMPT" --orchestration-commit "$env:ORCHESTRATION_COMMIT" --plan "$planFile" @pin
           if ($LASTEXITCODE -ne 0) { throw 'Receipt collection/publication failed; do not claim delivery.' }

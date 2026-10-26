@@ -10,7 +10,7 @@ Verify the Git objects, landing tree and parents. For an ordinary merge, the sec
 
 ## 2. Collect a fresh exact-landing receipt
 
-Use [manual receipt collection](../delivery-receipts.md) for the identified human-merged PR. The workflow must already be human-landed on the default branch before dispatch is available. A newly checked-in workflow or fixture pass is not hosted activation.
+Inspect [automatic receipt collection](../delivery-receipts.md) for the event-bound push, including every landing and exception. Use manual dispatch for one identified human-merged PR when necessary. The workflows must already be human-landed on the default branch before hosted behavior is available. A newly checked-in workflow or fixture pass is not hosted activation.
 
 The read-only Windows validation job checks out the immutable landing and runs the existing setup and `scripts/validate.ps1 -Scope Full`. Record the actual run-on commit/tree, command, outcome and run/attempt. Every collection requires fresh Full: the PR's synthetic evaluation, another commit's green result, inherited checks and matching-tree reuse are not substitutes.
 

@@ -1,0 +1,114 @@
+name: Collect pushed delivery receipts
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  admit:
+    name: Account for the event-bound main range
+    if: github.repository == 'geevensingh/trmnl-calendar' && github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      batch: ${{ steps.admit.outputs.batch }}
+      matrix: ${{ steps.admit.outputs.matrix }}
+      has_landings: ${{ steps.admit.outputs.has_landings }}
+    steps:
+      - name: Check out event-pinned trusted orchestration and complete history
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Admit every landing and report range exceptions
+        id: admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECEIPT_REPOSITORY: ${{ github.repository }}
+          RECEIPT_RUN: ${{ github.run_id }}
+          RECEIPT_ATTEMPT: ${{ github.run_attempt }}
+          ORCHESTRATION_COMMIT: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $json = node ./scripts/delivery-push.mjs admit --repository "$env:RECEIPT_REPOSITORY" --run-id "$env:RECEIPT_RUN" --attempt "$env:RECEIPT_ATTEMPT" --orchestration-commit "$env:ORCHESTRATION_COMMIT" --event "$env:GITHUB_EVENT_PATH"
+          if ($LASTEXITCODE -ne 0) { throw 'Push admission failed; collection is incomplete.' }
+          $batch = $json | ConvertFrom-Json
+          "batch=$json" >> $env:GITHUB_OUTPUT
+          $matrix = @{ include = @($batch.landings) } | ConvertTo-Json -Depth 5 -Compress
+          "matrix=$matrix" >> $env:GITHUB_OUTPUT
+          "has_landings=$($batch.schedulable -and $batch.landings.Count -gt 0)" >> $env:GITHUB_OUTPUT
+          'Push admission (exceptions remain pending):' >> $env:GITHUB_STEP_SUMMARY
+          '```json' >> $env:GITHUB_STEP_SUMMARY
+          $json >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+
+  receipt:
+    name: Receipt PR ${{ matrix.pr_number }} / ${{ matrix.landing_commit }}
+    needs: admit
+    if: needs.admit.outputs.has_landings == 'True'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.admit.outputs.matrix) }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      issues: write
+    uses: ./.github/workflows/delivery-receipt.yml
+    with:
+      pr_number: ${{ format('{0}', matrix.pr_number) }}
+      landing_commit: ${{ matrix.landing_commit }}
+
+  summary:
+    name: Account for every persisted receipt and exception
+    needs: [admit, receipt]
+    if: always() && needs.admit.result == 'success'
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out trusted orchestration, never selected landing code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Summarize actual durable outcomes without concealing partial failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECEIPT_REPOSITORY: ${{ github.repository }}
+          RECEIPT_RUN: ${{ github.run_id }}
+          RECEIPT_ATTEMPT: ${{ github.run_attempt }}
+          ORCHESTRATION_COMMIT: ${{ github.sha }}
+          ADMITTED_BATCH: ${{ needs.admit.outputs.batch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $batchFile = Join-Path $env:RUNNER_TEMP 'delivery-push-batch.json'
+          $env:ADMITTED_BATCH | Set-Content -LiteralPath $batchFile -Encoding utf8
+          $json = node ./scripts/delivery-push.mjs summarize --repository "$env:RECEIPT_REPOSITORY" --run-id "$env:RECEIPT_RUN" --attempt "$env:RECEIPT_ATTEMPT" --orchestration-commit "$env:ORCHESTRATION_COMMIT" --batch "$batchFile"
+          $status = $LASTEXITCODE
+          'Push collection (not hosted activation acceptance):' >> $env:GITHUB_STEP_SUMMARY
+          '```json' >> $env:GITHUB_STEP_SUMMARY
+          $json >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+          if ($status -ne 0) { throw 'Collection is incomplete; inspect each landing and explicit exception.' }

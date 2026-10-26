@@ -59,6 +59,7 @@ public sealed partial class AgendaFunction
     }
 
     private const string TimeZoneId = "America/Los_Angeles";
+    private static readonly TimeSpan UpcomingWindow = TimeSpan.FromMinutes(15);
     private static readonly TimeZoneInfo AgendaTimeZone = TimeZoneInfo.FindSystemTimeZoneById(TimeZoneId);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -437,6 +438,7 @@ public sealed partial class AgendaFunction
         {
             return Fail("source_invalid", "The calendar source could not be interpreted.");
         }
+        occurrences = ApplyEmphasis(occurrences, now);
         var result = new AgendaResult(1, AgendaState.Current, TimeZoneId, now, now,
             SelectDay(primary, occurrences), SelectDay(secondary, occurrences), null);
         cancellationToken.ThrowIfCancellationRequested();
@@ -574,6 +576,32 @@ public sealed partial class AgendaFunction
         while (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
             date = date.AddDays(1);
         return date;
+    }
+
+    private static AgendaOccurrence[] ApplyEmphasis(AgendaOccurrence[] occurrences, DateTimeOffset now)
+    {
+        var timed = occurrences.OfType<TimedOccurrence>().ToArray();
+        var inProgress = timed.Where(item => item.StartAt <= now && now < item.EndAt)
+            .Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var upcoming = new HashSet<string>(StringComparer.Ordinal);
+        if (inProgress.Count == 0)
+        {
+            var future = timed.Where(item => item.StartAt > now).ToArray();
+            if (future.Length > 0)
+            {
+                var nextStart = future.Min(item => item.StartAt);
+                if (nextStart - now <= UpcomingWindow)
+                    upcoming.UnionWith(future.Where(item => item.StartAt == nextStart).Select(item => item.Id));
+            }
+        }
+
+        return occurrences.Select(item => item is TimedOccurrence timedItem
+            ? timedItem with
+            {
+                Emphasis = inProgress.Contains(timedItem.Id) ? AgendaEmphasis.InProgress
+                    : upcoming.Contains(timedItem.Id) ? AgendaEmphasis.Upcoming : null
+            }
+            : item).ToArray();
     }
 
     private static IEnumerable<CalDateTime> SourceDates(CalendarEvent item) =>

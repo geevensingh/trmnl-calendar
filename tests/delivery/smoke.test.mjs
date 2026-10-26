@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { AgendaContractError, validateAgenda } from "../../scripts/agenda-contract.mjs";
 
 const key = "SYNTHETIC_FUNCTION_SCOPED_KEY";
 const current = {
@@ -16,6 +17,39 @@ const current = {
   secondary: { date: "2026-10-20", label: "Tuesday, Oct 20", eligible_total: 0, occurrences: [] },
   error: null
 };
+
+test("agenda contract permits only optional timed emphasis", () => {
+  const ongoing = structuredClone(current);
+  ongoing.primary.occurrences = [
+    { time_kind: "timed", id: "in-progress", title: "Current", start_at: "2026-10-19T17:00:00Z",
+      end_at: "2026-10-19T19:00:00Z", emphasis: "in_progress" },
+    { time_kind: "all_day", id: "all-day", title: "Date-only", start_date: "2026-10-19",
+      end_date_exclusive: "2026-10-20" }
+  ];
+  ongoing.primary.eligible_total = ongoing.primary.occurrences.length;
+  assert.equal(validateAgenda(ongoing).primary.occurrences[0].emphasis, "in_progress");
+
+  const upcoming = structuredClone(current);
+  upcoming.primary.occurrences = [
+    { time_kind: "timed", id: "upcoming", title: "Next", start_at: "2026-10-19T18:10:00Z",
+      end_at: "2026-10-19T19:00:00Z", emphasis: "upcoming" }
+  ];
+  upcoming.primary.eligible_total = 1;
+  assert.equal(validateAgenda(upcoming).primary.occurrences[0].emphasis, "upcoming");
+  assert.throws(() => validateAgenda({
+    ...upcoming,
+    primary: { ...upcoming.primary, occurrences: [
+      { ...upcoming.primary.occurrences[0], emphasis: "unknown" }
+    ] }
+  }), AgendaContractError);
+  assert.throws(() => validateAgenda({
+    ...ongoing,
+    primary: { ...ongoing.primary, eligible_total: 3, occurrences: [
+      ...ongoing.primary.occurrences,
+      { ...ongoing.primary.occurrences[1], emphasis: "upcoming" }
+    ] }
+  }), AgendaContractError);
+});
 
 async function serve(t, handler) {
   const server = createServer(handler);

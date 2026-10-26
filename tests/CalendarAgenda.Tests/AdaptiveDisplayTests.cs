@@ -105,6 +105,13 @@ public sealed class AdaptiveDisplayTests
             var data = AgendaScenarios.Load(scenario);
             await DisplayTests.Show(page, data, view.Placement, view.Device);
             await NativeBounds(page, view);
+            if (scenario.StartsWith("emphasis-", StringComparison.Ordinal))
+            {
+                var status = scenario == "emphasis-in-progress" ? "IN PROGRESS" : "UPCOMING";
+                Assert.True(await page.Locator(".agenda-emphasized:visible").CountAsync() > 0,
+                    $"{scenario}/{view.Device}/{view.Placement} must retain an emphasized card.");
+                await Assertions.Expect(page.GetByText(status, new() { Exact = true }).First).ToBeVisibleAsync();
+            }
             var findings = await page.EvaluateAsync<JsonElement>("""
                 async input => {
                   const checks = await import("/workbench/layout-checks.mjs");
@@ -116,11 +123,66 @@ public sealed class AdaptiveDisplayTests
                 await page.Locator("""
                     .agenda-heading .title, .agenda-day-label .label, .agenda-source > span, [data-agenda-source],
                     .agenda-warning > *, .agenda > .title, .agenda > .label:not(.agenda-source), .agenda > .description,
-                    tbody tr:not([hidden]) .label--large
+                    tbody tr:not([hidden]) .label--large, tbody tr.agenda-emphasized:not([hidden]) .title,
+                    tbody tr.agenda-emphasized:not([hidden]) .agenda-status
                     """).AllAsync());
             Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
             Assert.Null(await page.EvaluateAsync<int?>("window.locationPwn"));
         }
+    }
+
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Emphasized_secondary_event_is_admitted_ahead_of_ordinary_primary_overflow(NativeView view)
+    {
+        var data = Agenda(primaryRows: 32, secondaryRows: 12);
+        var secondary = data["secondary"]!["occurrences"]!.AsArray()[0]!.DeepClone();
+        secondary["id"] = "secondary-emphasized";
+        secondary["title"] = "Upcoming secondary event";
+        secondary["emphasis"] = "upcoming";
+        data["secondary"]!["eligible_total"] = 1;
+        data["secondary"]!["occurrences"] = new JsonArray(secondary);
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+
+        var emphasized = page.Locator(".agenda-secondary tbody tr.agenda-emphasized:visible");
+        await Assertions.Expect(emphasized).ToHaveCountAsync(1);
+        await Assertions.Expect(emphasized.GetByText("UPCOMING", new() { Exact = true })).ToBeVisibleAsync();
+        await DayCount(page, "primary", 32);
+        await DayCount(page, "secondary", 1);
+        await NativeBounds(page, view);
+    }
+
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Emphasized_overflow_is_admitted_in_chronological_order_before_ordinary_rows(NativeView view)
+    {
+        var data = Agenda(primaryRows: 14, secondaryRows: 0);
+        foreach (var occurrence in data["primary"]!["occurrences"]!.AsArray())
+            occurrence!["emphasis"] = "in_progress";
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+
+        var visible = page.Locator(".agenda-primary tbody tr.agenda-emphasized:visible");
+        var visibleCount = await visible.CountAsync();
+        Assert.InRange(visibleCount, 1, 14);
+        Assert.Equal(0, await page.Locator(".agenda-primary tbody tr:not([data-agenda-emphasis]):visible").CountAsync());
+        var ids = await visible.EvaluateAllAsync<string[]>("rows => rows.map(row => row.dataset.agendaId)");
+        Assert.Equal(Enumerable.Range(1, visibleCount).Select(index => $"primary-{index:D3}"), ids);
+        await DayCount(page, "primary", 14);
+        await NativeBounds(page, view);
     }
 
     [Theory]

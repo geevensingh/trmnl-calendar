@@ -1,0 +1,51 @@
+{
+  "id": "emphasis-in-progress",
+  "name": "In-progress emphasis",
+  "description": "Ongoing timed event receives an inverse card while ordinary and all-day rows remain in the agenda.",
+  "agenda": {
+    "schema_version": 1,
+    "state": "current",
+    "time_zone": "America/Los_Angeles",
+    "generated_at": "2026-10-23T18:00:00Z",
+    "source_succeeded_at": "2026-10-23T18:00:00Z",
+    "primary": {
+      "date": "2026-10-23",
+      "label": "Friday, Oct 23",
+      "eligible_total": 3,
+      "occurrences": [
+        {
+          "time_kind": "all_day",
+          "id": "all-day-planning",
+          "title": "Project preparation",
+          "location": null,
+          "start_date": "2026-10-23",
+          "end_date_exclusive": "2026-10-24"
+        },
+        {
+          "time_kind": "timed",
+          "id": "in-progress-planning",
+          "title": "Ongoing planning",
+          "location": "Studio A",
+          "emphasis": "in_progress",
+          "start_at": "2026-10-23T17:30:00Z",
+          "end_at": "2026-10-23T18:30:00Z"
+        },
+        {
+          "time_kind": "timed",
+          "id": "ordinary-review",
+          "title": "Design review",
+          "location": null,
+          "start_at": "2026-10-23T19:00:00Z",
+          "end_at": "2026-10-23T20:00:00Z"
+        }
+      ]
+    },
+    "secondary": {
+      "date": "2026-10-26",
+      "label": "Monday, Oct 26",
+      "eligible_total": 0,
+      "occurrences": []
+    },
+    "error": null
+  }
+}

@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 namespace CalendarAgenda;
 
 public enum AgendaState { Current, Stale, Error }
+public enum AgendaEmphasis { InProgress, Upcoming }
 
 public sealed record AgendaResult(
     int SchemaVersion,
@@ -30,7 +31,9 @@ public sealed record TimedOccurrence(
     string Title,
     string? Location,
     DateTimeOffset StartAt,
-    DateTimeOffset EndAt) : AgendaOccurrence(Id, Title, Location);
+    DateTimeOffset EndAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    AgendaEmphasis? Emphasis = null) : AgendaOccurrence(Id, Title, Location);
 
 public sealed record AllDayOccurrence(
     string Id,

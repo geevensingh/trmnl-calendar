@@ -1,0 +1,60 @@
+{
+  "id": "emphasis-upcoming",
+  "name": "Upcoming emphasis",
+  "description": "The earliest tied future start-time group receives the shared inverse-card treatment.",
+  "agenda": {
+    "schema_version": 1,
+    "state": "current",
+    "time_zone": "America/Los_Angeles",
+    "generated_at": "2026-10-23T18:00:00Z",
+    "source_succeeded_at": "2026-10-23T18:00:00Z",
+    "primary": {
+      "date": "2026-10-23",
+      "label": "Friday, Oct 23",
+      "eligible_total": 4,
+      "occurrences": [
+        {
+          "time_kind": "all_day",
+          "id": "all-day-planning",
+          "title": "Project preparation",
+          "location": null,
+          "start_date": "2026-10-23",
+          "end_date_exclusive": "2026-10-24"
+        },
+        {
+          "time_kind": "timed",
+          "id": "upcoming-utc",
+          "title": "Design review",
+          "location": null,
+          "emphasis": "upcoming",
+          "start_at": "2026-10-23T18:15:00Z",
+          "end_at": "2026-10-23T18:45:00Z"
+        },
+        {
+          "time_kind": "timed",
+          "id": "upcoming-offset",
+          "title": "Planning session",
+          "location": "Studio B",
+          "emphasis": "upcoming",
+          "start_at": "2026-10-23T11:15:00-07:00",
+          "end_at": "2026-10-23T12:00:00-07:00"
+        },
+        {
+          "time_kind": "timed",
+          "id": "ordinary-later",
+          "title": "Follow-up",
+          "location": null,
+          "start_at": "2026-10-23T18:20:00Z",
+          "end_at": "2026-10-23T19:00:00Z"
+        }
+      ]
+    },
+    "secondary": {
+      "date": "2026-10-26",
+      "label": "Monday, Oct 26",
+      "eligible_total": 0,
+      "occurrences": []
+    },
+    "error": null
+  }
+}

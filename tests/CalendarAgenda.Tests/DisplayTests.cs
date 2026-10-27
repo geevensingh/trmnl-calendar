@@ -43,6 +43,47 @@ public sealed class DisplayTests
     }
 
     [Theory]
+    [InlineData("primary", "timed")]
+    [InlineData("primary", "all_day")]
+    [InlineData("secondary", "timed")]
+    [InlineData("secondary", "all_day")]
+    public void Direct_renderer_rejects_missing_or_invalid_participation_on_every_occurrence(string day, string timeKind)
+    {
+        foreach (var invalid in new[] { "missing", "null", "unsupported", "number" })
+        {
+            var data = CurrentAgenda();
+            var occurrence = data["primary"]!["occurrences"]![0]!.DeepClone().AsObject();
+            occurrence["id"] = "invalid-participation";
+            if (timeKind == "all_day")
+            {
+                occurrence["time_kind"] = timeKind;
+                occurrence.Remove("start_at");
+                occurrence.Remove("end_at");
+                occurrence["start_date"] = data[day]!["date"]!.DeepClone();
+                occurrence["end_date_exclusive"] = "2026-10-27";
+            }
+            if (invalid == "missing")
+                occurrence.Remove("participation_expectation");
+            else
+                occurrence["participation_expectation"] = invalid switch
+                {
+                    "null" => null,
+                    "number" => JsonValue.Create(1),
+                    _ => JsonValue.Create("CONFIDENTIAL_PARTICIPATION_MARKER")
+                };
+            data[day]!["occurrences"] = new JsonArray(
+                data["primary"]!["occurrences"]![0]!.DeepClone(), occurrence);
+            data[day]!["eligible_total"] = 2;
+            foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
+            {
+                var error = Assert.ThrowsAny<Exception>(() => Render(placement, data));
+                Assert.Contains("Invalid participation expectation", error.Message);
+                Assert.DoesNotContain("CONFIDENTIAL_PARTICIPATION_MARKER", error.Message);
+            }
+        }
+    }
+
+    [Theory]
     [InlineData("configuration_invalid", "Rule configuration is missing or malformed.")]
     [InlineData("source_unavailable", "The calendar source could not be checked.")]
     [InlineData("compatibility_unsupported", "The source contains unsupported calendar semantics.")]

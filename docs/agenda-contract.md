@@ -16,7 +16,7 @@ The agenda module's public interface is `POST /api/agenda`, with function-scoped
 
 This deliberately preserves quotes, newlines, and malformed edited text for validation at the HTTP interface. The request must be an object with exactly this one required string field. Missing fields, nulls, duplicate/unknown fields, malformed outer or inner JSON (including invalid Unicode escapes), and non-array rule configuration are `configuration_invalid`. The entire UTF-8 request is limited to 16 KiB, inclusive, and both JSON documents have a maximum nesting depth of 16. There is no implicit default or old-rules fallback.
 
-The source URL is secret runtime configuration `Agenda__SourceUrl`, never an HTTP input, display setting, query parameter, or result field. The owner identity used for participation expectation is adapter-side runtime configuration `Agenda__OwnerAddress`, an exact `mailto:` address from the calendar. It is not a request field or result field; address aliases are not inferred.
+The source URL is secret runtime configuration `Agenda__SourceUrl`, never an HTTP input, display setting, query parameter, or result field. The owner identity for protected participation-capability inspection is adapter-side runtime configuration `Agenda__OwnerAddress`, an exact `mailto:` address from the calendar. It is not a request field or result field; address aliases are not inferred. Configuring it does not enable production classification in this Unknown-only tracer.
 
 ### Exclusion rules
 
@@ -66,7 +66,7 @@ Authorized, completed polls return HTTP 200 and `application/json`, with `Cache-
       "time_kind": "timed",
       "id": "opaque-occurrence-identifier",
       "title": "Synthetic planning",
-      "participation_expectation": "likely",
+      "participation_expectation": "unknown",
       "location": "Studio A",
       "emphasis": "in_progress",
       "start_at": "2026-10-23T18:00:00+00:00",
@@ -103,19 +103,21 @@ Each day has ISO date-only `date`, a literal weekday/date `label` (not misleadin
 
 Each occurrence has an opaque `id`, `title`, required `participation_expectation`, optional/null `location`, and a `time_kind` discriminator. The expectation is one of `definite`, `likely`, `maybe`, `unlikely`, or `unknown`; `unknown` means there is insufficient owner-specific evidence, not the lowest likelihood. Descriptions, attendees, organizer addresses, source URL, raw UID, and rule contents are absent. IDs distinguish occurrences; consumers must not decode them. The implementation hashes the parser's UID and resolved UTC start for timed occurrences, or its date-only start for all-day occurrences. It uses Ical.Net's normalization and occurrence evaluation, not a separate hand-written RFC parser.
 
-Timed occurrences may also carry optional `emphasis`; this is independent of participation expectation. The producer, strict validators, and renderer use version 2 with required participation values; version-1 payloads are incompatible. The workbench requires matching version-2 baseline contracts and framework pins rather than substituting a different baseline.
+Timed occurrences may also carry optional `emphasis`; this is independent of participation expectation. The producer, strict validators, and renderer use version 2 with required participation values; version-1 payloads are incompatible. Direct rendering rejects missing, null, or unsupported participation values on every occurrence before evaluating Liquid. The workbench requires matching version-2 baseline contracts with the required participation field, shared templates consuming that field, and framework pins rather than substituting a different baseline; earlier schema-2 baselines without participation support are incompatible.
 
-Participation expectation uses the following precedence on the effective event occurrence:
+The current production slice emits **`unknown` for every occurrence**, including timed, all-day, and changed recurring instances, regardless of configured owner or available metadata. This is the intentional end-to-end tracer from #61, not a claim that the source lacks evidence. Known-label production classification is deferred until the owner-authorized actual-publication evidence in #60 is accepted for #62; synthetic scenarios retain all five controlled values for presentation checks.
+
+The agreed future classification precedence, **not enabled in this slice**, is:
 
 | Evidence | Expectation |
 |---|---|
 | Explicit transparent (`TRANSP:TRANSPARENT`), a recognized `Following: ` title marker, or the calendar owner's declined response | `unlikely` |
 | Otherwise, the configured calendar owner is the organizer | `definite` |
 | Otherwise, the configured owner's response is accepted | `likely` |
-| Otherwise, the configured owner's response is tentative or the owner's attendee entry is unanswered | `maybe` |
+| Otherwise, the configured owner's explicitly supplied response is tentative or needs action | `maybe` |
 | Otherwise, including missing owner identity, unmatched/ambiguous owner attendees, or insufficient evidence | `unknown` |
 
-Free/transparent, followed, and declined evidence outranks organizer role and acceptance. Only an explicitly supplied transparent property is evidence of Free; an absent transparency property is not. A `Following: ` marker follows the existing exact title-prefix convention and the default exclusion remains unchanged; a matching event gets a label only if other rules leave it eligible. An owner attendee entry with no response is positively established unanswered evidence; absence of the owner attendee is not. Event-level `STATUS:TENTATIVE` is distinct from the owner's `PARTSTAT` and does not imply `maybe`. Exact address matching uses only the configured `mailto:` address; it does not use attendee order, display names, titles, or guessed aliases. If owner identity is absent or invalid, only independently supported low-participation evidence can classify an event; otherwise it is `unknown`.
+Future classification must bind these signals to accepted source semantics. Free/transparent, followed, and declined evidence outranks organizer role and acceptance only after that prerequisite. The default `Following: ` title exclusion remains unchanged. An owner attendee entry without an explicitly supplied `PARTSTAT` is missing evidence, not proof of an unanswered invitation; the parser's default must not establish a personal response. Missing, ambiguous, multiple, or unsupported response values remain insufficient. Event-level `STATUS:TENTATIVE` is distinct from the owner's `PARTSTAT`. Exact address matching must use only approved adapter-side identity, never attendee order, display names, titles, or guessed aliases. None of these signals changes the tracer's current `unknown` output.
 
 The protected source preflight reports only allowlisted booleans for whether the configured owner identity and matching organizer/attendee/response signals, transparent events, and the followed title marker were observed. It does not print addresses or calendar content. These observations are not a guarantee that every event carries the relevant metadata; actual publication capability remains an owner-authorized evidence gate.
 

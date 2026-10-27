@@ -1,0 +1,77 @@
+name: Full validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    name: Full validation
+    concurrency:
+      group: ${{ format('full-validation-{0}', github.event.pull_request.number || github.ref) }}
+      cancel-in-progress: true
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      AZURE_BICEP_CHECK_VERSION: 'false'
+    steps:
+      - name: Check out the event-pinned head or dispatch revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Prepare and verify the event-pinned PR merge
+        if: github.event_name == 'pull_request'
+        env:
+          PR_HEAD_COMMIT: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        run: node .\scripts\prepare-ci.mjs --head-commit "$env:PR_HEAD_COMMIT" --base-commit "$env:PR_BASE_COMMIT"
+
+      - name: Set up the selected .NET SDK and host runtime
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          dotnet-version: 8.0.x
+
+      - name: Set up Ruby with Devkit and locked Bundler
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler: Gemfile.lock
+          bundler-cache: false
+
+      - name: Provision local Functions and Bicep tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm install --global azure-functions-core-tools@4
+          if ($LASTEXITCODE -ne 0) { throw 'Functions Core Tools v4 installation failed.' }
+          func --version
+          if ($LASTEXITCODE -ne 0) { throw 'Functions Core Tools could not start.' }
+          az version
+          if ($LASTEXITCODE -ne 0) { throw 'Azure CLI is required on the Windows runner.' }
+          az bicep install
+          if ($LASTEXITCODE -ne 0) { throw 'Local Bicep compiler installation failed.' }
+          az bicep version
+          if ($LASTEXITCODE -ne 0) { throw 'Local Bicep compiler is unavailable.' }
+
+      - name: Restore locked display dependencies and pinned Chromium
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\setup-display.ps1
+
+      - name: Run the shared Full validation
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full

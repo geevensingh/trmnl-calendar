@@ -1,5 +1,9 @@
 ## Agent skills
 
+### Skill invocation
+
+For explicit user skill invocations, see [invocation/load guidance](.agents/skills/writing-for-agents/SKILL-MECHANICS.md#supplied-user-invocation).
+
 ### Issue tracker
 
 Issues and specs live in GitHub Issues for `geevensingh/trmnl-calendar`. Before ticket operations, see `docs/agents/issue-tracker.md`.

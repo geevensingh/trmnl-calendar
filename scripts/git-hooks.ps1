@@ -5,6 +5,9 @@ param([ValidateSet('Status', 'Install', 'Remove')][string]$Action = 'Status')
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
+if ($Action -eq 'Install') {
+    throw 'Automatic repository-managed hooks are retired. Run scripts\validate.ps1 -Scope Fast or -Scope Full manually. To migrate existing hooks, inspect scripts\git-hooks.ps1 -Action Status, then explicitly run -Action Remove. No hooks or Git configuration were changed.'
+}
 $root = Split-Path $PSScriptRoot -Parent
 if (!(Get-Command git -ErrorAction SilentlyContinue)) {
     throw 'Install Git and add it to PATH before managing local guardrails.'
@@ -21,11 +24,9 @@ $configurationExit = $LASTEXITCODE
 if ($configurationExit -notin 0, 1) { throw 'Cannot inspect the effective core.hooksPath configuration.' }
 if ($configurationExit -eq 0) {
     Write-Host "Existing core.hooksPath preserved: $($configuration -join ' ')"
-    if ($Action -eq 'Install') {
-        throw 'Refusing installation while core.hooksPath is configured. No hooks or Git configuration were changed. Integrate scripts\validate.ps1 into your existing hooks explicitly instead.'
-    }
 }
 
+# Keep the exact v1 bytes solely to recognize already-installed, unchanged hooks.
 $template = @'
 #!/bin/sh
 # trmnl-calendar managed local validation hook v1
@@ -106,47 +107,20 @@ $hooks = @(foreach ($name in $scopes.Keys) {
 Write-Host "Default hooks directory (shared by linked worktrees): $hookDirectory"
 if ($Action -eq 'Status') {
     $hooks | Select-Object Name, Scope, State | Format-Table -AutoSize | Out-Host
-    Write-Host 'Status only. Opt in with .\scripts\git-hooks.ps1 -Action Install.'
+    Write-Host 'Status only. Automatic hooks are retired. Explicitly migrate unchanged managed hooks with .\scripts\git-hooks.ps1 -Action Remove; use scripts\validate.ps1 manually.'
     exit 0
 }
-if ($Action -eq 'Install') {
-    $conflicts = @($hooks | Where-Object State -EQ 'Preserved')
-    if ($conflicts.Count -gt 0) {
-        throw "Existing or modified hooks preserved: $($conflicts.Name -join ', '). No hooks were installed or overwritten."
+foreach ($hook in $hooks) {
+    if ($hook.State -eq 'Managed') {
+        [IO.File]::Delete($hook.Path)
+        Write-Host "Removed $($hook.Name)."
     }
-    if (!(Get-Command pwsh -ErrorAction SilentlyContinue)) {
-        throw 'Install PowerShell 7 and add pwsh to PATH before installing hooks.'
-    }
-    $null = [IO.Directory]::CreateDirectory($hookDirectory)
-    foreach ($hook in $hooks) {
-        if ($hook.State -eq 'Missing') {
-            $stream = [IO.File]::Open($hook.Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-            try {
-                $bytes = [Text.Encoding]::UTF8.GetBytes($hook.Content)
-                $stream.Write($bytes, 0, $bytes.Length)
-            }
-            finally { $stream.Dispose() }
-        }
-        if (!$IsWindows) {
-            [IO.File]::SetUnixFileMode($hook.Path,
-                [IO.UnixFileMode]'UserRead,UserWrite,UserExecute,GroupRead,GroupExecute,OtherRead,OtherExecute')
-        }
-        Write-Host "Installed $($hook.Name): $($hook.Scope) validation."
+    elseif ($hook.State -eq 'Preserved') {
+        Write-Host "Preserved existing or modified hook: $($hook.Path)"
     }
 }
-else {
-    foreach ($hook in $hooks) {
-        if ($hook.State -eq 'Managed') {
-            [IO.File]::Delete($hook.Path)
-            Write-Host "Removed $($hook.Name)."
-        }
-        elseif ($hook.State -eq 'Preserved') {
-            Write-Host "Preserved existing or modified hook: $($hook.Path)"
-        }
-    }
-    if (@($hooks | Where-Object State -EQ 'Preserved').Count -gt 0) {
-        throw 'Removal was partial: unrecognized or modified hooks were left untouched. Only exact generated hooks are removable by this tooling.'
-    }
+if (@($hooks | Where-Object State -EQ 'Preserved').Count -gt 0) {
+    throw 'Removal was partial: unrecognized or modified hooks were left untouched. Only exact generated hooks are removable by this tooling.'
 }
 Write-Host 'No Git configuration was changed.'
 exit 0

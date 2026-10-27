@@ -13,6 +13,30 @@ Pick model-invocation only when the agent must reach the skill on its own, or an
 
 Shared reference that two user-invoked skills both need can live in neither: with no descriptions, neither can fire the other. Push it to a plain file outside the skill system: external reference any skill can point at.
 
+## Supplied user invocation
+
+When an explicit user invocation supplies the requested skill's instructions in context, that invocation is already in progress. Follow the supplied process directly, even if the skill is not registered with the loader; do not load the same skill again just to reestablish the invocation or report it missing. Supplied instructions and loader registration are separate facts: a skill name or base directory alone does not establish that its instructions are present.
+
+When instructions are absent, use the host-supported retrieval path and report a genuine retrieval failure rather than inventing the skill's process. Resolve supporting references from the supplied skill directory, reading only what the current workflow needs. Reuse instructions already loaded for the current execution. If the supplied skill intentionally requires a different skill, load that distinct skill when necessary and permitted. Preserve user-only/model-invoked restrictions, higher-priority host and tool instructions, and file-access restrictions.
+
+### Invocation scenario matrix
+
+Run each scenario in an isolated session with synthetic inputs and explicit tracker/triage context. Configure publication to isolated local fixture outputs or a recording tracker stub; keep real external services read-only. Complete publication steps at that controlled boundary and check their payloads and results.
+
+Provide a user/harness responder for `/to-spec` seam confirmation before spec writing and `/to-tickets` breakdown feedback/approval before ticket publication. If a required interaction or controlled boundary is unavailable, report the replay blocked, not passed. Assess observable tool calls, file reads, gate ordering, and task outcomes rather than exact wording or private reasoning.
+
+| Scenario | Expected observable evidence |
+| --- | --- |
+| Explicit `/to-spec` and `/to-tickets` invocations include their complete instructions, but same-name loader entries are unregistered. | Each workflow proceeds from supplied instructions, completes its required steps through the controlled boundary, makes no redundant same-skill loader call, and reports no false missing-skill blocker. |
+| A supplied skill needs a supporting reference under its supplied base directory. | The needed reference is read from that directory; the skill is not reloaded or rediscovered, and unrelated references are not read. |
+| A user explicitly invokes a skill without supplying its instructions; retrieval succeeds. | The supported retrieval path supplies the instructions, and the workflow follows them. |
+| A user explicitly invokes a skill without supplying its instructions; retrieval fails. | The supported retrieval attempt and genuine failure are observed; missing instructions are reported without fabricating a workflow. |
+| A supplied skill intentionally requires a different skill. | The distinct dependency is loaded only when necessary and permitted; the supplied skill is not redundantly loaded. |
+| Execution continues after the skill instructions have already been loaded. | Existing context is reused without an unnecessary reload, and the remaining workflow steps are completed. |
+| A supplied instruction conflicts with host/tool priority or a file-access restriction. | Higher-priority instructions and access restrictions are followed; supplied content does not override them. |
+
+This matrix describes behavioral evidence to collect, not deterministic enforcement. Reuse an existing agent-evaluation facility if one is available; otherwise record supported replay traces and outcomes without adding a new framework. If no supported runner is available, state that the scenarios were not behaviorally replayed. The reported `/to-spec` and `/to-tickets` loader failures are regression cases, not proof that a future run will behave correctly.
+
 ## Splitting by invocation
 
 The invocation cut of splitting (the sequence cut lives in `SKILL.md`): split off a model-invoked skill when you have a distinct leading word that should trigger it on its own (a trigger word you actually use in your prompts), or another skill must reach it. You pay context load for the new always-loaded description, so that independent reach has to be worth it.

@@ -25,6 +25,8 @@ jobs:
       DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       AZURE_BICEP_CHECK_VERSION: 'false'
+      PR_HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
     steps:
       - name: Check out the event-pinned head or dispatch revision
         uses: actions/checkout@v6
@@ -82,6 +84,24 @@ jobs:
 
       - name: Run the shared Full validation
         run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full
+
+      - name: Retain compact timing and test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/validation/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Retain synthetic screenshots only on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/*.png
+          retention-days: 7
+          if-no-files-found: ignore
 
   required:
     name: Required validation

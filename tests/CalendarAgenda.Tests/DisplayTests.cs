@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -23,8 +24,8 @@ public sealed class DisplayTests
     public async Task Full_screen_OG_renders_the_agenda_using_production_Liquid_and_framework()
     {
         var data = CurrentAgenda();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await Show(page, data);
 
@@ -53,8 +54,8 @@ public sealed class DisplayTests
         data["primary"]!["occurrences"] = new JsonArray();
         data["secondary"]!["eligible_total"] = null;
         data["error"] = new JsonObject { ["code"] = code, ["message"] = message };
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await Show(page, data);
 
@@ -72,8 +73,8 @@ public sealed class DisplayTests
         data["primary"]!["eligible_total"] = 0;
         data["primary"]!["occurrences"] = new JsonArray();
         data["secondary"]!["eligible_total"] = 0;
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await Show(page, data);
 
@@ -91,8 +92,8 @@ public sealed class DisplayTests
         var data = CurrentAgenda();
         const string title = "<svg onload=window.pwn=1>";
         data["primary"]!["occurrences"]![0]!["title"] = title;
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await Show(page, data);
 
@@ -119,8 +120,8 @@ public sealed class DisplayTests
         }
         data["primary"]!["eligible_total"] = 14;
         data["primary"]!["occurrences"] = occurrences;
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await Show(page, data);
         var visibleTimes = page.Locator("[data-agenda-start]:visible");
@@ -135,7 +136,7 @@ public sealed class DisplayTests
         await InsideScreen(page, page.Locator(".agenda-secondary"));
         await InsideScreen(page, page.Locator(".agenda-source"));
         Directory.CreateDirectory(Path.Combine(Root, "artifacts"));
-        await page.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", "og-busy.png") });
+        await ValidationTiming.Screenshot(page, new() { Path = Path.Combine(Root, "artifacts", "og-busy.png") });
     }
 
     [Fact]
@@ -217,8 +218,8 @@ public sealed class DisplayTests
             Assert.Equal("Function", trigger.GetProperty("authLevel").GetString());
             Assert.Equal("agenda", trigger.GetProperty("route").GetString());
             Assert.Equal(["post"], trigger.GetProperty("methods").EnumerateArray().Select(method => method.GetString()));
-            using var playwright = await Playwright.CreateAsync();
-            await using var browser = await playwright.Chromium.LaunchAsync();
+            using var playwright = await ValidationTiming.CreatePlaywright();
+            await using var browser = await ValidationTiming.Launch(playwright);
             var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
             await Show(page, data);
             await Assertions.Expect(page.GetByText("Synthetic source meeting", new() { Exact = true })).ToBeVisibleAsync();
@@ -227,7 +228,7 @@ public sealed class DisplayTests
             Directory.CreateDirectory(Path.Combine(Root, "artifacts"));
             await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo-agenda.json"), json);
             await File.WriteAllTextAsync(Path.Combine(Root, "artifacts", "demo.html"), Render("full", data));
-            await page.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", "demo.png") });
+            await ValidationTiming.Screenshot(page, new() { Path = Path.Combine(Root, "artifacts", "demo.png") });
 
             await RenderNativePreviews(data, "demo");
 
@@ -403,7 +404,7 @@ public sealed class DisplayTests
                         await AdaptiveDisplayTests.VisibleInsideView(preview.Locator("[data-agenda-source]"));
                         await Assertions.Expect(preview.Locator("[data-agenda-source]"))
                             .ToHaveAttributeAsync("datetime", agenda["source_succeeded_at"]!.GetValue<string>());
-                        await preview.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", $"{name}.png") });
+                        await ValidationTiming.Screenshot(preview, new() { Path = Path.Combine(Root, "artifacts", $"{name}.png") });
                         await preview.CloseAsync();
                     }
             }
@@ -442,10 +443,17 @@ public sealed class DisplayTests
             && box.Y + box.Height <= screen.Y + screen.Height, "Required content must fit inside the physical screen.");
     }
 
-    internal static string Render(string mode, object variables, string device = "og")
-        => RunRuby(Path.Combine(Root, "display", "render.rb"), variables, mode, device);
+    internal static string Render(string mode, object variables, string device = "og",
+        [CallerMemberName] string scenario = "")
+        => ValidationTiming.Run("render.view",
+            () => RunRuby(Path.Combine(Root, "display", "render.rb"), variables, mode, device),
+            $"{scenario}/{device}/{mode}");
 
     internal static string RunRuby(string script, object variables, params string[] arguments)
+        => ValidationTiming.Run("ruby.process", () => RunRubyProcess(script, variables, arguments),
+            Path.GetFileName(script));
+
+    private static string RunRubyProcess(string script, object variables, string[] arguments)
     {
         var localRuby = Path.Combine(Root, ".tools", "ruby", "bin", "ruby.exe");
         var ruby = Environment.GetEnvironmentVariable("TRMNL_RUBY")
@@ -462,6 +470,7 @@ public sealed class DisplayTests
         };
         start.ArgumentList.Add(script);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        start.Environment["TRMNL_RUBY_STARTED_AT"] = DateTimeOffset.UtcNow.ToString("O");
         using var process = Process.Start(start)!;
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
@@ -546,7 +555,7 @@ public sealed class DisplayTests
             if (capture.GetArrayLength() > 0)
             {
                 Directory.CreateDirectory(Path.Combine(Root, "artifacts"));
-                await page.ScreenshotAsync(new() { Path = Path.Combine(Root, "artifacts", $"capture-invalid-{device}-{mode}.png") });
+                await ValidationTiming.Screenshot(page, new() { Path = Path.Combine(Root, "artifacts", $"capture-invalid-{device}-{mode}.png") });
             }
             Assert.True(capture.GetArrayLength() == 0, $"Invalid layout at native capture readiness: {capture}");
         }

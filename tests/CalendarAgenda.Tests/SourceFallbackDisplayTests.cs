@@ -16,8 +16,8 @@ public sealed class SourceFallbackDisplayTests
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z",
             File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "basic.ics")));
         await agenda.Tick();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -66,8 +66,8 @@ public sealed class SourceFallbackDisplayTests
     {
         using var agenda = new AgendaHttp("2026-10-23T18:00:00Z", BusyCalendar(),
             sourceUrl: "https://synthetic.invalid/CONFIDENTIAL_SOURCE_CREDENTIAL");
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }

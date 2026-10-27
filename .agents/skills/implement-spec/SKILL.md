@@ -26,8 +26,9 @@ Communication to and from subagents should be sparse. Communicate primarily thro
 
 3. Create the integration branch if authorized by the contract. If the issue tracker closes work through PRs, or the user asks for one, open a draft PR after the first merge in step 5 (a branch with no commits ahead of main can't open one), referencing the spec and tickets.
 
-4. Use **implementer subagents** to implement each ticket, each in its own worktree on its own branch. Each implementer subagent:
+4. Record the integration-start full commit ID for the final review. Use **implementer subagents** to implement each ticket, each in its own worktree on its own branch. Each implementer subagent:
    - confirms its worktree is based on the integration branch before starting, and corrects its base only within the agreed Git permissions;
+   - follows `/implement`'s baseline, working-tree review, validation-before-commit, and unchanged-content commit-binding procedure for its ticket;
    - calls the Skill tool with `tdd` to build the ticket;
    - merges the integration branch tip into its own branch before reporting done
 
@@ -35,7 +36,7 @@ Communication to and from subagents should be sparse. Communicate primarily thro
 
 6. Record implementation acceptance and satisfy implementation-only dependencies using the delivery contract. If this advances the **frontier**, kick off more **implementer subagents** to work on the new tickets.
 
-7. Once all implementations are accepted, call the Skill tool with `code-review` on the integration branch. Fix all issues raised by the code review in a single **implementer subagent**.
+7. Once all implementations are accepted, call the Skill tool with `code-review` in **committed** mode on the integration branch, passing the recorded integration-start baseline and spec. Fix all issues raised by the code review in a single **implementer subagent**, using the pre-commit procedure from step 4. Refresh the integration review after incorporating fixes; acceptance applies only to the unchanged reviewed content.
 
 8. If a draft PR exists, mark it ready for review. Follow the delivery contract's landing/publication, evidence, closure, and reporting procedure; integration acceptance alone does not close delivery tickets.
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,32 @@ import test from "node:test";
 import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+
+test("public process fixtures preserve exact directory identity under an aliased temporary root", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "agenda temporary identity "));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const target = join(directory, "canonical temporary directory");
+  const alias = join(directory, "temporary alias");
+  await mkdir(target);
+  await symlink(target, alias, process.platform === "win32" ? "junction" : "dir");
+  const result = spawnSync(process.execPath, [
+    "--test", "--test-name-pattern=completion repository is isolated|runtime precedence is explicit|" +
+      "setup ignores inherited project destinations|explicit migration removes unchanged|" +
+      "successful display setup preserves|display setup reports failed stages|" +
+      "validation scopes certificate and project environments",
+    join(root, "tests", "delivery", "completion.test.mjs"),
+    join(root, "tests", "validation", "display-toolchain.test.mjs"),
+    join(root, "tests", "validation", "hooks.test.mjs"),
+    join(root, "tests", "validation", "setup-display.test.mjs"),
+    join(root, "tests", "validation", "validation.test.mjs")
+  ], {
+    cwd: root, env: { ...cleanEnvironment(), TEMP: alias, TMP: alias, TMPDIR: alias },
+    encoding: "utf8", timeout: 90_000
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /\bpass 14\b/, "All affected public process assertions must execute.");
+  assert.match(result.stdout, /\bfail 0\b/);
+});
 
 test("foreign Git environment removes all inherited Git context and retains explicit safe controls", () => {
   const inherited = {
@@ -159,6 +185,29 @@ test("completion fixture preserves standard and linked owners under exported hoo
         assert.match(result.stdout, /\bpass 1\b/, "The actual completion fixture test must execute.");
       });
     }
+  }
+});
+
+test("review snapshot fixture preserves synthetic owners under combined inherited Git context", async t => {
+  for (const index of [0, 1]) {
+    await t.test(index === 1 ? "linked owner" : "standard owner", async t => {
+      const fixture = await owner(t);
+      const injection = {
+        ...injections(fixture, fixture.contexts[index]).at(-1)[1],
+        GIT_TEMPLATE_DIR: join(fixture.checkout, ".git"),
+        GIT_NAMESPACE: "owner-namespace",
+        GIT_REPLACE_REF_BASE: "refs/owner-replacements/",
+        GIT_TRACE: join(fixture.checkout, "trace.log"),
+        GIT_TRACE2_EVENT: join(fixture.checkout, "trace2.log"),
+        GiT_FUTURE_SELECTOR: "unknown inherited context"
+      };
+      const result = spawnSync(process.execPath, [
+        "--test", "--test-name-pattern=^uncommitted-only review", join(root, "tests", "validation", "review-scope.test.mjs")
+      ], { cwd: root, env: { ...cleanEnvironment(), ...injection }, encoding: "utf8", timeout: 30_000 });
+      await fixture.unchanged("review snapshot fixture");
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(result.stdout, /\bpass 1\b/, "The actual review snapshot and commit-binding example must execute.");
+    });
   }
 });
 

@@ -15,7 +15,7 @@ public sealed class SourcePreflightTests
     [Fact]
     public async Task Source_access_requires_explicit_authorization_before_reading_protected_input()
     {
-        var result = await Run(new { source = Sentinel }, "--synthetic-local");
+        var result = await RunRaw(null, "--synthetic-local");
 
         Assert.Equal(1, result.ExitCode);
         using var report = JsonDocument.Parse(result.Output);
@@ -632,7 +632,7 @@ public sealed class SourcePreflightTests
     [Fact]
     public async Task Source_values_in_arguments_are_rejected_without_echoing_the_argument()
     {
-        var result = await Run(new { source = Sentinel }, "--authorize-source-access", "--synthetic-local",
+        var result = await RunRaw(null, "--authorize-source-access", "--synthetic-local",
             "--source-url", "https://" + Sentinel + ".invalid/calendar.ics");
 
         Assert.Equal(1, result.ExitCode);
@@ -644,7 +644,7 @@ public sealed class SourcePreflightTests
     private static Task<CommandResult> Run(object input, params string[] arguments) =>
         RunRaw(JsonSerializer.Serialize(input), arguments);
 
-    private static async Task<CommandResult> RunRaw(string input, params string[] arguments)
+    private static async Task<CommandResult> RunRaw(string? input, params string[] arguments)
     {
         var start = new ProcessStartInfo("dotnet")
         {
@@ -668,8 +668,12 @@ public sealed class SourcePreflightTests
         var errors = process.StandardError.ReadToEndAsync();
         try
         {
-            await process.StandardInput.WriteAsync(input);
-            process.StandardInput.Close();
+            // Early rejections must finish while protected stdin is still open and unread.
+            if (input is not null)
+            {
+                await process.StandardInput.WriteAsync(input);
+                process.StandardInput.Close();
+            }
             await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(130));
             var result = new CommandResult(process.ExitCode, await output, await errors);
             Assert.Empty(result.Errors);

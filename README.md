@@ -44,7 +44,8 @@ Native polling remains **15 minutes**, independently of internal source refresh.
 ## Local prerequisites
 
 - .NET 10 SDK selected by `global.json`, PowerShell 7, and Node.js 22 or newer. Node uses its built-in test runner; no npm packages or hook manager are needed.
-- Git for Windows for the opt-in hooks; it supplies their shell launcher.
+- Git **2.38 or newer** for disposable-repository validation and CI's pinned merge preparation (`merge-tree --write-tree`).
+- Full's review-recipe fixtures require permission to create directory symbolic links. On Windows, explicitly enable Developer Mode or grant the test account **Create symbolic links** permission before running Full. The fixture checks this by creating a real link and fails with prerequisite guidance when permission is unavailable; scripts never enable privileges, substitute junctions, or skip the symlink assertions. Fast does not need this permission.
 - For Full validation: Azure Functions Core Tools v4 with .NET 10 support, the .NET/ASP.NET Core 10 runtimes, and Azure CLI with Bicep on PATH. Only local compilation is used; no Azure login is needed.
 - For display setup: Ruby 4, the lockfile's Bundler **4.0.20**, and compatible native-extension compiler/linker/make tools. On Windows, use RubyInstaller **with Devkit**; `redcarpet` and other locked gems have native extensions. Full validation needs the restored native gems to load, not a compiler merely to render them.
 
@@ -75,7 +76,9 @@ This is the RubyGems `install bundler` operation, independent of another install
 
 ## Local validation
 
-**`scripts\validate.ps1` is the authoritative validation procedure**, for manual use, the opt-in hooks, and any future CI. Run the shared entrypoint rather than maintaining another list of checks. No CI workflow, PR requirement, or branch-protection change is introduced.
+**`scripts\validate.ps1` is the authoritative validation procedure**, for manual use and GitHub Actions. Run the shared entrypoint rather than maintaining another list of checks.
+
+The checked-in [Full validation workflow](.github/workflows/full-validation.yml) runs genuine Full for PR creation, head updates (including documentation-only changes), reopening and **every edit, including title/body edits**, using a Windows runner and synthetic inputs. Each admitted event supersedes active validation for that PR; expect roughly 40-45 minutes per run, with a finite **60-minute job cap** for setup/runner variability, not a 45-minute completion promise. Draft/readiness activities are not triggers. Use issue comments for progress/acceptance updates rather than editing PR metadata, which restarts Full. Repository-managed automatic hooks are retired; existing installations need the explicit migration below. **Owner-authorized `main` protection is configured and read back; [#39](https://github.com/geevensingh/trmnl-calendar/issues/39) issue comments are the live acceptance ledger, with [PR #38](https://github.com/geevensingh/trmnl-calendar/pull/38) identifying the reviewed/current head and required genuine Full check.** See [Required CI and manual local validation](docs/ci-validation-design.md) for the stable check identity, provisioning, protection configuration and recorded evidence. Adding a workflow alone does not establish enforcement.
 
 ### Setup once per worktree
 
@@ -113,14 +116,14 @@ Check `az bicep version` and, only if missing, install the local compiler once w
 
 | Scope | Checks | Intended use |
 |---|---|---|
-| Fast (default) | Read-only C# whitespace formatting, production and test-project compilation with existing warnings-as-errors settings, PowerShell parsing, and Node syntax | Inexpensive commit-time feedback |
-| Full | Complete read-only C# formatting, the Fast build/syntax checks, the unfiltered production .NET suite (real Functions host, Liquid, framework/fonts and Chromium), and every delivery/guardrail `*.test.mjs` through Node's existing runner | Local publication gate |
+| Fast (default) | Read-only C# whitespace formatting, production and test-project compilation with existing warnings-as-errors settings, PowerShell parsing, and Node syntax | Optional manual feedback |
+| Full | Complete read-only C# formatting, the Fast build/syntax checks, the unfiltered production .NET suite (real Functions host, Liquid, framework/fonts and Chromium), and every delivery/guardrail `*.test.mjs` through Node's existing runner | PR CI and optional manual full feedback |
 
 The command resolves its own checkout root and reports each component as **PASSED**, **FAILED**, or **BLOCKED**, with elapsed time. Exit **0** means every selected component passed; any failure or blocked component exits **1**. Full diagnoses Ruby/Bundler, locked native-gem loading and framework/font readiness before expensive checks, then launches pinned Chromium after the existing build and before production tests. Failed readiness blocks dependent tests, never successful skips. Formatting uses `--verify-no-changes`; build/format/.NET test commands use `--no-restore`. Bicep update checks are disabled for validation subprocesses without changing Azure CLI configuration.
 
 Manual validation checks the current working tree, including unstaged edits. Full uses synthetic fixtures, local HTTP/storage substitutes, and disposable Git repositories/local bare remotes. Delivery checks compile Bicep and publish a local Release package; external mutating Azure commands are substituted. Validation does not fetch the owner's calendar, require private inputs, change Azure resources, deploy, or change application behavior.
 
-Foreign-repository Git subprocesses remove **all inherited `GIT_*` environment variables before the first `git init` or read**, not just `GIT_DIR` or the working directory. This includes common/work-tree, index/object/alternate selectors and environment-injected configuration. Node callers use `isolatedGitEnvironment(controls, inherited)` from `scripts/git-environment.mjs`; the C# Workbench fixture applies the same rule to `ProcessStartInfo.Environment`. Callers reapply only deliberate controls: fixtures disable system/global configuration and inherited templates, while the public Workbench retains normal on-disk user configuration. Non-Git tool settings are preserved. Workbench fixtures live in independent temporary directories. Owning-repository hooks, packaging/deployment reads and completion proof retain their intended Git context; the hook/validation boundary is not a substitute for isolating each foreign command.
+Foreign-repository Git subprocesses remove **all inherited `GIT_*` environment variables before the first `git init` or read**, not just `GIT_DIR` or the working directory. This includes common/work-tree, index/object/alternate selectors and environment-injected configuration. Node callers use `isolatedGitEnvironment(controls, inherited)` from `scripts/git-environment.mjs`; the C# Workbench fixture applies the same rule to `ProcessStartInfo.Environment`. Callers reapply only deliberate controls: fixtures disable system/global configuration and inherited templates, while the public Workbench retains normal on-disk user configuration. Non-Git tool settings are preserved. Workbench fixtures live in independent temporary directories. Owning-repository hook migration, packaging/deployment reads and completion proof retain their intended Git context; the validation boundary is not a substitute for isolating each foreign command.
 
 `tests/validation/git-isolation.test.mjs` exercises actual completion and C# Workbench fixture commands with exported pre-push context from synthetic standard and linked owners, individual selectors, and injected configuration. It compares SHA-256s of all owner working files and Git metadata, including config, refs, HEAD, indexes and object storage; identity checks alone cannot detect inherited index/object targets. Build the existing test project before running this Node regression directly; Full already builds it before Node tests. No reproduction targets a real checkout's metadata.
 
@@ -136,38 +139,24 @@ Foreign-repository Git subprocesses remove **all inherited `GIT_*` environment v
 | Pinned Chromium missing or cannot launch | Check the selected `PLAYWRIGHT_BROWSERS_PATH`, platform browser dependencies and network access, then rerun setup. Full never installs a browser as a fallback. |
 | SDK or .NET restore/build fails | Install the SDK selected by `global.json`, or fix the reported package/compiler error and rerun setup. Missing tools/dependencies remain failures, not skipped tests. |
 
-### Opt-in Git guardrails
+### Migrate previously installed Git hooks
 
-Nothing installs hooks automatically. Inspect, then explicitly opt in:
+Commits, merge commits and feature-branch backups no longer need repository-managed automatic validation. Fast and Full remain manually callable; no replacement local gate is installed. `-Action Install` now fails with retirement and migration guidance rather than creating hooks.
+
+**Existing installed hooks are not silently uninstalled.** Before using this checkout for normal Git writes, coordinate with users of other linked worktrees, inspect the shared hooks, then explicitly remove unchanged generated hooks:
 
 ```powershell
 .\scripts\git-hooks.ps1
-.\scripts\git-hooks.ps1 -Action Install
-```
-
-| Operation | Hook | Scope |
-|---|---|---|
-| `git commit` | `pre-commit` | Fast |
-| Automatic non-fast-forward `git merge` commit | `pre-merge-commit` | Fast |
-| `git push` | `pre-push` | Full |
-
-The hooks invoke the shared entrypoint and propagate its failure. Direct merges remain supported; fast-forward merges create no commit, and publication still passes through pre-push. The pre-push guard additionally requires a **clean checkout, including untracked files**, and every newly published branch/tag must resolve to the checked-out **HEAD**. Annotated tags of HEAD and ref deletions are supported; mixed pushes containing other revisions are rejected. Check out the desired revision and push it separately. Checkout cleanliness and HEAD are checked again after Full succeeds, so edits or commits during validation block publication. Deletion-only pushes still run Full.
-
-Installation is repeatable and uses Git's **common default hooks directory**, shared by linked worktrees. Each operation validates the checkout performing it, not the checkout that installed the hooks. Installation/removal therefore affects every linked worktree using default hooks; a checkout missing the entrypoint fails with recovery guidance.
-
-The installer reports and preserves any effective `core.hooksPath` (including global/worktree settings), refusing installation rather than replacing configuration. It checks all target hooks before writing any and refuses foreign or edited hooks and linked hook files/directories. Other hooks are untouched. If you already manage hooks, integrate the shared entrypoint explicitly into that arrangement instead. No Git configuration is changed, locally or globally.
-
-Remove only this tooling's unchanged generated hooks with:
-
-```powershell
 .\scripts\git-hooks.ps1 -Action Remove
 ```
 
-Removal is repeatable, preserves edited/foreign hooks, and reports a partial removal as failure when such files remain. It only considers the common default directory, even if `core.hooksPath` has since changed; the configured destination remains untouched. Removing from one worktree removes the shared managed hooks for the others. Hooks are local conveniences, not branch protection: Git's `--no-verify` or clients that do not run hooks can bypass them.
+The migration command remains available in this version; its frozen v1 recognition data exists only to identify already-installed `pre-commit`, `pre-merge-commit` and `pre-push` files. Status is read-only and reports each name as `Managed`, `Missing` or `Preserved`. Removal is repeatable. It deletes **only exact, unchanged generated v1 hooks** from Git's common default hooks directory, which is **shared by linked worktrees**. Removing from one worktree removes those hooks for every checkout using that directory, including older branches.
+
+Foreign/edited hooks, linked hook entries/directories and unrelated hook files are preserved. If a target hook is preserved, removal exits nonzero and explicitly reports a partial migration; review it manually rather than assuming automatic validation has stopped. Effective local/global/worktree `core.hooksPath` values and their configured destinations remain untouched, even if that configuration changed after installation. No Git configuration is changed. Custom hooks that call validation can still run until their owner edits them; do not delete them automatically. Keep this migration command available while old installations are supported.
 
 ### Synthetic test coverage
 
-Tooling tests exercise the public PowerShell process interface with controlled external-command substitutes, and real commit/merge/push operations in disposable repositories. They cover scope selection, summaries/exit propagation, toolchain selection/readiness, repeatable display setup and partial-failure recovery, local project state/shared-cache selection, exact environment restoration and certificate suppression, opt-in hooks, hook/configuration preservation, removal, worktree resolution, and publication of the actual validated revision.
+Tooling tests exercise the public PowerShell process interface with controlled external-command substitutes, and real commit/merge/push operations in disposable repositories. They cover scope selection, summaries/exit propagation, toolchain selection/readiness, repeatable display setup and partial-failure recovery, local project state/shared-cache selection, exact environment restoration and certificate suppression, rejected hook installation, repeatable v1 migration, partial-removal failures, foreign hook/configuration preservation, common worktree effects, and Git writes without automatic validation after migration. A frozen legacy-hook fixture is independent of the removal implementation. These synthetic tests do not prove hosted runner readiness or GitHub enforcement; both need the separate acceptance evidence in the CI design.
 
 Count labels use standard Liquid conditionals: the standalone `trmnl-liquid` environment does not provide the Rails helper required by its `pluralize` filter. The rendering harness drains stdout/stderr concurrently and bounds rendering time, so template exceptions are reported rather than hanging a test run.
 

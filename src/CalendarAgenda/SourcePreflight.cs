@@ -1,3 +1,4 @@
+using System.Net.Mail;
 using Calendar = Ical.Net.Calendar;
 
 namespace CalendarAgenda;
@@ -8,7 +9,9 @@ internal sealed record SourceAcquisitionReport(bool Performed, string Code, int?
 
 internal sealed record ParticipationCapabilityReport(bool OwnerAddressConfigured,
     bool OwnerOrganizerObserved, bool OwnerAttendeeObserved, bool OwnerParticipationStatusObserved,
-    bool FreeAvailabilityObserved, bool FollowedTitleMarkerObserved);
+    bool FreeAvailabilityObserved, bool FollowedTitleMarkerObserved,
+    bool OwnerResponseUsableObserved, bool OwnerResponseMissingObserved, bool OwnerResponseUnsupportedObserved,
+    bool OwnerAttendeeAmbiguousObserved);
 
 internal sealed record SourcePhaseReport(bool Performed, string Code, long? ElapsedMs = null,
     ParticipationCapabilityReport? ParticipationCapabilities = null);
@@ -41,12 +44,13 @@ public sealed partial class AgendaFunction
                     .WaitAsync(budget.Token);
                 budget.Token.ThrowIfCancellationRequested();
                 interpretation = new SourcePhaseReport(true, result.Error?.Code ?? "supported",
-                    ElapsedMilliseconds(interpretationStarted, ioClock.GetTimestamp()), participationCapabilities);
+                    ElapsedMilliseconds(interpretationStarted, ioClock.GetTimestamp()),
+                    result.Error is null ? participationCapabilities : null);
             }
             catch (OperationCanceledException) when (budget.IsCancellationRequested)
             {
                 interpretation = new SourcePhaseReport(true, "interpretation_timeout",
-                    ElapsedMilliseconds(interpretationStarted, ioClock.GetTimestamp()), participationCapabilities);
+                    ElapsedMilliseconds(interpretationStarted, ioClock.GetTimestamp()));
             }
         }
         return new SourcePreflightAttempt(number, acquired.Report, interpretation,
@@ -58,10 +62,20 @@ public sealed partial class AgendaFunction
 
     private ParticipationCapabilityReport InspectParticipationCapabilities(Calendar calendar)
     {
-        var ownerAddress = ConfiguredOwnerAddress(configuration["Agenda:OwnerAddress"]);
+        var configuredOwner = configuration["Agenda:OwnerAddress"];
+        var ownerAddress = configuredOwner is not null
+            && !configuredOwner.Any(character => char.IsWhiteSpace(character) || char.IsControl(character))
+            ? ConfiguredOwnerAddress(configuredOwner) : null;
+        if (!MailAddress.TryCreate(ownerAddress, out var mailbox)
+            || !string.Equals(mailbox.Address, ownerAddress, StringComparison.Ordinal))
+            ownerAddress = null;
         var ownerOrganizerObserved = false;
         var ownerAttendeeObserved = false;
         var ownerParticipationStatusObserved = false;
+        var ownerResponseUsableObserved = false;
+        var ownerResponseMissingObserved = false;
+        var ownerResponseUnsupportedObserved = false;
+        var ownerAttendeeAmbiguousObserved = false;
         var freeAvailabilityObserved = false;
         var followedTitleMarkerObserved = false;
         foreach (var item in calendar.Events)
@@ -69,10 +83,23 @@ public sealed partial class AgendaFunction
             if (ownerAddress is not null)
             {
                 ownerOrganizerObserved |= IsOwnerAddress(item.Organizer?.Value, ownerAddress);
-                foreach (var attendee in item.Attendees.Where(attendee => IsOwnerAddress(attendee.Value, ownerAddress)))
+                var ownerAttendees = item.Attendees.Where(attendee => IsOwnerAddress(attendee.Value, ownerAddress))
+                    .ToArray();
+                ownerAttendeeAmbiguousObserved |= ownerAttendees.Length > 1;
+                foreach (var attendee in ownerAttendees)
                 {
                     ownerAttendeeObserved = true;
-                    ownerParticipationStatusObserved |= attendee.ParticipationStatus is not null;
+                    // A convenience getter may synthesize NEEDS-ACTION when PARTSTAT was not supplied.
+                    var responses = attendee.Parameters.GetMany("PARTSTAT");
+                    var supplied = responses is { Count: > 0 };
+                    ownerParticipationStatusObserved |= supplied;
+                    var usable = responses is { Count: 1 } && new[]
+                    {
+                        "ACCEPTED", "DECLINED", "TENTATIVE", "NEEDS-ACTION"
+                    }.Contains(responses[0], StringComparer.OrdinalIgnoreCase);
+                    ownerResponseUsableObserved |= ownerAttendees.Length == 1 && usable;
+                    ownerResponseMissingObserved |= !supplied;
+                    ownerResponseUnsupportedObserved |= supplied && !usable;
                 }
             }
             freeAvailabilityObserved |= string.Equals(item.Transparency,
@@ -82,6 +109,7 @@ public sealed partial class AgendaFunction
         }
         return new ParticipationCapabilityReport(ownerAddress is not null, ownerOrganizerObserved,
             ownerAttendeeObserved, ownerParticipationStatusObserved, freeAvailabilityObserved,
-            followedTitleMarkerObserved);
+            followedTitleMarkerObserved, ownerResponseUsableObserved, ownerResponseMissingObserved,
+            ownerResponseUnsupportedObserved, ownerAttendeeAmbiguousObserved);
     }
 }

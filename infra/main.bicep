@@ -17,7 +17,7 @@ param budgetName string
 param budgetAlertEmail string
 
 @secure()
-@description('Exact mailto: address identifying the calendar owner for participation expectations.')
+@description('Protected exact owner mailto: identity for capability observations; does not establish source semantics or enable classification.')
 param agendaOwnerAddress string
 
 @description('Original budget creation month start in UTC; preserve it on repeat deployments.')

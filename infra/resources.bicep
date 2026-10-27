@@ -12,6 +12,7 @@ param budgetName string
 param budgetAlertEmail string
 
 @secure()
+@description('Adapter-only owner mailto: identity for the authorized source preflight; never an HTTP or plugin input.')
 param agendaOwnerAddress string
 
 param budgetStartDate string

@@ -561,6 +561,8 @@ public sealed partial class AgendaFunction
         var json = JsonSerializer.Serialize(result, JsonOptions);
         if (result.Error is not null)
             logger.LogWarning("Agenda failed with code {ErrorCode}.", result.Error.Code);
+        if (result.State != AgendaState.Error && logger.IsEnabled(LogLevel.Information))
+            LogAgenda(result);
         return new ContentResult
         {
             StatusCode = StatusCodes.Status200OK,
@@ -606,6 +608,60 @@ public sealed partial class AgendaFunction
                 Occurrences = result.Secondary.Occurrences.Where(item => admitted[1].Contains(item.Id)).ToArray()
             }
         };
+    }
+
+    private void LogAgenda(AgendaResult result)
+    {
+        var pollId = Guid.NewGuid().ToString("N");
+        // The isolated host forwards formatted messages, not all structured logger properties.
+        logger.LogInformation("Agenda poll {DiagnosticJson}", JsonSerializer.Serialize(new
+        {
+            PollId = pollId,
+            result.State,
+            GeneratedAt = result.GeneratedAt.ToString("O", CultureInfo.InvariantCulture),
+            SourceSucceededAt = result.SourceSucceededAt?.ToString("O", CultureInfo.InvariantCulture),
+            PrimaryDate = result.Primary.Date,
+            PrimaryEligibleTotal = result.Primary.EligibleTotal,
+            SecondaryDate = result.Secondary.Date,
+            SecondaryEligibleTotal = result.Secondary.EligibleTotal
+        }, JsonOptions));
+        foreach (var day in new[] { result.Primary, result.Secondary })
+            foreach (var occurrence in day.Occurrences)
+            {
+                var (kind, start, end) = occurrence switch
+                {
+                    TimedOccurrence timed => ("timed",
+                        timed.StartAt.ToString("O", CultureInfo.InvariantCulture),
+                        timed.EndAt.ToString("O", CultureInfo.InvariantCulture)),
+                    AllDayOccurrence allDay => ("all_day",
+                        allDay.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                        allDay.EndDateExclusive.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
+                    _ => throw new InvalidOperationException("Unknown occurrence kind.")
+                };
+                var title = LimitDiagnosticText(occurrence.Title);
+                var location = LimitDiagnosticText(occurrence.Location);
+                logger.LogInformation("Agenda occurrence {DiagnosticJson}", JsonSerializer.Serialize(new
+                {
+                    PollId = pollId,
+                    OccurrenceId = occurrence.Id,
+                    day.Date,
+                    TimeKind = kind,
+                    Start = start,
+                    EndExclusive = end,
+                    Title = title,
+                    Location = location,
+                    TitleTruncated = title != occurrence.Title,
+                    LocationTruncated = location != occurrence.Location
+                }, JsonOptions));
+            }
+    }
+
+    private static string? LimitDiagnosticText(string? value)
+    {
+        const int limit = 1024;
+        if (value is null || value.Length <= limit)
+            return value;
+        return value[..(char.IsHighSurrogate(value[limit - 1]) ? limit - 1 : limit)];
     }
 
     private static DateOnly NextWorkingDay(DateOnly date)

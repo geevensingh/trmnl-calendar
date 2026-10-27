@@ -107,7 +107,8 @@ exit 0
           return
         }
         if (($args -join ' ') -match 'trmnl/liquid') {
-          $global:LASTEXITCODE = if ($env:DISPLAY_FAIL -eq 'gems') { 56 } else { 0 }
+          $global:LASTEXITCODE = if ($env:DISPLAY_FAIL -eq 'gems' -or
+            ($env:DISPLAY_FAIL -eq 'raster-native' -and ($args -join ' ') -match 'require "oily_png"')) { 56 } else { 0 }
           return
         }
         $global:LASTEXITCODE = 53

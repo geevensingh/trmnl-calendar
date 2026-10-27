@@ -3,11 +3,13 @@ GEM
   specs:
     base64 (0.3.0)
     bigdecimal (4.1.3)
-    chunky_png (1.4.0)
+    chunky_png (1.3.15)
     concurrent-ruby (1.3.8)
     liquid (5.14.0)
       bigdecimal
       strscan (>= 3.1.1)
+    oily_png (1.2.1)
+      chunky_png (~> 1.3.7)
     redcarpet (3.6.1)
     rqrcode (3.2.0)
       chunky_png (~> 1.0)
@@ -31,15 +33,17 @@ PLATFORMS
 
 DEPENDENCIES
   base64
+  oily_png (= 1.2.1)
   trmnl-liquid (= 0.8.2)
   tzinfo-data
 
 CHECKSUMS
   base64 (0.3.0) sha256=27337aeabad6ffae05c265c450490628ef3ebd4b67be58257393227588f5a97b
   bigdecimal (4.1.3) sha256=61ebe1e5e559bdc3cc6f2c0ee7f427321fc838f59611c294356eb04d6e21cf66
-  chunky_png (1.4.0) sha256=89d5b31b55c0cf4da3cf89a2b4ebc3178d8abe8cbaf116a1dba95668502fdcfe
+  chunky_png (1.3.15) sha256=1c55bdd0cbd915b94da7833bf8708a748e8d3810e0b1b6a1310443f89d34b5d9
   concurrent-ruby (1.3.8) sha256=b2f1be836e968ccc78ccfce277ea79c72a88633f22306782c16ff23fb415d1e1
   liquid (5.14.0) sha256=e1020c2b2ee58c7a4d3bfdc7a331537bd27a783353748bff0bf27c6ac0c17065
+  oily_png (1.2.1) sha256=2a8b6392afe486a8f13c727146ffb2c03fa4f98a4cb7faa2e2fd2cd101cc88c3
   redcarpet (3.6.1) sha256=d444910e6aa55480c6bcdc0cdb057626e8a32c054c29e793fa642ba2f155f445
   rqrcode (3.2.0) sha256=64c1494ca6bb67d731330f38b50e3fd09eeab4f5dcd04b608e21218d1d0b9542
   rqrcode_core (2.1.0) sha256=f303b85df89c1b8fc5ee8dc19808c9dc4330e6329b660d99d4a8cbb36ca13051

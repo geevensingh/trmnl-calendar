@@ -3,7 +3,7 @@
 require_relative "../display/timing"
 ValidationTiming.measure("ruby.load") do
   require "bundler/setup"
-  require "chunky_png"
+  require "oily_png"
   require "json"
 end
 ValidationTiming.loaded!

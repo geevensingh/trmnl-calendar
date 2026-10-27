@@ -258,7 +258,8 @@ internal static class SourcePreflightCommand
         string ManagedIdentityAccess = "not_performed",
         string RefreshPersistence = "not_performed",
         string NativeTrmnlPolling = "not_performed",
-        string PhysicalDeviceDelivery = "not_performed");
+        string PhysicalDeviceDelivery = "not_performed",
+        string ParticipationSemantics = "not_verified");
 
     private sealed class CommandOptions
     {

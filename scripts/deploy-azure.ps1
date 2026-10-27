@@ -92,12 +92,15 @@ $ownerUri = $null
 $ownerMailbox = $null
 $ownerAddress = $null
 if (![System.Uri]::TryCreate($parameters.agendaOwnerAddress.value, [System.UriKind]::Absolute, [ref]$ownerUri) -or
-    $ownerUri.Scheme -cne 'mailto' -or $ownerUri.Query -or $ownerUri.Fragment) {
+    $ownerUri.Scheme -cne 'mailto' -or $ownerUri.Query -or $ownerUri.Fragment -or
+    $parameters.agendaOwnerAddress.value -match '\s|\p{Cc}') {
     throw 'agendaOwnerAddress must be one exact mailto: address.'
 }
-$ownerAddress = $ownerUri.GetComponents([System.UriComponents]::Path, [System.UriFormat]::Unescaped)
+$ownerAddress = $ownerUri.GetComponents([System.UriComponents]::AbsoluteUri, [System.UriFormat]::Unescaped).
+    Substring('mailto:'.Length)
 if (![System.Net.Mail.MailAddress]::TryCreate($ownerAddress, [ref]$ownerMailbox) -or
-    $ownerMailbox.Address -cne $ownerAddress -or $ownerAddress.Contains(',')) {
+    $ownerMailbox.Address -cne $ownerAddress -or $ownerAddress.Contains(',') -or
+    $ownerAddress -match '\s|\p{Cc}') {
     throw 'agendaOwnerAddress must be one exact mailto: address.'
 }
 $budgetStart = [DateTimeOffset]::MinValue

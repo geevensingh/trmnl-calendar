@@ -48,6 +48,8 @@ public sealed class SourcePreflightTests
         Assert.False(body.GetProperty("activation_complete").GetBoolean());
         Assert.False(body.GetProperty("delivery_design_approved").GetBoolean());
         Assert.Equal("local_synthetic", body.GetProperty("evidence_scope").GetString());
+        Assert.Equal("not_verified", body.GetProperty("measurement_scope")
+            .GetProperty("participation_semantics").GetString());
         Assert.True(body.GetProperty("comparison").GetProperty("exact_equal").GetBoolean());
         var attempt = Assert.Single(body.GetProperty("attempts").EnumerateArray());
         Assert.Equal("received", attempt.GetProperty("acquisition").GetProperty("code").GetString());
@@ -92,9 +94,184 @@ public sealed class SourcePreflightTests
         Assert.True(capabilities.GetProperty("owner_participation_status_observed").GetBoolean());
         Assert.True(capabilities.GetProperty("free_availability_observed").GetBoolean());
         Assert.True(capabilities.GetProperty("followed_title_marker_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("owner_response_usable_observed").GetBoolean());
+        Assert.False(capabilities.GetProperty("owner_response_missing_observed").GetBoolean());
+        Assert.False(capabilities.GetProperty("owner_response_unsupported_observed").GetBoolean());
+        Assert.False(capabilities.GetProperty("owner_attendee_ambiguous_observed").GetBoolean());
+        Assert.Equal(new[]
+        {
+            "owner_address_configured", "owner_organizer_observed", "owner_attendee_observed",
+            "owner_participation_status_observed", "free_availability_observed", "followed_title_marker_observed",
+            "owner_response_usable_observed", "owner_response_missing_observed",
+            "owner_response_unsupported_observed", "owner_attendee_ambiguous_observed"
+        }.Order(StringComparer.Ordinal), capabilities.EnumerateObject().Select(field => field.Name)
+            .Order(StringComparer.Ordinal));
+        Assert.All(capabilities.EnumerateObject(), field =>
+            Assert.Contains(field.Value.ValueKind, new[] { JsonValueKind.True, JsonValueKind.False }));
         Assert.DoesNotContain(ownerAddress, result.Output + result.Errors);
         Assert.DoesNotContain("owner@example.invalid", result.Output + result.Errors);
         Assert.DoesNotContain(Sentinel, result.Output + result.Errors);
+    }
+
+    [Fact]
+    public async Task A_parser_default_response_is_not_reported_as_supplied_owner_response_evidence()
+    {
+        await using var source = await SyntheticSource.Start(async context =>
+        {
+            context.Response.ContentType = "text/calendar";
+            await context.Response.WriteAsync(Calendar(
+                "DTSTART:20261102T170000Z\nDURATION:PT1H\n"
+                + "ATTENDEE:mailto:owner@example.invalid\nSTATUS:CONFIRMED"));
+        });
+
+        var result = await RunWithOwnerAddress("mailto:owner@example.invalid", new { source = source.Url },
+            "--authorize-source-access", "--synthetic-local");
+
+        Assert.Equal(0, result.ExitCode);
+        using var report = JsonDocument.Parse(result.Output);
+        var capabilities = Assert.Single(report.RootElement.GetProperty("attempts").EnumerateArray())
+            .GetProperty("interpretation").GetProperty("participation_capabilities");
+        Assert.True(capabilities.GetProperty("owner_attendee_observed").GetBoolean());
+        Assert.False(capabilities.GetProperty("owner_participation_status_observed").GetBoolean());
+        Assert.False(capabilities.GetProperty("owner_response_usable_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("owner_response_missing_observed").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("ACCEPTED", true)]
+    [InlineData("DECLINED", true)]
+    [InlineData("TENTATIVE", true)]
+    [InlineData("NEEDS-ACTION", true)]
+    [InlineData("accepted", true)]
+    [InlineData("DELEGATED", false)]
+    [InlineData("COMPLETED", false)]
+    [InlineData("IN-PROCESS", false)]
+    [InlineData("ACCEPTED,DECLINED", false)]
+    [InlineData("ACCEPTED;PARTSTAT=DECLINED", false)]
+    [InlineData(Sentinel, false)]
+    public async Task Supplied_owner_responses_distinguish_usable_and_unsupported_evidence(
+        string response, bool usable)
+    {
+        await using var source = await SyntheticSource.Start(async context =>
+        {
+            context.Response.ContentType = "text/calendar";
+            await context.Response.WriteAsync(Calendar(
+                "DTSTART:20261102T170000Z\nDURATION:PT1H\n"
+                + $"ATTENDEE;CN={Sentinel};PARTSTAT={response}:mailto:owner@example.invalid\n"
+                + $"ATTENDEE;PARTSTAT=DECLINED:mailto:{Sentinel}@example.invalid\nSTATUS:CONFIRMED"));
+        });
+
+        var result = await RunWithOwnerAddress("mailto:owner@example.invalid", new { source = source.Url },
+            "--authorize-source-access", "--synthetic-local");
+
+        Assert.Equal(0, result.ExitCode);
+        using var report = JsonDocument.Parse(result.Output);
+        var capabilities = Assert.Single(report.RootElement.GetProperty("attempts").EnumerateArray())
+            .GetProperty("interpretation").GetProperty("participation_capabilities");
+        Assert.True(capabilities.GetProperty("owner_attendee_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("owner_participation_status_observed").GetBoolean());
+        Assert.Equal(usable, capabilities.GetProperty("owner_response_usable_observed").GetBoolean());
+        Assert.Equal(!usable, capabilities.GetProperty("owner_response_unsupported_observed").GetBoolean());
+        Assert.False(capabilities.GetProperty("owner_response_missing_observed").GetBoolean());
+        Assert.DoesNotContain("owner@example.invalid", result.Output + result.Errors);
+        Assert.DoesNotContain("CONFIRMED", result.Output + result.Errors);
+    }
+
+    [Theory]
+    [InlineData("DECLINED")]
+    [InlineData("ACCEPTED")]
+    public async Task Duplicate_owner_attendees_are_ambiguous_even_when_their_supplied_responses_agree(
+        string secondResponse)
+    {
+        await using var source = await SyntheticSource.Start(async context =>
+        {
+            context.Response.ContentType = "text/calendar";
+            await context.Response.WriteAsync(Calendar(
+                "DTSTART:20261102T170000Z\nDURATION:PT1H\n"
+                + "ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\n"
+                + $"ATTENDEE;CN={Sentinel};PARTSTAT={secondResponse}:mailto:OWNER@EXAMPLE.INVALID"));
+        });
+
+        var result = await RunWithOwnerAddress("mailto:owner@example.invalid", new { source = source.Url },
+            "--authorize-source-access", "--synthetic-local");
+
+        Assert.Equal(0, result.ExitCode);
+        using var report = JsonDocument.Parse(result.Output);
+        var capabilities = Assert.Single(report.RootElement.GetProperty("attempts").EnumerateArray())
+            .GetProperty("interpretation").GetProperty("participation_capabilities");
+        Assert.True(capabilities.GetProperty("owner_attendee_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("owner_participation_status_observed").GetBoolean());
+        Assert.False(capabilities.GetProperty("owner_response_usable_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("owner_attendee_ambiguous_observed").GetBoolean());
+        Assert.DoesNotContain("owner@example.invalid", result.Output + result.Errors);
+        Assert.DoesNotContain("OWNER@EXAMPLE.INVALID", result.Output + result.Errors);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("mailto:invalid")]
+    [InlineData("https://owner.example.invalid")]
+    [InlineData("mailto:owner@example.invalid?subject=private")]
+    [InlineData("mailto:owner@example.invalid#private")]
+    [InlineData("mailto:owner@example.invalid,other@example.invalid")]
+    [InlineData(" mailto:owner@example.invalid")]
+    [InlineData("mailto:owner@example.invalid\r\n")]
+    public async Task Missing_or_invalid_owner_configuration_cannot_establish_owner_evidence(string? ownerAddress)
+    {
+        await using var source = await SyntheticSource.Start(async context =>
+        {
+            context.Response.ContentType = "text/calendar";
+            await context.Response.WriteAsync(Calendar(
+                "DTSTART:20261102T170000Z\nDURATION:PT1H\n"
+                + "ORGANIZER:mailto:owner@example.invalid\n"
+                + "ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\n"
+                + $"TRANSP:TRANSPARENT\nSUMMARY:Following: {Sentinel}"));
+        });
+
+        var result = await RunWithOwnerAddress(ownerAddress, new { source = source.Url },
+            "--authorize-source-access", "--synthetic-local");
+
+        Assert.Equal(0, result.ExitCode);
+        using var report = JsonDocument.Parse(result.Output);
+        var capabilities = Assert.Single(report.RootElement.GetProperty("attempts").EnumerateArray())
+            .GetProperty("interpretation").GetProperty("participation_capabilities");
+        foreach (var field in capabilities.EnumerateObject().Where(field => field.Name.StartsWith("owner_")))
+            Assert.False(field.Value.GetBoolean(), field.Name);
+        Assert.True(capabilities.GetProperty("free_availability_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("followed_title_marker_observed").GetBoolean());
+        Assert.DoesNotContain("owner@example.invalid", result.Output + result.Errors);
+        Assert.DoesNotContain("private", result.Output + result.Errors);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("STATUS:CONFIRMED")]
+    [InlineData("STATUS:TENTATIVE")]
+    [InlineData("ATTENDEE;CN=owner@example.invalid;PARTSTAT=ACCEPTED:mailto:other@example.invalid")]
+    [InlineData("ORGANIZER:mailto:other@example.invalid\nX-MICROSOFT-CDO-BUSYSTATUS:FREE")]
+    public async Task Missing_owner_signals_are_not_inferred_from_event_status_names_or_other_attendees(
+        string metadata)
+    {
+        await using var source = await SyntheticSource.Start(async context =>
+        {
+            context.Response.ContentType = "text/calendar";
+            await context.Response.WriteAsync(Calendar(
+                $"DTSTART:20261102T170000Z\nDURATION:PT1H\nSUMMARY:{Sentinel}\n{metadata}"));
+        });
+
+        var result = await RunWithOwnerAddress("mailto:owner@example.invalid", new { source = source.Url },
+            "--authorize-source-access", "--synthetic-local");
+
+        Assert.Equal(0, result.ExitCode);
+        using var report = JsonDocument.Parse(result.Output);
+        var capabilities = Assert.Single(report.RootElement.GetProperty("attempts").EnumerateArray())
+            .GetProperty("interpretation").GetProperty("participation_capabilities");
+        Assert.True(capabilities.GetProperty("owner_address_configured").GetBoolean());
+        foreach (var field in capabilities.EnumerateObject().Where(field => field.Name != "owner_address_configured"))
+            Assert.False(field.Value.GetBoolean(), field.Name);
+        Assert.DoesNotContain("owner@example.invalid", result.Output + result.Errors);
+        Assert.DoesNotContain("other@example.invalid", result.Output + result.Errors);
     }
 
     [Theory]
@@ -196,6 +373,7 @@ public sealed class SourcePreflightTests
             Assert.Equal(acquisitionCode, acquisition.GetProperty("code").GetString());
             Assert.Equal(interpretationCode, interpretation.GetProperty("code").GetString());
             Assert.Equal(interpretationCode != "not_performed", interpretation.GetProperty("performed").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, interpretation.GetProperty("participation_capabilities").ValueKind);
             Assert.InRange(acquisition.GetProperty("headers_ms").GetInt64(), 0, 29_999);
             Assert.Equal(scenario == "html", acquisition.GetProperty("html_media_type").GetBoolean());
             if (scenario is "redirected" or "rejected")
@@ -679,7 +857,7 @@ public sealed class SourcePreflightTests
         RunInternal(JsonSerializer.Serialize(input), null, arguments);
 
     private static Task<CommandResult> RunWithOwnerAddress(
-        string ownerAddress, object input, params string[] arguments) =>
+        string? ownerAddress, object input, params string[] arguments) =>
         RunInternal(JsonSerializer.Serialize(input), ownerAddress, arguments);
 
     private static Task<CommandResult> RunRaw(string? input, params string[] arguments) =>
@@ -757,13 +935,16 @@ public sealed class SourcePreflightTests
                         "performed", "exact_equal", "same_after_trimming", "same_uri_representation",
                         "participation_capabilities", "owner_address_configured", "owner_organizer_observed",
                         "owner_attendee_observed", "owner_participation_status_observed",
+                        "owner_response_usable_observed", "owner_response_missing_observed",
+                        "owner_response_unsupported_observed",
+                        "owner_attendee_ambiguous_observed",
                         "free_availability_observed", "followed_title_marker_observed",
                         "number", "acquisition", "interpretation", "elapsed_ms", "code", "http_status",
                         "calendar_media_type", "html_media_type", "utf8_bytes", "headers_ms", "body_ms",
                         "acquisition_budget_ms", "overall_budget_ms", "fits_observed_budget", "attempt_number",
                         "process_initialization", "azure_cold_start", "host_authentication",
                         "managed_identity_access", "refresh_persistence", "native_trmnl_polling",
-                        "physical_device_delivery", "failure_code", "authentication_enforced",
+                        "physical_device_delivery", "participation_semantics", "failure_code", "authentication_enforced",
                         "measured_before_probes", "cold_start_confirmed", "retry_used", "state", "error_code",
                         "raw_response_utf8_bytes", "combined_polling_utf8_bytes"
                     });
@@ -777,7 +958,7 @@ public sealed class SourcePreflightTests
             case JsonValueKind.String:
                 Assert.Contains(value.GetString(), new[]
                 {
-                    "not_performed", "not_measured", "local_synthetic", "operator_machine", "deployed_http_only",
+                    "not_performed", "not_measured", "not_verified", "local_synthetic", "operator_machine", "deployed_http_only",
                     "source_access_not_authorized", "invalid_options", "protected_terminal_required",
                     "invalid_protected_input", "invalid_input", "reference_mismatch", "input_cancelled",
                     "report_write_failed", "scheduled_refresh_budget_exceeded", "cache_only_poll_failed",

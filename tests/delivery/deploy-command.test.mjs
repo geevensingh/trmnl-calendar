@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -174,6 +174,66 @@ test("what-if sends only a runtime parameter-file reference and emits no recipie
   assert.match(refused.stderr, /unapproved parameter/);
   assert.doesNotMatch(refused.stderr, /CONFIDENTIAL/);
   assert.equal((await readFile(callsPath, "utf8")).trim().split(/\r?\n/).length, 1);
+});
+
+test("owner identity validation rejects missing and unsafe values before Azure without disclosing them", async t => {
+  await mkdir(join(root, "artifacts"), { recursive: true });
+  const directory = await mkdtemp(join(root, "artifacts", "agenda-owner-validation-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const callsPath = join(directory, "azure-calls.jsonl");
+  const parameterPath = join(directory, "parameters.json");
+  const document = JSON.parse(await readFile(join(root, "infra", "parameters.example.json"), "utf8"));
+  for (const [name, parameter] of Object.entries(document.parameters)) {
+    if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
+      ? "SYNTHETIC_PRIVATE_RECIPIENT@example.invalid"
+      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z" : "syntheticresource";
+  }
+  const stub = `
+    function global:az {
+      ConvertTo-Json -InputObject @($args) -Compress | Add-Content -LiteralPath $env:AZURE_TEST_CALLS
+      '{"status":"Succeeded","changes":[]}'
+      $global:LASTEXITCODE = 0
+    }
+    & .\\scripts\\deploy-azure.ps1 -Mode WhatIf -SubscriptionId 00000000-0000-0000-0000-000000000001 -ParametersFile $env:AZURE_TEST_PARAMETERS
+  `;
+  const run = () => spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", stub], {
+    cwd: root, encoding: "utf8", env: {
+      ...process.env, AZURE_TEST_CALLS: callsPath, AZURE_TEST_PARAMETERS: parameterPath
+    }
+  });
+  const privateAddress = "SYNTHETIC_OWNER@example.invalid";
+  const invalid = [
+    undefined, "", " ", 42, null,
+    `https://${privateAddress}`, `mailto:${privateAddress}?subject=private`,
+    `mailto:${privateAddress}#private`, `mailto:${privateAddress},other@example.invalid`,
+    `mailto:${privateAddress};other@example.invalid`, `mailto:Display Name <${privateAddress}>`,
+    ` mailto:${privateAddress}`, `mailto:${privateAddress} `, `mailto:${privateAddress}\r\n`,
+    `mailto:${privateAddress}%0A`, `mailto:%20${privateAddress}`,
+    `mailto:Display%20Name%20%3C${privateAddress}%3E`, "mailto:SYNTHETIC_OWNER"
+  ];
+  for (const [index, owner] of invalid.entries()) {
+    if (owner === undefined) delete document.parameters.agendaOwnerAddress;
+    else document.parameters.agendaOwnerAddress = { value: owner };
+    await writeFile(parameterPath, JSON.stringify(document));
+    const refused = run();
+    assert.equal(refused.status, 1, `owner input case ${index}`);
+    assert.match(refused.stderr, /runtime parameter|Runtime parameter|one exact mailto: address/);
+    assert.doesNotMatch(refused.stdout + refused.stderr, /SYNTHETIC_OWNER|SYNTHETIC_PRIVATE_RECIPIENT/);
+  }
+  await assert.rejects(readFile(callsPath), { code: "ENOENT" });
+
+  for (const owner of [`mailto:${privateAddress}`, `MAILTO:${privateAddress}`, "mailto:SYNTHETIC_OWNER%2Bcalendar@example.invalid"]) {
+    document.parameters.agendaOwnerAddress = { value: owner };
+    await writeFile(parameterPath, JSON.stringify(document));
+    const accepted = run();
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(JSON.parse(accepted.stdout).azure_resources_changed, false);
+    assert.doesNotMatch(accepted.stdout + accepted.stderr, /SYNTHETIC_OWNER|SYNTHETIC_PRIVATE_RECIPIENT/);
+  }
+  const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every(args => args.includes(`@${parameterPath}`)));
+  assert.doesNotMatch(JSON.stringify(calls), /SYNTHETIC_OWNER|SYNTHETIC_PRIVATE_RECIPIENT/);
 });
 
 test("code deployment requires a clean reviewed package and the approved on-demand .NET 10 Flex target", async t => {

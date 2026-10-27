@@ -113,7 +113,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
             Assert.Null(await page.Locator("body").GetAttributeAsync("data-leaked"));
             await Check(page);
         }
-        foreach (var scenario in new[] { "empty-primary", "all-day-multiday", "long-text", "stale", "error-source" })
+        foreach (var scenario in new[] { "empty-primary", "all-day-multiday", "long-text", "participation-labels", "stale", "error-source" })
         {
             await page.Locator("#scenario").SelectOptionAsync(scenario);
             await Ready(page);
@@ -141,6 +141,66 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
         await page.Locator("#overview").ClickAsync();
         await Ready(page);
         await Assertions.Expect(page.Locator("#target")).ToHaveValueAsync("v2-half_vertical");
+    }
+
+    [Fact]
+    public async Task Required_participation_values_update_both_workbench_sides_without_defaults_or_stale_success()
+    {
+        await using var fixture = await Workspace.Create();
+        var running = await fixture.Start();
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await Page(browser, running);
+        await Ready(page);
+        foreach (var (value, label) in new[]
+        {
+            ("definite", "Definite"), ("likely", "Likely"), ("maybe", "Maybe"),
+            ("unlikely", "Unlikely"), ("unknown", "Unknown")
+        })
+        {
+            var old = await ComparisonId(page, "og-full");
+            var scenario = fixture.Scenario("reference");
+            scenario["id"] = "normal-mixed";
+            scenario["agenda"]!["secondary"]!["eligible_total"] = 0;
+            scenario["agenda"]!["primary"]!["occurrences"]![0]!["participation_expectation"] = value;
+            scenario["agenda"]!["primary"]!["occurrences"]![0]!["title"] =
+                $"<svg onload=window.pwn=1> {new string('W', 300)}";
+            await fixture.WriteScenario("normal-mixed", scenario);
+            await NewComparison(page, "og-full", old);
+            await SameInputs(page, "og-full");
+            foreach (var side in new[] { "baseline", "candidate" })
+            {
+                var frame = await Frame(page, "og-full", side);
+                await Assertions.Expect(frame.Locator(".agenda-participation:visible")).ToHaveTextAsync(label);
+                Assert.Null(await frame.EvaluateAsync<int?>("window.pwn"));
+                Assert.Equal(0, await frame.Locator(".agenda svg").CountAsync());
+            }
+            await Check(page);
+        }
+        foreach (var value in new string?[] { null, "CONFIDENTIAL_INVALID_EXPECTATION" })
+        {
+            var scenario = fixture.Scenario("normal-mixed");
+            var occurrence = scenario["agenda"]!["primary"]!["occurrences"]![0]!.AsObject();
+            if (value is null) occurrence.Remove("participation_expectation");
+            else occurrence["participation_expectation"] = value;
+            await fixture.WriteScenario("normal-mixed", scenario);
+            await Failed(page, "participation_expectation");
+            Assert.DoesNotContain("CONFIDENTIAL", await page.Locator("#status").InnerTextAsync());
+            await Assertions.Expect(page.Locator("#checks")).ToHaveAttributeAsync("data-state", "unchecked");
+            await fixture.RestoreScenario("normal-mixed");
+            await Ready(page);
+        }
+        foreach (var version in new[] { 1, 3 })
+        {
+            var scenario = fixture.Scenario("normal-mixed");
+            scenario["agenda"]!["schema_version"] = version;
+            await fixture.WriteScenario("normal-mixed", scenario);
+            await Failed(page, "schema_version");
+            await fixture.RestoreScenario("normal-mixed");
+            await Ready(page);
+        }
+        await Assertions.Expect(page.Locator("#baseline-commit")).ToHaveTextAsync(fixture.Baseline);
+        await Check(page);
     }
 
     [Fact]
@@ -406,7 +466,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
     private sealed class Workspace : IAsyncDisposable
     {
         private readonly List<(Process Process, Task<string> Errors)> processes = [];
-        internal string Root { get; } = Path.Combine(Path.GetTempPath(), "agenda-workbench-tests", Guid.NewGuid().ToString("N"));
+        internal string Root { get; } = Path.Combine(DisplayTests.Root, "artifacts", "agenda-workbench-tests", Guid.NewGuid().ToString("N"));
         internal string Template { get; private set; } = "";
         internal string Baseline { get; private set; } = "";
 

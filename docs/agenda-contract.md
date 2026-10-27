@@ -16,7 +16,7 @@ The agenda module's public interface is `POST /api/agenda`, with function-scoped
 
 This deliberately preserves quotes, newlines, and malformed edited text for validation at the HTTP interface. The request must be an object with exactly this one required string field. Missing fields, nulls, duplicate/unknown fields, malformed outer or inner JSON (including invalid Unicode escapes), and non-array rule configuration are `configuration_invalid`. The entire UTF-8 request is limited to 16 KiB, inclusive, and both JSON documents have a maximum nesting depth of 16. There is no implicit default or old-rules fallback.
 
-The source URL is secret runtime configuration `Agenda__SourceUrl`, never an HTTP input, display setting, query parameter, or result field. The owner identity used for participation expectation is adapter-side runtime configuration `Agenda__OwnerAddress`, an exact `mailto:` address from the calendar. It is not a request field or result field; address aliases are not inferred.
+The source URL is secret runtime configuration `Agenda__SourceUrl`, never an HTTP input, display setting, query parameter, or result field. Owner identity for protected capability evidence is adapter-side runtime configuration `Agenda__OwnerAddress`, an exact `mailto:` address from the calendar. It is not a request field or result field; address aliases are not inferred. The intermediate Unknown-only tracer does not use this setting to classify occurrences.
 
 ### Exclusion rules
 
@@ -66,7 +66,7 @@ Authorized, completed polls return HTTP 200 and `application/json`, with `Cache-
       "time_kind": "timed",
       "id": "opaque-occurrence-identifier",
       "title": "Synthetic planning",
-      "participation_expectation": "likely",
+      "participation_expectation": "unknown",
       "location": "Studio A",
       "start_at": "2026-10-23T18:00:00+00:00",
       "end_at": "2026-10-23T19:00:00+00:00"
@@ -102,17 +102,9 @@ Each day has ISO date-only `date`, a literal weekday/date `label` (not misleadin
 
 Each occurrence has an opaque `id`, `title`, required `participation_expectation`, optional/null `location`, and a `time_kind` discriminator. The expectation is one of `definite`, `likely`, `maybe`, `unlikely`, or `unknown`; `unknown` means there is insufficient owner-specific evidence, not the lowest likelihood. Descriptions, attendees, organizer addresses, source URL, raw UID, and rule contents are absent. IDs distinguish occurrences; consumers must not decode them. The implementation hashes the parser's UID and resolved UTC start for timed occurrences, or its date-only start for all-day occurrences. It uses Ical.Net's normalization and occurrence evaluation, not a separate hand-written RFC parser.
 
-Participation expectation uses the following precedence on the effective event occurrence:
+**Intermediate tracer (#61): every valid real timed or all-day occurrence has `unknown`.** This includes ordinary and changed recurring occurrences, organizer/attendee responses, explicit Free/transparent events, and otherwise eligible `Following: ` events. The default Following-title exclusion still applies; a deliberate empty rule array still disables exclusions. Unknown here records intentionally deferred classification, not a conclusion that the publication lacks metadata. Source/configuration/storage failures remain errors with their existing totals, empty occurrences, and freshness behavior.
 
-| Evidence | Expectation |
-|---|---|
-| Explicit transparent (`TRANSP:TRANSPARENT`), a recognized `Following: ` title marker, or the calendar owner's declined response | `unlikely` |
-| Otherwise, the configured calendar owner is the organizer | `definite` |
-| Otherwise, the configured owner's response is accepted | `likely` |
-| Otherwise, the configured owner's response is tentative or the owner's attendee entry is unanswered | `maybe` |
-| Otherwise, including missing owner identity, unmatched/ambiguous owner attendees, or insufficient evidence | `unknown` |
-
-Free/transparent, followed, and declined evidence outranks organizer role and acceptance. Only an explicitly supplied transparent property is evidence of Free; an absent transparency property is not. A `Following: ` marker follows the existing exact title-prefix convention and the default exclusion remains unchanged; a matching event gets a label only if other rules leave it eligible. An owner attendee entry with no response is positively established unanswered evidence; absence of the owner attendee is not. Event-level `STATUS:TENTATIVE` is distinct from the owner's `PARTSTAT` and does not imply `maybe`. Exact address matching uses only the configured `mailto:` address; it does not use attendee order, display names, titles, or guessed aliases. If owner identity is absent or invalid, only independently supported low-participation evidence can classify an event; otherwise it is `unknown`.
+The other four controlled values are accepted by the version-2 contract and exercised by synthetic scenarios through the same production renderer. They are supplied presentation examples, not evidence that the adapter can derive them from the actual publication. The eventual owner-bound precedence is specified in [#58](https://github.com/geevensingh/trmnl-calendar/issues/58); actual-source evidence [#60](https://github.com/geevensingh/trmnl-calendar/issues/60) must be accepted before the dependent classification and recurrence/persistence slices (#62/#63) proceed. No first-attendee, title, status, or owner-identity inference is enabled by this tracer.
 
 The protected source preflight reports only allowlisted booleans for whether the configured owner identity and matching organizer/attendee/response signals, transparent events, and the followed title marker were observed. It does not print addresses or calendar content. These observations are not a guarantee that every event carries the relevant metadata; actual publication capability remains an owner-authorized evidence gate.
 
@@ -178,7 +170,7 @@ The display consumes this result and the platform's view context. It does not se
 
 Reserve both selected-day headers and absolute source-success information before admitting ordered primary rows. Valid zero-eligible days use one date/`No remaining events` line. Populated-day counts remain beside dates on the left, showing `N events` when complete or `N of M events shown` otherwise, with natural singular/plural grammar. The displayed count is the number of visible details; the eligible total includes occurrences not supplied as rows. Zero displayed rows never imply an empty day. There is no standalone overflow row or footer: source-success metadata is at the right of the primary header in wide views and may use its second line in narrow views. Unavailable presentation retains last-success information or `No successful source check` without fabricating valid days or counts.
 
-Secondary details use only space left after the supplied primary rows fit; optional locations are admitted last and never reduce the essential visible row count. Counts update during actual-space fitting before native capture readiness and may wrap beside longer dates rather than shrinking required text. Timed entries retain readable 21px logical start-end AM/PM labels and titles. All-day entries use `time_kind` to render `All day` without accessing or inventing timed instants. Every displayed event keeps its explicit right-hand participation label; titles yield width and end-ellipsis on one line rather than hiding the label. Existing event/title/time typography is retained; optional locations may be elided or removed but cannot clip mandatory information. No legend, extra participation badge, meter, or fading is used. Descriptions and attendees are never rendered.
+Secondary details use only space left after the supplied primary rows fit; optional locations are admitted last and never reduce the essential visible row count. Counts update during actual-space fitting before native capture readiness and may wrap beside longer dates rather than shrinking required text. Timed entries retain readable 21px logical start-end AM/PM labels and titles. All-day entries use `time_kind` to render `All day` without accessing or inventing timed instants. Every displayed event keeps its exact right-hand participation label: Definite, Likely, Maybe, Unlikely, or Unknown. Definite has stronger high-contrast inverse emphasis; the other labels remain unfaded readable text. Titles yield width and end-ellipsis on one line rather than hiding the label. Existing event/title/time typography is retained; optional locations may be elided or removed but cannot clip mandatory information. No legend, extra participation badge, meter, or fading is used. Descriptions and attendees are never rendered.
 
 Overflow is `eligible_total - visible_rows`, not supplied-array length minus visible rows. Synthetic bounded-row fixtures exercise totals larger than the supplied array without changing the current adapter's 95,000-byte policy: it still returns `agenda_too_large` instead of silently truncating. Any future producer-side bounding must preserve these complete totals and ordered occurrence identities.
 

@@ -71,6 +71,8 @@ export function validateAgenda(data) {
       const occurrencePath = `${path}.occurrences[${index}]`;
       if (occurrence === null || typeof occurrence !== "object" || Array.isArray(occurrence))
         reject(occurrencePath, "supply a timed or all_day occurrence object.");
+      if (!Object.hasOwn(occurrence, "participation_expectation"))
+        reject(`${occurrencePath}.participation_expectation`, "supply the required participation expectation.");
       const allDay = occurrence.time_kind === "all_day";
       const timing = allDay ? ["start_date", "end_date_exclusive"] : ["start_at", "end_at"];
       if (!fields(occurrence, ["time_kind", "id", "title", "participation_expectation", ...timing], ["location"])

@@ -23,6 +23,76 @@ public sealed class AdaptiveDisplayTests
 
     public static IEnumerable<object[]> ScenarioCases => AgendaScenarios.Ids.Select(id => new object[] { id });
 
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Every_controlled_label_remains_readable_with_timed_and_all_day_titles_on_both_days(
+        NativeView view)
+    {
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        foreach (var (value, label, title) in new[]
+        {
+            ("definite", "Definite", "Planning"),
+            ("likely", "Likely", string.Join(" ", Enumerable.Repeat("Long planning title", 20))),
+            ("maybe", "Maybe", new string('W', 600)),
+            ("unlikely", "Unlikely", $"<svg onload=window.pwn=1> & \"quoted\" {new string('W', 600)}"),
+            ("unknown", "Unknown", $"Unknown evidence {new string('W', 600)}")
+        })
+            foreach (var name in new[] { "primary", "secondary" })
+            {
+                var data = Agenda(primaryRows: name == "primary" ? 1 : 0,
+                    secondaryRows: name == "secondary" ? 1 : 0);
+                var occurrence = data[name]!["occurrences"]![0]!.AsObject();
+                occurrence["title"] = title;
+                occurrence["participation_expectation"] = value;
+                occurrence["location"] = "Studio <img src=x onerror=window.locationPwn=1> & North";
+                if (name == "secondary")
+                {
+                    occurrence["time_kind"] = "all_day";
+                    occurrence.Remove("start_at");
+                    occurrence.Remove("end_at");
+                    occurrence["start_date"] = "2026-10-26";
+                    occurrence["end_date_exclusive"] = "2026-10-27";
+                }
+                await DisplayTests.Show(page, data, view.Placement, view.Device);
+                await NativeBounds(page, view);
+                var row = page.Locator($".agenda-{name} tbody tr:visible");
+                await Assertions.Expect(row).ToHaveCountAsync(1);
+                var participation = row.Locator(".agenda-participation");
+                Assert.Equal(label, await participation.InnerTextAsync());
+                await VisibleInsideView(participation);
+                await ReadableRows(row);
+                var metrics = await participation.EvaluateAsync<JsonElement>("""
+                    element => ({
+                      weight: Number(getComputedStyle(element).fontWeight),
+                      color: getComputedStyle(element).color,
+                      background: getComputedStyle(element).backgroundColor
+                    })
+                    """);
+                if (value == "definite")
+                {
+                    Assert.True(metrics.GetProperty("weight").GetDouble() >= 700);
+                    Assert.Equal("rgb(255, 255, 255)", metrics.GetProperty("color").GetString());
+                    Assert.Equal("rgb(0, 0, 0)", metrics.GetProperty("background").GetString());
+                }
+                Assert.Equal(title, await row.Locator("td .title").TextContentAsync());
+                Assert.Equal(name == "primary" ? "11:00 AM - 12:00 PM" : "All day",
+                    (await row.Locator(".agenda-time .label").InnerTextAsync()).Trim());
+                Assert.DoesNotContain("legend", await page.Locator(".agenda").InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
+                Assert.Equal(0, await page.Locator(".agenda svg, .agenda img, .agenda script").CountAsync());
+                Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
+                Assert.Null(await page.EvaluateAsync<int?>("window.locationPwn"));
+                await DayCount(page, name, 1);
+                await VisibleInk(page, $"participation-{value}-{name}-{view.Device}-{view.Placement}", view,
+                    await page.Locator(".agenda-heading .title, .agenda-day-label .label, [data-agenda-source], tbody tr:not([hidden]) .label--large, tbody tr:not([hidden]) td .title").AllAsync());
+            }
+    }
+
     [Fact]
     public async Task Empty_primary_dense_secondary_uses_reclaimed_space_without_changing_event_geometry()
     {
@@ -116,7 +186,7 @@ public sealed class AdaptiveDisplayTests
                 await page.Locator("""
                     .agenda-heading .title, .agenda-day-label .label, .agenda-source > span, [data-agenda-source],
                     .agenda-warning > *, .agenda > .title, .agenda > .label:not(.agenda-source), .agenda > .description,
-                    tbody tr:not([hidden]) .label--large
+                    tbody tr:not([hidden]) .label--large, tbody tr:not([hidden]) td .title
                     """).AllAsync());
             Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
             Assert.Null(await page.EvaluateAsync<int?>("window.locationPwn"));
@@ -928,10 +998,13 @@ public sealed class AdaptiveDisplayTests
     internal static async Task VisibleInk(IPage page, string name, NativeView view, IEnumerable<ILocator> required)
     {
         var regions = new List<JsonElement>();
+        var participationRegions = new HashSet<int>();
         var contents = required.ToList();
         contents.AddRange(await page.Locator(".agenda-participation:visible").AllAsync());
         foreach (var content in contents)
         {
+            if (await content.EvaluateAsync<bool>("element => element.matches('.agenda-participation')"))
+                participationRegions.Add(regions.Count);
             await VisibleInsideView(content, textMayBeTruncated:
                 await content.EvaluateAsync<bool>("element => element.matches('td .title')"));
             regions.Add(await content.EvaluateAsync<JsonElement>("""
@@ -946,11 +1019,33 @@ public sealed class AdaptiveDisplayTests
         var screenshot = await page.ScreenshotAsync(new() { Path = image });
         Assert.Equal(view.PhysicalWidth, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
         Assert.Equal(view.PhysicalHeight, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
+        var comparison = Path.Combine(DisplayTests.Root, "artifacts", $"{name}-without-label-ink.png");
+        var labels = page.Locator(".agenda-participation:visible");
+        var styles = await labels.EvaluateAllAsync<string?[]>("elements => elements.map(element => element.getAttribute('style'))");
+        try
+        {
+            await labels.EvaluateAllAsync<object?>("elements => elements.forEach(element => element.style.setProperty('color', 'transparent', 'important'))");
+            await page.ScreenshotAsync(new() { Path = comparison });
+        }
+        finally
+        {
+            await labels.EvaluateAllAsync<object?>("""
+                (elements, styles) => elements.forEach((element, index) => {
+                  if (styles[index] === null) element.removeAttribute("style");
+                  else element.setAttribute("style", styles[index]);
+                })
+                """, styles);
+        }
         using var ink = JsonDocument.Parse(DisplayTests.RunRuby(
-            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image, regions }));
-        foreach (var region in ink.RootElement.EnumerateArray())
+            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image, comparison_image = comparison, regions }));
+        foreach (var (region, index) in ink.RootElement.EnumerateArray().Select((region, index) => (region, index)))
+        {
             Assert.True(region.GetProperty("dark_pixels").GetInt32() >= 20,
                 $"Required text has no readable raster ink: {region.GetProperty("text").GetString()}");
+            if (participationRegions.Contains(index))
+                Assert.True(region.GetProperty("different_pixels").GetInt32() >= 20,
+                    $"Participation glyphs must paint visible ink, not just a label background: {region.GetProperty("text").GetString()}");
+        }
     }
 
     private static async Task TitleEndInk(IPage page, ILocator title, string name, NativeView view, bool overflowing)

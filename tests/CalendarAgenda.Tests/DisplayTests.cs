@@ -6,9 +6,13 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Playwright;
 using CalendarAgenda;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -141,6 +145,109 @@ public sealed class DisplayTests
     }
 
     [Fact]
+    public async Task Unknown_tracer_flows_from_synthetic_refresh_cache_and_HTTP_to_all_six_native_views()
+    {
+        const string calendar = """
+            BEGIN:VCALENDAR
+            VERSION:2.0
+            PRODID:-//TRMNL Calendar//Synthetic tracer//EN
+            BEGIN:VEVENT
+            UID:CONFIDENTIAL_ALL_DAY@synthetic.invalid
+            DTSTAMP:20261018T120000Z
+            DTSTART;VALUE=DATE:20261019
+            DTEND;VALUE=DATE:20261021
+            SUMMARY:Workshop
+            ORGANIZER:mailto:CONFIDENTIAL_OWNER@synthetic.invalid
+            DESCRIPTION:CONFIDENTIAL_DESCRIPTION
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:CONFIDENTIAL_PRIMARY@synthetic.invalid
+            DTSTAMP:20261018T120000Z
+            DTSTART:20261019T190000Z
+            DTEND:20261019T200000Z
+            SUMMARY:Following: Planning <svg onload=window.pwn=1>
+            LOCATION:Studio A
+            TRANSP:TRANSPARENT
+            ATTENDEE;PARTSTAT=ACCEPTED:mailto:CONFIDENTIAL_OWNER@synthetic.invalid
+            ATTENDEE;PARTSTAT=DECLINED:mailto:CONFIDENTIAL_GUEST@synthetic.invalid
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:CONFIDENTIAL_SECONDARY@synthetic.invalid
+            DTSTAMP:20261018T120000Z
+            DTSTART:20261020T190000Z
+            DTEND:20261020T200000Z
+            SUMMARY:Secondary review
+            ATTENDEE;PARTSTAT=TENTATIVE:mailto:CONFIDENTIAL_OWNER@synthetic.invalid
+            END:VEVENT
+            END:VCALENDAR
+            """;
+        var diagnostics = new ExclusionTests.CapturedDiagnostics();
+        using var agenda = new AgendaHttpTests.AgendaHttp("2026-10-19T18:00:00Z", calendar,
+            sourceUrl: "https://synthetic.invalid/CONFIDENTIAL_SOURCE_CREDENTIAL", logger: diagnostics,
+            runtimeSettings: new Dictionary<string, string?>
+            {
+                ["Agenda:OwnerAddress"] = "mailto:CONFIDENTIAL_OWNER@synthetic.invalid"
+            });
+        await agenda.Tick();
+        using var current = await agenda.PollOnly();
+        agenda.Clock.Advance(TimeSpan.FromMinutes(10));
+        using var cached = await agenda.PollOnly();
+        Assert.Equal(1, agenda.SourceRequests);
+        Assert.Equal(current.RootElement.GetProperty("primary").GetRawText(),
+            cached.RootElement.GetProperty("primary").GetRawText());
+        agenda.Clock.Advance(TimeSpan.FromMinutes(10));
+        agenda.SetSource("CONFIDENTIAL_REJECTED_SOURCE", HttpStatusCode.ServiceUnavailable);
+        await agenda.Refresh();
+        using var stale = await agenda.PollOnly();
+        Assert.Equal("current", current.RootElement.GetProperty("state").GetString());
+        Assert.Equal("stale", stale.RootElement.GetProperty("state").GetString());
+        Assert.Equal(current.RootElement.GetProperty("primary").GetRawText(),
+            stale.RootElement.GetProperty("primary").GetRawText());
+        Assert.Equal(current.RootElement.GetProperty("secondary").GetRawText(),
+            stale.RootElement.GetProperty("secondary").GetRawText());
+
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new() { DeviceScaleFactor = 1 });
+        foreach (var result in new[] { current, stale })
+        {
+            var body = result.RootElement;
+            Assert.Equal(2, body.GetProperty("schema_version").GetInt32());
+            Assert.Equal(DateTimeOffset.Parse("2026-10-19T18:00:00Z"),
+                body.GetProperty("source_succeeded_at").GetDateTimeOffset());
+            Assert.DoesNotContain("CONFIDENTIAL", body.GetRawText());
+            foreach (var name in new[] { "primary", "secondary" })
+            {
+                Assert.Equal(2, body.GetProperty(name).GetProperty("eligible_total").GetInt32());
+                Assert.All(body.GetProperty(name).GetProperty("occurrences").EnumerateArray(),
+                    occurrence => Assert.Equal("unknown", occurrence.GetProperty("participation_expectation").GetString()));
+            }
+            foreach (var values in AdaptiveDisplayTests.Views.Cast<object[]>())
+            {
+                var view = Assert.IsType<AdaptiveDisplayTests.NativeView>(values[0]);
+                await page.SetViewportSizeAsync(view.PhysicalWidth, view.PhysicalHeight);
+                await Show(page, body, view.Placement, view.Device);
+                await AdaptiveDisplayTests.NativeBounds(page, view);
+                var rows = page.Locator("tbody tr:visible");
+                var labels = page.Locator(".agenda-participation:visible");
+                Assert.True(await rows.CountAsync() > 0);
+                Assert.Equal(await rows.CountAsync(), await labels.CountAsync());
+                Assert.All(await labels.AllTextContentsAsync(), label => Assert.Equal("Unknown", label));
+                foreach (var name in new[] { "primary", "secondary" })
+                    await AdaptiveDisplayTests.DayCount(page, name, 2);
+                Assert.DoesNotContain("CONFIDENTIAL", await page.ContentAsync());
+                Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
+                Assert.Equal(0, await page.Locator(".agenda svg").CountAsync());
+                await AdaptiveDisplayTests.VisibleInk(page,
+                    $"unknown-tracer-{body.GetProperty("state").GetString()}-{view.Device}-{view.Placement}", view,
+                    await page.Locator(".agenda-heading .title, .agenda-day-label .label, [data-agenda-source], tbody tr:not([hidden]) .label--large, tbody tr:not([hidden]) td .title").AllAsync());
+            }
+        }
+        Assert.Equal(2, agenda.SourceRequests);
+        Assert.DoesNotContain("CONFIDENTIAL", string.Join("\n", diagnostics.Messages));
+    }
+
+    [Fact]
     public async Task End_to_end_demo_fetches_real_HTTP_source_through_Functions_and_renders_production_TRMNL()
     {
         var sourcePort = FreePort();
@@ -201,6 +308,9 @@ public sealed class DisplayTests
             Assert.Equal("Secondary working-day meeting",
                 data["secondary"]!["occurrences"]![0]!["title"]!.GetValue<string>());
             Assert.DoesNotContain("description", json, StringComparison.OrdinalIgnoreCase);
+            foreach (var name in new[] { "primary", "secondary" })
+                Assert.All(data[name]!["occurrences"]!.AsArray(), occurrence =>
+                    Assert.Equal("unknown", occurrence!["participation_expectation"]!.GetValue<string>()));
             using var definitions = JsonDocument.Parse(
                 await client.GetStringAsync($"http://127.0.0.1:{functionPort}/admin/functions"));
             Assert.Equal(2, definitions.RootElement.GetArrayLength());
@@ -390,6 +500,11 @@ public sealed class DisplayTests
                         await preview.EvaluateAsync("document.fonts.ready");
                         await preview.WaitForFunctionAsync("window.TRMNL_PLUGINS_READY === true");
                         await preview.WaitForFunctionAsync("document.querySelector('.agenda').dataset.agendaReady === 'true'");
+                        var labels = preview.Locator(".agenda-participation:visible");
+                        Assert.Equal(await preview.Locator("tbody tr:visible").CountAsync(), await labels.CountAsync());
+                        Assert.All(await labels.AllTextContentsAsync(), label => Assert.Equal("Unknown", label));
+                        foreach (var label in await labels.AllAsync())
+                            await AdaptiveDisplayTests.VisibleInsideView(label);
                         await AdaptiveDisplayTests.VisibleInsideView(
                             preview.GetByText("Synthetic source meeting", new() { Exact = true }));
                         foreach (var day in new[] { "primary", "secondary" })
@@ -483,6 +598,17 @@ public sealed class DisplayTests
     internal static async Task Show(IPage page, object data, string mode = "full", string device = "og")
     {
         var html = Render(mode, data, device);
+        var frameworkDirectory = Path.Combine(Root, ".tools", "framework");
+        Assert.True(Directory.Exists(frameworkDirectory), "Missing pinned framework assets. Run scripts\\setup-display.ps1.");
+        using var framework = new PhysicalFileProvider(frameworkDirectory);
+        var assetBuilder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { ContentRootPath = Root });
+        assetBuilder.WebHost.UseUrls("http://127.0.0.1:0");
+        assetBuilder.Logging.ClearProviders();
+        await using var assets = assetBuilder.Build();
+        assets.UseStaticFiles(new StaticFileOptions { FileProvider = framework });
+        await assets.StartAsync();
+        // Stream the unchanged 19 MB stylesheet directly, rather than copying it through Playwright's JSON transport.
+        var assetOrigin = assets.Urls.Single();
         html = html.Replace("</head>", $$"""
             <script type="module">
               import { checkLayout } from "/workbench/layout-checks.mjs";
@@ -505,8 +631,8 @@ public sealed class DisplayTests
             </script>
             </head>
             """);
-        await page.UnrouteAsync("http://trmnl.local/**");
-        await page.RouteAsync("http://trmnl.local/**", async route =>
+        await page.UnrouteAsync("http://127.0.0.1:*/**");
+        await page.RouteAsync("http://127.0.0.1:*/**", async route =>
         {
             var path = new Uri(route.Request.Url).AbsolutePath;
             if (path == "/")
@@ -523,21 +649,9 @@ public sealed class DisplayTests
                 });
                 return;
             }
-            var asset = Path.Combine(Root, ".tools", "framework",
-                path.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
-            Assert.True(File.Exists(asset), $"Missing framework asset: {path}. Run scripts\\setup-display.ps1.");
-            var contentType = Path.GetExtension(asset) switch
-            {
-                ".css" => "text/css",
-                ".js" => "application/javascript",
-                ".woff2" => "font/woff2",
-                ".woff" => "font/woff",
-                ".ttf" => "font/ttf",
-                _ => "application/octet-stream"
-            };
-            await route.FulfillAsync(new() { Path = asset, ContentType = contentType });
+            await route.ContinueAsync();
         });
-        await page.GotoAsync("http://trmnl.local/");
+        await page.GotoAsync($"{assetOrigin}/");
         await page.EvaluateAsync("document.fonts.ready");
         await page.WaitForFunctionAsync("window.TRMNL_PLUGINS_READY === true");
         await page.WaitForFunctionAsync("document.querySelector('.agenda').dataset.agendaReady === 'true'");

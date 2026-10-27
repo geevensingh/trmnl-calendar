@@ -337,7 +337,6 @@ public sealed partial class AgendaFunction
             return Fail("compatibility_unsupported", "A detached recurring change must specify a single complete occurrence.");
         var primary = NextWorkingDay(DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, AgendaTimeZone).DateTime));
         var secondary = NextWorkingDay(primary.AddDays(1));
-        var ownerAddress = ConfiguredOwnerAddress(configuration["Agenda:OwnerAddress"]);
         AgendaOccurrence[] occurrences;
         try
         {
@@ -406,7 +405,8 @@ public sealed partial class AgendaFunction
                         : start.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                     var id = Convert.ToHexStringLower(SHA256.HashData(
                         Encoding.UTF8.GetBytes($"{item.Uid}\n{key}")));
-                    var expectation = DetermineParticipationExpectation(item, ownerAddress);
+                    // This tracer deliberately defers source-based classification until capability evidence is accepted.
+                    const ParticipationExpectation expectation = ParticipationExpectation.Unknown;
                     AgendaOccurrence occurrence = start.HasTime
                         ? new TimedOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
                             new DateTimeOffset(start.AsUtc), new DateTimeOffset(end.AsUtc), expectation)
@@ -452,36 +452,6 @@ public sealed partial class AgendaFunction
         public override ICalendarObjectList<ICalendarObject> Children => source.Children;
         public override IEnumerable<IRecurrable> RecurringItems =>
             source.Events.Where(item => item.DtStart?.HasTime == timed);
-    }
-
-    private static ParticipationExpectation DetermineParticipationExpectation(
-        CalendarEvent item, string? ownerAddress)
-    {
-        if (string.Equals(item.Transparency, TransparencyType.Transparent, StringComparison.OrdinalIgnoreCase)
-            || item.Summary?.StartsWith("Following: ", StringComparison.OrdinalIgnoreCase) == true)
-            return ParticipationExpectation.Unlikely;
-
-        if (ownerAddress is null)
-            return ParticipationExpectation.Unknown;
-
-        var ownerAttendees = item.Attendees
-            .Where(attendee => IsOwnerAddress(attendee.Value, ownerAddress)).ToArray();
-        var ownerResponse = ownerAttendees.Length == 1 ? ownerAttendees[0].ParticipationStatus : null;
-        if (ownerAttendees.Length == 1
-            && string.Equals(ownerResponse, EventParticipationStatus.Declined, StringComparison.OrdinalIgnoreCase))
-            return ParticipationExpectation.Unlikely;
-        if (IsOwnerAddress(item.Organizer?.Value, ownerAddress))
-            return ParticipationExpectation.Definite;
-        if (ownerAttendees.Length != 1)
-            return ParticipationExpectation.Unknown;
-
-        if (string.Equals(ownerResponse, EventParticipationStatus.Accepted, StringComparison.OrdinalIgnoreCase))
-            return ParticipationExpectation.Likely;
-        if (ownerResponse is null
-            || string.Equals(ownerResponse, EventParticipationStatus.NeedsAction, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(ownerResponse, EventParticipationStatus.Tentative, StringComparison.OrdinalIgnoreCase))
-            return ParticipationExpectation.Maybe;
-        return ParticipationExpectation.Unknown;
     }
 
     private static string? ConfiguredOwnerAddress(string? value)

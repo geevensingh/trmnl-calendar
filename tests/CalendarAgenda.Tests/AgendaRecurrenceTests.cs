@@ -49,15 +49,15 @@ public sealed partial class AgendaHttpTests
     }
 
     [Fact]
-    public async Task Recurring_override_uses_its_effective_owner_response()
+    public async Task Tracer_keeps_series_and_changed_occurrences_unknown_without_changing_replacement_or_times()
     {
         var calendar = CalendarWithEvent(
             "DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nRRULE:FREQ=DAILY;COUNT=2\n"
             + "ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nSUMMARY:Series meeting")
             .Replace("END:VCALENDAR",
                 "BEGIN:VEVENT\nUID:event@synthetic.invalid\nDTSTAMP:20261018T120000Z\n"
-                + "RECURRENCE-ID:20261020T190000Z\nDTSTART:20261020T190000Z\nDTEND:20261020T200000Z\n"
-                + "ATTENDEE;PARTSTAT=TENTATIVE:mailto:owner@example.invalid\nSUMMARY:Changed occurrence\n"
+                + "RECURRENCE-ID:20261020T190000Z\nDTSTART:20261020T210000Z\nDTEND:20261020T223000Z\n"
+                + "ATTENDEE;PARTSTAT=TENTATIVE:mailto:owner@example.invalid\nTRANSP:TRANSPARENT\nSUMMARY:Changed occurrence\n"
                 + "END:VEVENT\nEND:VCALENDAR");
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", calendar,
             runtimeSettings: new Dictionary<string, string?>
@@ -70,9 +70,14 @@ public sealed partial class AgendaHttpTests
             .GetProperty("occurrences").EnumerateArray());
         var secondary = Assert.Single(result.RootElement.GetProperty("secondary")
             .GetProperty("occurrences").EnumerateArray());
-        Assert.Equal("likely", primary.GetProperty("participation_expectation").GetString());
-        Assert.Equal("maybe", secondary.GetProperty("participation_expectation").GetString());
+        Assert.Equal(1, result.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.Equal(1, result.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
+        Assert.Equal("unknown", primary.GetProperty("participation_expectation").GetString());
+        Assert.Equal("unknown", secondary.GetProperty("participation_expectation").GetString());
+        Assert.Equal("Series meeting", primary.GetProperty("title").GetString());
         Assert.Equal("Changed occurrence", secondary.GetProperty("title").GetString());
+        Assert.Equal(DateTimeOffset.Parse("2026-10-20T21:00:00Z"), secondary.GetProperty("start_at").GetDateTimeOffset());
+        Assert.Equal(DateTimeOffset.Parse("2026-10-20T22:30:00Z"), secondary.GetProperty("end_at").GetDateTimeOffset());
         Assert.DoesNotContain("owner@example.invalid", result.RootElement.GetRawText(), StringComparison.OrdinalIgnoreCase);
     }
 

@@ -1,0 +1,32 @@
+{
+  "id": "participation-labels",
+  "name": "Controlled participation labels",
+  "description": "Synthetic supplied values for all five labels, long/unbroken/markup-shaped titles and optional locations. These are presentation examples, not actual-source classifications.",
+  "agenda": {
+    "schema_version": 2,
+    "state": "current",
+    "time_zone": "America/Los_Angeles",
+    "generated_at": "2026-10-23T18:00:00Z",
+    "source_succeeded_at": "2026-10-23T18:00:00Z",
+    "primary": {
+      "date": "2026-10-23",
+      "label": "Friday, Oct 23",
+      "eligible_total": 3,
+      "occurrences": [
+        { "time_kind": "all_day", "id": "label-definite", "title": "Workshop", "participation_expectation": "definite", "location": "Studio A", "start_date": "2026-10-23", "end_date_exclusive": "2026-10-24" },
+        { "time_kind": "timed", "id": "label-likely", "title": "A long planning commitment whose original title remains intact while its participation label keeps the right-hand space it requires", "participation_expectation": "likely", "location": null, "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "label-maybe", "title": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW", "participation_expectation": "maybe", "location": "Optional room", "start_at": "2026-10-23T20:00:00Z", "end_at": "2026-10-23T21:00:00Z" }
+      ]
+    },
+    "secondary": {
+      "date": "2026-10-26",
+      "label": "Monday, Oct 26",
+      "eligible_total": 2,
+      "occurrences": [
+        { "time_kind": "all_day", "id": "label-unlikely", "title": "<svg onload=window.pwn=1> & \"quoted\" workshop with a long title that must remain escaped text", "participation_expectation": "unlikely", "location": "Studio </span><img src=x onerror=window.locationPwn=1>", "start_date": "2026-10-26", "end_date_exclusive": "2026-10-27" },
+        { "time_kind": "timed", "id": "label-unknown", "title": "Unclassified appointment", "participation_expectation": "unknown", "location": null, "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" }
+      ]
+    },
+    "error": null
+  }
+}

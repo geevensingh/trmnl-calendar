@@ -45,6 +45,32 @@ function separate(first, second) {
     || first.bottom <= second.top + 1 || second.bottom <= first.top + 1;
 }
 
+function readableContrast(element) {
+  const style = getComputedStyle(element);
+  const channels = color => color.match(/[\d.]+/g)?.map(Number);
+  const foreground = channels(style.color);
+  if (!foreground || foreground.length < 3 || (foreground[3] ?? 1) !== 1)
+    return false;
+  const ancestors = [];
+  for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+    if (Number(getComputedStyle(ancestor).opacity) !== 1) return false;
+    ancestors.push(ancestor);
+  }
+  let background = [255, 255, 255];
+  for (const ancestor of ancestors.reverse()) {
+    const color = channels(getComputedStyle(ancestor).backgroundColor);
+    if (!color || color.length < 3) return false;
+    const alpha = color[3] ?? 1;
+    background = background.map((value, index) => color[index] * alpha + value * (1 - alpha));
+  }
+  const luminance = rgb => rgb.slice(0, 3).map(value => value / 255)
+    .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+    .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+  const light = luminance(foreground);
+  const dark = luminance(background);
+  return (Math.max(light, dark) + 0.05) / (Math.min(light, dark) + 0.05) >= 4.5;
+}
+
 export function rowProblems(rows) {
   const problems = [];
   let previousBottom = 0;
@@ -184,8 +210,14 @@ export function checkLayout(document, agenda, target, allowLegacy = false) {
       const expectation = day.occurrences[index].participation_expectation;
       const labels = { definite: "Definite", likely: "Likely", maybe: "Maybe", unlikely: "Unlikely", unknown: "Unknown" };
       requireText(participation, `${name} row ${index + 1} participation label`);
-      add("participation", participation?.textContent.trim() === labels[expectation],
+      add("participation", row.querySelectorAll(".agenda-participation").length === 1
+        && participation?.textContent.trim() === labels[expectation],
         `${name} row ${index + 1} must render the supplied participation expectation as its exact text label.`);
+      add("readability", participation && readableContrast(participation),
+        `${name} row ${index + 1} participation text must have unfaded readable contrast.`);
+      if (expectation === "definite")
+        add("participation", participation && Number(getComputedStyle(participation).fontWeight) >= 700,
+          "Definite must retain stronger emphasis.");
       add("readability", timing && title && participation
         && parseFloat(getComputedStyle(timing).fontSize) >= 20
         && parseFloat(getComputedStyle(title).fontSize) >= 20
@@ -196,6 +228,18 @@ export function checkLayout(document, agenda, target, allowLegacy = false) {
       if (day.occurrences[index]?.time_kind === "all_day")
         add("all-day", timing?.textContent.trim() === "All day" && !timing.hasAttribute("data-agenda-start"),
           "All-day entries must remain date-only, not midnight meetings.");
+      else {
+        const clock = new Intl.DateTimeFormat("en-US", {
+          timeZone: agenda.time_zone, hour: "numeric", minute: "2-digit", hour12: true
+        });
+        const occurrence = day.occurrences[index];
+        add("timing", timing?.textContent.trim()
+          === `${clock.format(new Date(occurrence.start_at))} - ${clock.format(new Date(occurrence.end_at))}`,
+        `${name} row ${index + 1} must retain complete scheduled start/end times.`);
+      }
+      if (view.clientWidth >= 600)
+        add("geometry", parseFloat(getComputedStyle(row.querySelector(".agenda-time")).width) === 230,
+          "Wide rows must retain the established 230px logical time column.");
       if (source)
         add("overlap", separate(row.getBoundingClientRect(), source.getBoundingClientRect()),
           `${name} row ${index + 1} must not overlap source information.`);

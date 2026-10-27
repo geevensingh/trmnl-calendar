@@ -24,8 +24,10 @@
   .agenda .agenda-event-heading {
     display: flex; align-items: baseline; gap: 8px; min-width: 0;
   }
-  .agenda .agenda-participation { flex: 0 0 auto; white-space: nowrap; }
-  .agenda .agenda-participation[data-expectation="definite"] { font-weight: bold; }
+  .agenda .agenda-participation { flex: 0 0 auto; white-space: nowrap; color: #000; background: #fff; }
+  .agenda .agenda-participation[data-expectation="definite"] {
+    font-weight: bold; color: #fff; background: #000; padding: 0 4px;
+  }
   .agenda .agenda-location {
     display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 16px; line-height: 1.4;

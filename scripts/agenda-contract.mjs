@@ -73,9 +73,13 @@ export function validateAgenda(data) {
         reject(occurrencePath, "supply a timed or all_day occurrence object.");
       const allDay = occurrence.time_kind === "all_day";
       const timing = allDay ? ["start_date", "end_date_exclusive"] : ["start_at", "end_at"];
-      if (!fields(occurrence, ["time_kind", "id", "title", "participation_expectation", ...timing], ["location"])
+      const optional = allDay ? ["location"] : ["location", "emphasis"];
+      if (!fields(occurrence, ["time_kind", "id", "title", "participation_expectation", ...timing], optional)
         || !["all_day", "timed"].includes(occurrence.time_kind))
         reject(occurrencePath, "supply the fields for exactly one timed or all_day occurrence.");
+      if (!allDay && occurrence.emphasis !== undefined
+        && !["in_progress", "upcoming"].includes(occurrence.emphasis))
+        reject(`${occurrencePath}.emphasis`, "use in_progress or upcoming on a timed occurrence.");
       if (typeof occurrence.id !== "string" || !occurrence.id.length)
         reject(`${occurrencePath}.id`, "supply a nonempty opaque identifier.");
       if (typeof occurrence.title !== "string")

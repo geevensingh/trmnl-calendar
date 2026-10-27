@@ -245,15 +245,15 @@ public sealed class ExclusionTests
             """[{"field":"title","mode":"contains","value":"CONFIDENTIAL_RULE_LITERAL"}]"""));
         Assert.Equal("current", current.RootElement.GetProperty("state").GetString());
         Assert.DoesNotContain("CONFIDENTIAL", current.RootElement.GetRawText());
-        Assert.Equal(["Agenda refresh finished with code source_checked."], diagnostics.Messages);
+        Assert.Contains("Agenda refresh finished with code source_checked.", diagnostics.Messages);
+        Assert.All(diagnostics.Messages, message => Assert.DoesNotContain("CONFIDENTIAL", message));
 
         using var invalid = await agenda.Poll(Request(
             """[{"field":"description","mode":"contains","value":"CONFIDENTIAL_RULE_LITERAL"}]"""));
         Assert.Equal("error", invalid.RootElement.GetProperty("state").GetString());
         Assert.DoesNotContain("CONFIDENTIAL", invalid.RootElement.GetRawText());
-        Assert.Equal(
-            ["Agenda refresh finished with code source_checked.", "Agenda failed with code configuration_invalid."],
-            diagnostics.Messages);
+        Assert.Equal("Agenda failed with code configuration_invalid.", diagnostics.Messages.Last());
+        Assert.All(diagnostics.Messages, message => Assert.DoesNotContain("CONFIDENTIAL", message));
     }
 
     private static string Request(string rules) => JsonSerializer.Serialize(new { rules_json = rules });

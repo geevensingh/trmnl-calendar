@@ -264,6 +264,18 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task Public_launcher_rejects_legacy_schema_one_baselines_instead_of_comparing_unsupported_emphasis()
+    {
+        await using var fixture = await Workspace.Create();
+        var contractPath = Path.Combine(fixture.Root, "docs", "agenda-contract.md");
+        var contract = await File.ReadAllTextAsync(contractPath);
+        await File.WriteAllTextAsync(contractPath, contract.Replace(
+            "# Agenda HTTP and display contract, version 2", "# Agenda HTTP and display contract, version 1"));
+        await fixture.Commit("Synthetic legacy schema baseline");
+        await fixture.StartFailure("HEAD", "Incompatible baseline");
+    }
+
+    [Fact]
     public async Task Public_launcher_rejects_unavailable_or_incompatible_history_and_missing_prerequisites()
     {
         await using var fixture = await Workspace.Create();
@@ -271,7 +283,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
         var contractPath = Path.Combine(fixture.Root, "docs", "agenda-contract.md");
         var contract = await File.ReadAllTextAsync(contractPath);
         await File.WriteAllTextAsync(contractPath, contract.Replace(
-            "# Agenda HTTP and display contract, version 2", "# Agenda HTTP and display contract, version 3"));
+            "# Agenda HTTP and display contract, version 2", "# Agenda HTTP and display contract, version 99"));
         await fixture.Commit("Synthetic incompatible schema");
         await fixture.StartFailure("HEAD", "Incompatible baseline");
         await File.WriteAllTextAsync(contractPath, contract);

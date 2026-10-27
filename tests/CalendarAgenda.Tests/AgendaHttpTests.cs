@@ -317,7 +317,7 @@ public sealed partial class AgendaHttpTests
     }
 
     [Fact]
-    public async Task An_oversize_agenda_returns_a_small_renderable_error_instead_of_truncated_commitments()
+    public async Task An_individually_oversize_occurrence_is_omitted_without_truncating_its_title_or_losing_totals()
     {
         var ics = CalendarWithEvent("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:"
             + new string('X', 100_000));
@@ -325,10 +325,10 @@ public sealed partial class AgendaHttpTests
         using var result = await agenda.Poll();
         var body = result.RootElement;
 
-        Assert.Equal("error", body.GetProperty("state").GetString());
-        Assert.Equal("agenda_too_large", body.GetProperty("error").GetProperty("code").GetString());
-        Assert.True(System.Text.Encoding.UTF8.GetByteCount(body.GetRawText()) < 100_000);
-        Assert.Equal(JsonValueKind.Null, body.GetProperty("primary").GetProperty("eligible_total").ValueKind);
+        Assert.Equal("current", body.GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("error").ValueKind);
+        Assert.InRange(System.Text.Encoding.UTF8.GetByteCount(body.GetRawText()), 1, 95_000);
+        Assert.Equal(1, body.GetProperty("primary").GetProperty("eligible_total").GetInt32());
         Assert.Empty(body.GetProperty("primary").GetProperty("occurrences").EnumerateArray());
         Assert.NotEqual(JsonValueKind.Null, body.GetProperty("source_succeeded_at").ValueKind);
     }

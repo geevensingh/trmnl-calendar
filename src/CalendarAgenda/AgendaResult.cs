@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 namespace CalendarAgenda;
 
 public enum AgendaState { Current, Stale, Error }
+public enum AgendaEmphasis { InProgress, Upcoming }
 
 public enum ParticipationExpectation { Definite, Likely, Maybe, Unlikely, Unknown }
 
@@ -34,8 +35,9 @@ public sealed record TimedOccurrence(
     string? Location,
     DateTimeOffset StartAt,
     DateTimeOffset EndAt,
-    ParticipationExpectation ParticipationExpectation)
-    : AgendaOccurrence(Id, Title, Location, ParticipationExpectation);
+    ParticipationExpectation ParticipationExpectation,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    AgendaEmphasis? Emphasis = null) : AgendaOccurrence(Id, Title, Location, ParticipationExpectation);
 
 public sealed record AllDayOccurrence(
     string Id,

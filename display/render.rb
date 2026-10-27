@@ -22,6 +22,7 @@ markup =
     puts JSON.generate(YAML.safe_load(File.read(File.join(template_root, "settings.yml"))))
     exit
   when *views
+    abort "Unsupported agenda schema; use 2 with required participation expectations." unless variables["schema_version"] == 2
     File.read(File.join(template_root, "shared.liquid")) +
       File.read(File.join(template_root, "#{mode}.liquid"))
   when "polling-body"

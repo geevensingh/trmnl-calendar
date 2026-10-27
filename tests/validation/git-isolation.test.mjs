@@ -188,6 +188,29 @@ test("completion fixture preserves standard and linked owners under exported hoo
   }
 });
 
+test("review snapshot fixture preserves synthetic owners under combined inherited Git context", async t => {
+  for (const index of [0, 1]) {
+    await t.test(index === 1 ? "linked owner" : "standard owner", async t => {
+      const fixture = await owner(t);
+      const injection = {
+        ...injections(fixture, fixture.contexts[index]).at(-1)[1],
+        GIT_TEMPLATE_DIR: join(fixture.checkout, ".git"),
+        GIT_NAMESPACE: "owner-namespace",
+        GIT_REPLACE_REF_BASE: "refs/owner-replacements/",
+        GIT_TRACE: join(fixture.checkout, "trace.log"),
+        GIT_TRACE2_EVENT: join(fixture.checkout, "trace2.log"),
+        GiT_FUTURE_SELECTOR: "unknown inherited context"
+      };
+      const result = spawnSync(process.execPath, [
+        "--test", "--test-name-pattern=^uncommitted-only review", join(root, "tests", "validation", "review-scope.test.mjs")
+      ], { cwd: root, env: { ...cleanEnvironment(), ...injection }, encoding: "utf8", timeout: 30_000 });
+      await fixture.unchanged("review snapshot fixture");
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(result.stdout, /\bpass 1\b/, "The actual review snapshot and commit-binding example must execute.");
+    });
+  }
+});
+
 test("Workbench Git fixture preserves standard and linked owners under exported hook context and selectors", async t => {
   const catalogue = await owner(t);
   for (const index of [0, 1]) {

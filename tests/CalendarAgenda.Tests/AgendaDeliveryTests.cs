@@ -33,15 +33,19 @@ public sealed partial class AgendaHttpTests
     }
 
     [Theory]
-    [InlineData("current", 14_000, "\u754c", null)]
-    [InlineData("error", 100_000, "X", "agenda_too_large")]
+    [InlineData(14_000, "\u754c", false)]
+    [InlineData(100_000, "X", true)]
     public async Task Synthetic_delivery_tool_measures_real_HTTP_agenda_as_native_single_URL_polling_data(
-        string state, int titleLength, string character, string? code)
+        int titleLength, string character, bool omitted)
     {
+        const string state = "current";
         var title = string.Concat(Enumerable.Repeat(character, titleLength));
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z",
             CalendarWithEvent("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:" + title));
         await agenda.Refresh();
+        using var produced = await agenda.PollOnly();
+        Assert.Equal(1, produced.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.Equal(omitted ? 0 : 1, PrimaryOccurrences(produced).Length);
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
@@ -73,11 +77,6 @@ public sealed partial class AgendaHttpTests
                 "--endpoint", boundary.Urls.Single() + "/api/agenda", "--expected-state", state
             })
             start.ArgumentList.Add(argument);
-        if (code is not null)
-        {
-            start.ArgumentList.Add("--expected-code");
-            start.ArgumentList.Add(code);
-        }
         start.Environment["TRMNL_FUNCTION_KEY"] = key;
         using var process = Process.Start(start)!;
         var output = process.StandardOutput.ReadToEndAsync();
@@ -94,7 +93,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(state, poll.GetProperty("state").GetString());
             Assert.InRange(poll.GetProperty("combined_polling_utf8_bytes").GetInt32(), 1, 99_999);
             Assert.InRange(poll.GetProperty("raw_response_utf8_bytes").GetInt32(), 1, 95_000);
-            if (state == "current")
+            if (!omitted)
             {
                 Assert.True(poll.GetProperty("raw_response_utf8_bytes").GetInt32() > 80_000);
                 Assert.True(poll.GetProperty("combined_polling_utf8_bytes").GetInt32() > 40_000);

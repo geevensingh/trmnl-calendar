@@ -59,6 +59,7 @@ public sealed partial class AgendaFunction
     }
 
     private const string TimeZoneId = "America/Los_Angeles";
+    private static readonly TimeSpan UpcomingWindow = TimeSpan.FromMinutes(15);
     private static readonly TimeZoneInfo AgendaTimeZone = TimeZoneInfo.FindSystemTimeZoneById(TimeZoneId);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -440,6 +441,7 @@ public sealed partial class AgendaFunction
         {
             return Fail("source_invalid", "The calendar source could not be interpreted.");
         }
+        occurrences = ApplyEmphasis(occurrences, now);
         var result = new AgendaResult(2, AgendaState.Current, TimeZoneId, now, now,
             SelectDay(primary, occurrences), SelectDay(secondary, occurrences), null);
         cancellationToken.ThrowIfCancellationRequested();
@@ -614,12 +616,12 @@ public sealed partial class AgendaFunction
 
     private ContentResult Respond(AgendaResult result)
     {
+        result = BoundResult(result);
         var json = JsonSerializer.Serialize(result, JsonOptions);
-        if (result.State != AgendaState.Error && Encoding.UTF8.GetByteCount(json) > 95_000)
-            return Respond(Fail("agenda_too_large", "The complete agenda exceeds the polling response budget.",
-                result.SourceSucceededAt));
         if (result.Error is not null)
             logger.LogWarning("Agenda failed with code {ErrorCode}.", result.Error.Code);
+        if (result.State != AgendaState.Error && logger.IsEnabled(LogLevel.Information))
+            LogAgenda(result);
         return new ContentResult
         {
             StatusCode = StatusCodes.Status200OK,
@@ -628,11 +630,130 @@ public sealed partial class AgendaFunction
         };
     }
 
+    private AgendaResult BoundResult(AgendaResult result)
+    {
+        const int limit = 95_000;
+        var envelope = result with
+        {
+            Primary = result.Primary with { Occurrences = [] },
+            Secondary = result.Secondary with { Occurrences = [] }
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(envelope, JsonOptions).Length;
+        if (bytes > limit)
+            return Fail("agenda_too_large", "The agenda metadata exceeds the polling response budget.",
+                result.SourceSucceededAt);
+        var days = new[] { result.Primary, result.Secondary };
+        var admitted = new[] { new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal) };
+        var candidates = days.SelectMany((day, index) =>
+                day.Occurrences.Select(occurrence => (Occurrence: occurrence, Day: index)))
+            .OrderByDescending(item => item.Occurrence is TimedOccurrence { Emphasis: not null });
+        foreach (var (occurrence, day) in candidates)
+        {
+            var size = JsonSerializer.SerializeToUtf8Bytes(occurrence, JsonOptions).Length
+                + (admitted[day].Count > 0 ? 1 : 0);
+            if (size > limit - bytes)
+                break;
+            bytes += size;
+            admitted[day].Add(occurrence.Id);
+        }
+        return result with
+        {
+            Primary = result.Primary with
+            {
+                Occurrences = result.Primary.Occurrences.Where(item => admitted[0].Contains(item.Id)).ToArray()
+            },
+            Secondary = result.Secondary with
+            {
+                Occurrences = result.Secondary.Occurrences.Where(item => admitted[1].Contains(item.Id)).ToArray()
+            }
+        };
+    }
+
+    private void LogAgenda(AgendaResult result)
+    {
+        var pollId = Guid.NewGuid().ToString("N");
+        // The isolated host forwards formatted messages, not all structured logger properties.
+        logger.LogInformation("Agenda poll {DiagnosticJson}", JsonSerializer.Serialize(new
+        {
+            PollId = pollId,
+            result.State,
+            GeneratedAt = result.GeneratedAt.ToString("O", CultureInfo.InvariantCulture),
+            SourceSucceededAt = result.SourceSucceededAt?.ToString("O", CultureInfo.InvariantCulture),
+            PrimaryDate = result.Primary.Date,
+            PrimaryEligibleTotal = result.Primary.EligibleTotal,
+            SecondaryDate = result.Secondary.Date,
+            SecondaryEligibleTotal = result.Secondary.EligibleTotal
+        }, JsonOptions));
+        foreach (var day in new[] { result.Primary, result.Secondary })
+            foreach (var occurrence in day.Occurrences)
+            {
+                var (kind, start, end) = occurrence switch
+                {
+                    TimedOccurrence timed => ("timed",
+                        timed.StartAt.ToString("O", CultureInfo.InvariantCulture),
+                        timed.EndAt.ToString("O", CultureInfo.InvariantCulture)),
+                    AllDayOccurrence allDay => ("all_day",
+                        allDay.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                        allDay.EndDateExclusive.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
+                    _ => throw new InvalidOperationException("Unknown occurrence kind.")
+                };
+                var title = LimitDiagnosticText(occurrence.Title);
+                var location = LimitDiagnosticText(occurrence.Location);
+                logger.LogInformation("Agenda occurrence {DiagnosticJson}", JsonSerializer.Serialize(new
+                {
+                    PollId = pollId,
+                    OccurrenceId = occurrence.Id,
+                    day.Date,
+                    TimeKind = kind,
+                    Start = start,
+                    EndExclusive = end,
+                    Title = title,
+                    Location = location,
+                    TitleTruncated = title != occurrence.Title,
+                    LocationTruncated = location != occurrence.Location
+                }, JsonOptions));
+            }
+    }
+
+    private static string? LimitDiagnosticText(string? value)
+    {
+        const int limit = 1024;
+        if (value is null || value.Length <= limit)
+            return value;
+        return value[..(char.IsHighSurrogate(value[limit - 1]) ? limit - 1 : limit)];
+    }
+
     private static DateOnly NextWorkingDay(DateOnly date)
     {
         while (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
             date = date.AddDays(1);
         return date;
+    }
+
+    private static AgendaOccurrence[] ApplyEmphasis(AgendaOccurrence[] occurrences, DateTimeOffset now)
+    {
+        var timed = occurrences.OfType<TimedOccurrence>().ToArray();
+        var inProgress = timed.Where(item => item.StartAt <= now && now < item.EndAt)
+            .Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var upcoming = new HashSet<string>(StringComparer.Ordinal);
+        if (inProgress.Count == 0)
+        {
+            var future = timed.Where(item => item.StartAt > now).ToArray();
+            if (future.Length > 0)
+            {
+                var nextStart = future.Min(item => item.StartAt);
+                if (nextStart - now <= UpcomingWindow)
+                    upcoming.UnionWith(future.Where(item => item.StartAt == nextStart).Select(item => item.Id));
+            }
+        }
+
+        return occurrences.Select(item => item is TimedOccurrence timedItem
+            ? timedItem with
+            {
+                Emphasis = inProgress.Contains(timedItem.Id) ? AgendaEmphasis.InProgress
+                    : upcoming.Contains(timedItem.Id) ? AgendaEmphasis.Upcoming : null
+            }
+            : item).ToArray();
     }
 
     private static IEnumerable<CalDateTime> SourceDates(CalendarEvent item) =>

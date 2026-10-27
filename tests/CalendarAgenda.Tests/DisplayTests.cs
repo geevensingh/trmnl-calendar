@@ -391,7 +391,12 @@ public sealed class DisplayTests
                         await preview.WaitForFunctionAsync("window.TRMNL_PLUGINS_READY === true");
                         await preview.WaitForFunctionAsync("document.querySelector('.agenda').dataset.agendaReady === 'true'");
                         await AdaptiveDisplayTests.VisibleInsideView(
-                            preview.GetByText("Synthetic source meeting", new() { Exact = true }));
+                            preview.GetByText("Synthetic source meeting", new() { Exact = true }),
+                            textMayBeTruncated: true);
+                        var participation = preview.Locator(".agenda-primary tbody tr")
+                            .Filter(new() { HasText = "Synthetic source meeting" }).Locator(".agenda-participation");
+                        await Assertions.Expect(participation).ToHaveTextAsync("Unknown");
+                        await AdaptiveDisplayTests.VisibleInsideView(participation);
                         foreach (var day in new[] { "primary", "secondary" })
                             await AdaptiveDisplayTests.VisibleInsideView(
                                 preview.GetByText(agenda[day]!["label"]!.GetValue<string>(), new() { Exact = true }));

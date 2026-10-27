@@ -2,6 +2,104 @@
 
 **Status: implementation prepared; owner-authorized protection configured and read back. [#39](https://github.com/geevensingh/trmnl-calendar/issues/39) issue comments are the live acceptance ledger; [PR #38](https://github.com/geevensingh/trmnl-calendar/pull/38) identifies the reviewed/current head and required genuine Full result.** Do not edit PR metadata to publish status: every admitted edit now restarts Full under the user-selected policy below. This implements the design agreed on 2026-10-25 with that subsequent policy decision. The checkpoint observations below are historical evidence, not a substitute for current-head acceptance. A checked-in workflow, settings readback or diagnostic pass alone does not prove successful Full execution or delivery. The [local validation documentation](../README.md#local-validation) describes current commands and the explicit hook migration.
 
+## Agreed CI performance plan (2026-10-26)
+
+**Status: agreed plan only, not implemented.** The owner confirmed the decisions below after reviewing the timing investigation. This section does not change the current workflow, required checks, branch protection, or validation entrypoint. The existing behavior documented in the following sections remains in effect until the corresponding implementation and acceptance checkpoints are complete. Saving this plan does not authorize starting CI experiments or changing protection settings.
+
+### Observed baseline
+
+Six successful first-attempt Full runs on October 26 averaged **41m01s** end to end:
+
+| Stage | Average | Observed range |
+| --- | --- | --- |
+| Runner/job start delay | 52s | 4s-1m31s |
+| Toolchain and dependency setup | 4m38s | 3m41s-6m28s |
+| Formatting, build, syntax and browser readiness | 23s | 15s-30s |
+| .NET production and rendering tests | 30m45s | 24m13s-34m25s |
+| Node delivery and guardrail tests | 4m12s | 2m50s-5m10s |
+| Remaining orchestration and cleanup | About 12s | Not separately characterized |
+| Total | 41m01s | 32m11s-44m59s |
+
+Tests account for approximately **85%** of elapsed time. The [44m59s run](https://github.com/geevensingh/trmnl-calendar/actions/runs/40393338105) spent 34m25s in .NET tests and 5m10s in Node tests; the [32m11s run](https://github.com/geevensingh/trmnl-calendar/actions/runs/40411295985) spent 24m13s and 2m50s respectively. The other sampled run IDs are `40408213302`, `40405457438`, `40383087134`, and `40375484009`.
+
+These runs cover different revisions and test inventories, not a controlled before/after experiment. Existing logs establish stage durations but do not identify individual .NET test costs. Browser startup, Ruby startup/rendering, and PNG decoding/inspection are profiling hypotheses, not proven allocations of those minutes.
+
+### Agreed boundaries
+
+- Use standard GitHub-hosted runners. Larger paid runners and self-hosted infrastructure are outside this plan.
+- Choose the elapsed-time target only after profiling. Increased total runner minutes may be considered, but the owner must approve the acceptable budget before adopting parallel execution.
+- Preserve the complete current suite, assertions, Git-selector cases, and all six native views for every non-Markdown-only PR. Do not introduce selective code tests, a sampled rendering matrix, or reuse of earlier Full evidence.
+- Classify Markdown-only eligibility using the complete evaluated PR diff against its event-pinned base, not the latest commit. A code PR followed by a README-only commit still requires Full.
+- **Every Markdown-only PR avoids Full, regardless of path.** This includes `README.md`, `AGENTS.md`, agent/process Markdown, and `docs/agenda-contract.md`. The owner explicitly chose this minimal-impact policy despite the README assertions and the local workbench's executable consumption of the agenda contract; do not silently restore a narrower allowlist.
+- The Markdown-only path performs pinned-revision preparation and verified change classification only: no Fast, Full, application tests, or new Markdown lint/link tooling. Renames must account for both paths; unavailable or ambiguous change evidence must not certify Markdown-only eligibility.
+- Title/body-only edits should not cancel or restart otherwise valid work. Head changes and base retargets still require evaluation of the new pinned revision and its applicable policy path.
+- Optimize time to useful failure feedback as well as time to green. Early failures, blocked components, missing results, and cancellations must never become successful Full evidence.
+- Keep `scripts\validate.ps1` the authoritative validation implementation. Local Full must continue to represent complete coverage; CI scheduling must not create a second, drifting command list.
+- Retain compact timing/test-result artifacts for seven days. Upload heavier screenshots/browser traces only on failure. Use synthetic inputs and exclude credentials, private calendar data, and raw environment dumps.
+- Deliver small, independently reviewable and reversible checkpoints, measuring each optimization before adding the next. Implementation, GitHub protection changes, and human landing remain separate actions.
+
+### Checkpoint 1: instrument the existing Full path
+
+Add per-test/class .NET result timings and a compact summary of the existing Node timings. Separate browser creation/startup, Ruby process startup/rendering, screenshot production, and PNG decoding/pixel inspection sufficiently to distinguish their costs. Timers must not change capture readiness, production deadlines, assertion thresholds, or process-failure propagation.
+
+Bind measurements to the head, base and evaluated commit identities, the test inventory, runner image/tool versions, and known cache state. Keep reports compact and machine-readable, with test-result artifacts for drill-down; do not replace the real rendering path with a benchmark substitute.
+
+The initial profiling budget is **two total Full run attempts on the same instrumented revision**, counting any automatically triggered run toward those two. Failed or cancelled profiling attempts consume that allowance; review incomplete evidence rather than retrying until two successes. Schedule no additional profiling-only runs without owner approval. Two successful observations can locate hotspots; they do not establish stable percentile performance or prove an improvement. Saving this plan does not start either run.
+
+Acceptance: the complete suite remains intact, instrumentation reconciles with overall stage time, and the reports reveal the dominant tests and subprocess phases rather than merely repeating the existing Full duration.
+
+### Checkpoint 2: review evidence and set targets
+
+Review the two runs before committing to an optimization design. Agree on the elapsed-time target, acceptable total runner-minute increase, additional experiment budget, and the matched-run evidence needed to accept a speedup. Account for the observed runner variability rather than using one unusually fast result.
+
+Report elapsed time, total runner time across jobs, and failure latency separately. Distinguish cold-cache and warm-cache observations when caching becomes available. Do not promise a numeric completion time, choose a shard count, or adopt extra runner expenditure before this checkpoint.
+
+### Checkpoint 3: dependency caches
+
+Evaluate caches as an independent, reversible change. Candidate inputs are the NuGet package store, locked worktree-local Ruby gems, the Playwright-selected browser binaries, and pinned framework assets/fonts. Keys must include the relevant dependency/lock identity, tool/runtime version, and OS/architecture or native Ruby ABI where applicable. Respect cache trust boundaries and restore into the current worktree's owned destinations.
+
+Do not treat `bin`, `obj`, test results, screenshots, credentials, or worktree-specific Bundler/environment configuration as reusable dependency caches. Continue the existing restore/setup and readiness checks after restoration; a cache hit is not proof of usable dependencies. Keep cache misses, invalidations, and failures visible, and do not weaken frozen restore, asset completeness, native-gem loading, or browser usability checks.
+
+Acceptance: exercise cold misses, warm hits, relevant version/lock changes, and incomplete or unusable cached state. Record cache transfer/save overhead and total setup improvement. Preserve current-worktree ownership and shared-cache/tool-selection behavior. Roll back by removing the new cache wiring or changing its namespace, not by deleting unrelated shared state.
+
+### Checkpoint 4: measured rendering-harness improvements
+
+Use the profile to select changes, not a predetermined rewrite. Candidates include sharing a browser process while creating fresh test contexts, reducing repeated Ruby startup, batching equivalent work, or making PNG decoding/inspection cheaper without changing its meaning. A persistent renderer or a new helper abstraction is justified only by measured benefit and a tested lifecycle.
+
+Preserve production Liquid/framework/fonts, strict rendering errors, native capture-readiness checks, physical dimensions, geometry, escaping, and raster assertions. DOM-only checks or fabricated images are not substitutes for the current pixel evidence. Isolate test state and output names before introducing sharing; bound subprocess work and terminate only owned processes.
+
+Acceptance: retain the complete intended scenario/view/assertion inventory, demonstrate unchanged rendering and failure semantics, and measure the targeted phase and end-to-end benefit independently. Reject changes that buy speed through lost coverage, state leakage, orphaned processes, or increased flakiness. Keep each change separately reversible.
+
+### Checkpoint 5: failure feedback and bounded scheduling
+
+Surface inexpensive formatting/build/tooling failures before the long rendering tail where dependencies permit. Evaluate separate jobs or shards only after profiling and budget approval. Use separate workspaces/build outputs or equivalent verified isolation; do not concurrently mutate a shared process environment or rely on fixed artifact filenames remaining collision-free.
+
+Keep complete coverage in the shared validator while making component boundaries explicit enough for CI to schedule them safely. The aggregate must verify that every expected component for the selected policy path actually succeeded, rather than treating an absent or skipped component as a pass. Local Full must remain available as one complete invocation.
+
+The Node isolation matrices are a specific candidate: preserve all standard/linked owner and selector cases, while evaluating less repeated fixture/test-runner startup or bounded concurrency with independently owned fixtures. Do not remove adversarial cases merely because they are slow.
+
+Acceptance: prove complete component coverage and isolation; exercise failed, blocked, cancelled, and missing-result paths; compare elapsed time, runner-minute totals, and failure feedback with the accepted baseline. Choose concurrency from those observations and the approved budget, not the runner's apparent CPU count alone. Rollback restores the serial shared Full path.
+
+### Checkpoint 6: admission policy and required-check migration
+
+Introduce **Required validation** as the required policy gate. Reserve **Full validation** for the complete suite. Markdown-only success must be explicitly identified as the reduced policy path, not a skipped or success-shaped Full substitute.
+
+Manual Full validation and diagnostic dispatch remain genuine Full paths. An invocation without a classifiable PR diff is not evidence for the Markdown-only shortcut.
+
+Test classification against the pinned evaluated change set, including mixed changes, multiple commits, additions/deletions/renames, and Markdown paths that are also tooling inputs. Preserve event-pinned merge preparation and freshness semantics. Metadata handling must distinguish title/body edits from changes that require reevaluation; merely adding a same-name skipped job is not acceptable.
+
+Use a disposable PR to observe GitHub's actual required-check behavior for metadata edits during active, successful, and failed validation, as well as head changes, base retargets, Markdown-only PRs, and transitions to mixed changes. No probe is merged, and the probe itself does not change branch protection. Passing local classifier/workflow tests is not live eligibility proof.
+
+Prepare the new check before a separately owner-approved protection migration. Keep protection in force throughout; do not remove the old requirement before the replacement is established. Read back the final required context/source and retained freshness/enforcement settings, then verify actual PR eligibility under that final contract. A pre-migration diagnostic alone cannot prove the replacement required gate works.
+
+Provide a rollback sequence that restores both the previous genuine-Full workflow behavior and its required-check contract without an unprotected interval. Settings changes and human landing remain outside an ordinary feature-branch implementation grant.
+
+### Evidence and deferred decisions
+
+For each checkpoint, record the exact content identity, correctness/coverage evidence, measurement conditions, elapsed and total runner times, failure behavior, and rollback path. Compare equivalent workloads and distinguish cache/setup gains from test-execution gains. Additional benchmark samples and live probes need an agreed run budget; do not quietly exceed the initial profiling allowance.
+
+Explicitly deferred until profiling: the numeric performance target, acceptable runner-minute increase, further sample sizes, exact harness interventions, component/shard boundaries, and concurrency. The Markdown policy and required-gate intent above are settled, but their implementation and live acceptance are not complete. An open review or passing CI is not delivery; follow the existing [delivery contract](agents/delivery.md).
+
 ## Validation and enforcement are separate
 
 [`.github/workflows/full-validation.yml`](../.github/workflows/full-validation.yml) runs the existing `scripts\validate.ps1 -Scope Full` on every admitted `opened`, `synchronize`, `reopened` and `edited` event, plus diagnostic `workflow_dispatch`. Draft and documentation-only PR commits are included. **Every edit, including title/body edits and base retargets, executes genuine Full.** This is the user's selected policy after #53 demonstrated loss of merge eligibility following a metadata-only skipped run. Draft/readiness activities remain excluded. There are no path or target-branch exemptions, metadata admission guards, smaller suites or successful skip substitutes.

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
-import { createTrmnlArchive, unpackTrmnlArchive } from "../../scripts/release-services.mjs";
+import { createReleaseServices, createTrmnlArchive, unpackTrmnlArchive } from "../../scripts/release-services.mjs";
 
 const pluginFiles = [
   "settings.yml", "shared.liquid", "full.liquid", "half_horizontal.liquid", "half_vertical.liquid"
@@ -94,5 +94,33 @@ test("TRMNL archive preparation rejects extra or nested source entries", async (
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("release services refuse cancelled work before launching tools or contacting deployment APIs", async t => {
+  const variables = {
+    AZURE_STORAGE_ACCOUNT: "syntheticstorage",
+    AZURE_RELEASE_CONTAINER: "release-control",
+    AZURE_ARTIFACT_CONTAINER: "release-artifacts"
+  };
+  const previous = Object.fromEntries(Object.keys(variables).map(key => [key, process.env[key]]));
+  Object.assign(process.env, variables);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const reason = Object.assign(new Error("storage_lease_lost"), { code: "storage_lease_lost" });
+  const signal = AbortSignal.abort(reason);
+  const services = createReleaseServices();
+  const commit = "a".repeat(40);
+  for (const operation of [
+    () => services.changedPaths(commit, commit, { signal }),
+    () => services.prepare(commit, ["azure", "trmnl"], { signal }),
+    () => services.deployAndVerifyAzure(commit, {}, { signal }),
+    () => services.publishAndVerifyTrmnl(commit, {}, { signal })
+  ]) {
+    await assert.rejects(operation, error => error === reason);
   }
 });

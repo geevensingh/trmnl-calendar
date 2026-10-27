@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -48,7 +48,10 @@ test("TRMNL publisher pins the existing plugin ID and verifies pulled definition
       if (args[0] === "pull") {
         assert.ok(args.includes("--id"));
         assert.ok(args.includes("12345"));
-        const settings = await import("node:fs/promises").then(fs => fs.readFile(join(cwd, "src", "settings.yml"), "utf8"));
+        assert.deepEqual(await readdir(join(cwd, "src")), []);
+        assert.ok(await readFile(join(cwd, ".trmnlp.yml"), "utf8"));
+        await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+        const settings = await readFile(join(cwd, "src", "settings.yml"), "utf8");
         assert.ok(settings.includes("name: Working-day agenda"));
       }
     }
@@ -97,7 +100,7 @@ test("TRMNL publisher rejects content mismatch after the remote pull", async t =
     apiKey: "synthetic-key",
     runCommand: async (_command, args, { cwd }) => {
       if (args[0] === "pull") {
-        await mkdir(join(cwd, "src"), { recursive: true });
+        await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
         await writeFile(join(cwd, "src", "full.liquid"), "unexpected remote content\n");
       }
     }
@@ -117,11 +120,53 @@ test("sequential TRMNL releases retain the parent credential while isolating chi
       sourceDirectory,
       pluginId: "12345",
       preservationVerifiedPluginId: "12345",
-      runCommand: async (_command, _args, { env }) => {
+      runCommand: async (_command, args, { env, cwd }) => {
         assert.equal(env.TRMNL_API_KEY, "synthetic-key");
+        if (args[0] === "pull") await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
       }
     });
+
     assert.equal(result.verified, true);
     assert.equal(process.env.TRMNL_API_KEY, "synthetic-key");
   }
+});
+
+test("TRMNL verification rejects an archive missing a template instead of using the uploaded copy", async t => {
+  const sourceDirectory = await pluginSource(t);
+  await assert.rejects(publishTrmnl({
+    sourceDirectory,
+    pluginId: "12345",
+    preservationVerifiedPluginId: "12345",
+    apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      if (args[0] === "pull") {
+        for (const file of await readdir(sourceDirectory)) {
+          if (file !== "full.liquid") await cp(join(sourceDirectory, file), join(cwd, "src", file));
+        }
+      }
+    }
+  }), { message: "trmnl_deployed_file_set_mismatch" });
+});
+
+test("publisher cancellation reaches the active push and prevents a subsequent pull", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const abort = new AbortController();
+  const calls = [];
+  await assert.rejects(publishTrmnl({
+    sourceDirectory,
+    pluginId: "12345",
+    preservationVerifiedPluginId: "12345",
+    apiKey: "synthetic-key",
+    signal: abort.signal,
+    runCommand: async (_command, args, { signal }) => {
+      calls.push(args[0]);
+      assert.equal(signal, abort.signal);
+      const cancelled = new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+      abort.abort(new Error("storage_lease_lost"));
+      return cancelled;
+    }
+  }), { message: "trmnl_publish_or_verify_failed" });
+  assert.deepEqual(calls, ["push"]);
 });

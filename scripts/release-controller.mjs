@@ -13,6 +13,10 @@ const targetSets = {
 function changedTargets(path) {
   const normalized = path.replaceAll("\\", "/").replace(/^\.\/+/, "");
   if (
+    normalized === "scripts/agenda-workbench.mjs" ||
+    normalized === "display/render.rb"
+  ) return targetSets.none;
+  if (
     normalized === "docs/agenda-contract.md" ||
     normalized === "scripts/agenda-contract.mjs" ||
     normalized === "scripts/azure-blob-ledger.mjs" ||
@@ -149,14 +153,31 @@ function validateState(state) {
 }
 
 async function mutate(ledger, action) {
-  return ledger.withExclusive(async () => {
+  return ledger.withExclusive(async signal => {
     const raw = await ledger.read();
     const state = validateState(raw ?? newState());
-    const result = await action(state);
+    const result = await action(state, signal);
+    signal?.throwIfAborted();
     state.updated_at = new Date().toISOString();
     await ledger.write(state);
     return result;
   });
+}
+
+function requiresRecoveryConfirmation(entry) {
+  return entry.recovery_confirmation_required === true ||
+    Object.values(entry.target_results ?? {}).some(result =>
+      ["in_progress", "uncertain", "failed"].includes(result));
+}
+
+function confirmRecovery(entry, previousMutationStopped) {
+  if (requiresRecoveryConfirmation(entry) && previousMutationStopped !== true) {
+    throw new Error("previous_mutation_stop_confirmation_required");
+  }
+  entry.recovery_confirmation_required = false;
+  for (const [target, result] of Object.entries(entry.target_results ?? {})) {
+    if (["in_progress", "uncertain", "failed"].includes(result)) entry.target_results[target] = "pending";
+  }
 }
 
 export async function activateReleaseBaseline({
@@ -166,6 +187,7 @@ export async function activateReleaseBaseline({
   reason,
   azureBootstrapVerified,
   trmnlPreservationVerified,
+  previousMutationStopped = false,
   services
 }) {
   assertCommit(commit);
@@ -174,7 +196,7 @@ export async function activateReleaseBaseline({
     azureBootstrapVerified !== true ||
     trmnlPreservationVerified !== true
   ) throw new Error("activation_evidence_required");
-  return ledger.withExclusive(async () => {
+  return ledger.withExclusive(async signal => {
     const state = validateState((await ledger.read()) ?? newState());
     if (state.active || state.checkpoint !== null || state.queue.length !== 0) {
       throw new Error("already_initialized");
@@ -209,12 +231,20 @@ export async function activateReleaseBaseline({
         first_failure: null
       };
     } else {
+      confirmRecovery(state.activation, previousMutationStopped);
+      state.activation.recovery = {
+        actor: actor.trim(), reason: reason.trim(),
+        previous_mutation_stopped: previousMutationStopped,
+        at: new Date().toISOString()
+      };
       state.activation.status = "running";
+      state.activation.failure = null;
       state.activation.actor = actor.trim();
       state.activation.reason = reason.trim();
     }
     const activation = state.activation;
     const save = async () => {
+      signal?.throwIfAborted();
       state.updated_at = new Date().toISOString();
       await ledger.write(state);
     };
@@ -224,9 +254,9 @@ export async function activateReleaseBaseline({
         throw Object.assign(new Error(), { code: "release_services_unavailable" });
       }
       if (!activation.artifact) {
-        activation.artifact = assertArtifact(await services.prepare(commit, [...TARGETS]), commit);
+        activation.artifact = assertArtifact(await services.prepare(commit, [...TARGETS], { signal }), commit);
       } else if (typeof services.verifyArtifact !== "function" ||
-        !(await services.verifyArtifact(activation.artifact, commit))) {
+        !(await services.verifyArtifact(activation.artifact, commit, { signal }))) {
         throw Object.assign(new Error(), { code: "recovery_artifact_unavailable" });
       }
       if (TARGETS.some(target => !activation.artifact.references[target] ||
@@ -236,15 +266,18 @@ export async function activateReleaseBaseline({
       for (const target of TARGETS) {
         if (activation.target_results[target] === "verified") continue;
         activation.target_results[target] = "in_progress";
+        activation.recovery_confirmation_required = true;
         activation.stage = `${target}_deploy`;
         await save();
         const outcome = target === "azure"
-          ? await services.deployAndVerifyAzure(commit, activation.artifact)
-          : await services.publishAndVerifyTrmnl(commit, activation.artifact);
+          ? await services.deployAndVerifyAzure(commit, activation.artifact, { signal })
+          : await services.publishAndVerifyTrmnl(commit, activation.artifact, { signal });
+        signal?.throwIfAborted();
         if (outcome?.verified !== true) {
           throw Object.assign(new Error(), { code: `${target}_verification_failed` });
         }
         activation.target_results[target] = "verified";
+        activation.recovery_confirmation_required = false;
         await save();
       }
       activation.status = "succeeded";
@@ -256,7 +289,7 @@ export async function activateReleaseBaseline({
       return { active: true, baseline: commit, targets: [...TARGETS], status: "succeeded" };
     } catch (error) {
       activation.status = "failed";
-      activation.failure ??= {
+      activation.failure = {
         stage: activation.stage,
         code: safeFailure(error)
       };
@@ -347,36 +380,42 @@ export async function recoverInterruptedRelease({ ledger }) {
   });
 }
 
-export async function retryFailedRelease({ ledger, actor, reason, services }) {
+export async function retryFailedRelease({ ledger, actor, reason, services, previousMutationStopped = false }) {
   assertAttribution(actor, reason);
-  return mutate(ledger, async state => {
+  return mutate(ledger, async (state, signal) => {
     const release = state.queue.find(item => item.status === "failed");
     if (!release) throw new Error("no_failed_release");
+    confirmRecovery(release, previousMutationStopped);
     if (release.artifact) {
       if (typeof services?.verifyArtifact !== "function" ||
-        !(await services.verifyArtifact(release.artifact, release.commit))) {
+        !(await services.verifyArtifact(release.artifact, release.commit, { signal }))) {
         throw new Error("recovery_artifact_unavailable");
       }
-    } else if (release.first_failure?.stage !== "prepare") {
+    } else if (!["selection", "prepare"].includes(release.first_failure?.stage)) {
       throw new Error("recovery_artifact_unavailable");
     }
     release.status = "queued";
     release.retry = {
       actor: actor.trim(),
       reason: reason.trim(),
+      previous_mutation_stopped: previousMutationStopped,
       at: new Date().toISOString()
     };
     return { release: release.commit, retried: true };
   });
 }
 
-export async function skipFailedRelease({ ledger, actor, reason }) {
+export async function skipFailedRelease({ ledger, actor, reason, previousMutationStopped = false }) {
   assertAttribution(actor, reason);
   return mutate(ledger, state => {
     const release = state.queue.find(item => item.status === "failed");
     if (!release) throw new Error("no_failed_release");
+    confirmRecovery(release, previousMutationStopped);
     release.status = "skipped";
-    release.skip = { actor: actor.trim(), reason: reason.trim(), at: new Date().toISOString() };
+    release.skip = {
+      actor: actor.trim(), reason: reason.trim(),
+      previous_mutation_stopped: previousMutationStopped, at: new Date().toISOString()
+    };
     return { release: release.commit, skipped: true, baselines: { ...state.baselines } };
   });
 }
@@ -389,7 +428,7 @@ function safeFailure(error) {
 }
 
 export async function runNextRelease({ ledger, services }) {
-  return ledger.withExclusive(async () => {
+  return ledger.withExclusive(async signal => {
     const state = validateState((await ledger.read()) ?? newState());
     const barrier = state.queue.find(item => ["running", "failed"].includes(item.status));
     if (barrier) return { started: false, blocked_by: barrier.commit, status: barrier.status };
@@ -402,19 +441,20 @@ export async function runNextRelease({ ledger, services }) {
     release.attempts.push({ started_at: new Date().toISOString(), stage: "selection", result: "running" });
     const attempt = release.attempts.at(-1);
     const save = async () => {
+      signal?.throwIfAborted();
       state.updated_at = new Date().toISOString();
       await ledger.write(state);
     };
     await save();
 
     try {
-      const paths = [];
+      const targets = [];
       for (const target of TARGETS) {
         const baseline = state.baselines[target];
         if (baseline === null) throw Object.assign(new Error(), { code: "target_baseline_missing" });
-        paths.push(...await services.changedPaths(baseline, release.commit));
+        const paths = await services.changedPaths(baseline, release.commit, { signal });
+        if (classifyPaths(paths).includes(target)) targets.push(target);
       }
-      const targets = classifyPaths(paths);
       release.targets = targets;
       release.target_results ??= {};
       for (const target of targets) release.target_results[target] ??= "pending";
@@ -428,8 +468,9 @@ export async function runNextRelease({ ledger, services }) {
       }
       attempt.targets = targets;
       attempt.stage = "prepare";
+      await save();
       if (!release.artifact) {
-        const artifact = await services.prepare(release.commit, targets);
+        const artifact = await services.prepare(release.commit, targets, { signal });
         release.artifact = assertArtifact(artifact, release.commit);
       }
       if (targets.some(target => !release.artifact.references[target] ||
@@ -440,16 +481,19 @@ export async function runNextRelease({ ledger, services }) {
       for (const target of TARGETS) {
         if (!targets.includes(target) || state.baselines[target] === release.commit) continue;
         release.target_results[target] = "in_progress";
+        release.recovery_confirmation_required = true;
         attempt.stage = `${target}_deploy`;
         await save();
         const outcome = target === "azure"
-          ? await services.deployAndVerifyAzure(release.commit, release.artifact)
-          : await services.publishAndVerifyTrmnl(release.commit, release.artifact);
+          ? await services.deployAndVerifyAzure(release.commit, release.artifact, { signal })
+          : await services.publishAndVerifyTrmnl(release.commit, release.artifact, { signal });
+        signal?.throwIfAborted();
         if (outcome?.verified !== true) {
           throw Object.assign(new Error(), { code: `${target}_verification_failed` });
         }
         state.baselines[target] = release.commit;
         release.target_results[target] = "verified";
+        release.recovery_confirmation_required = false;
         attempt[`${target}_verified`] = true;
         await save();
       }
@@ -471,7 +515,9 @@ export async function runNextRelease({ ledger, services }) {
       attempt.failure = failure;
       await save();
       return {
+        started: true,
         release: release.commit,
+        targets: release.targets ?? [],
         status: "failed",
         blocked: true,
         stage: failure.stage,
@@ -493,11 +539,14 @@ export async function listReleaseStatus({ ledger }) {
         status: state.activation.status,
         stage: state.activation.stage,
         target_results: { ...state.activation.target_results },
+        recovery_confirmation_required: requiresRecoveryConfirmation(state.activation),
         failure: state.activation.failure ?? null
       } : null,
-      queue: state.queue.map(({ id, commit, status, targets, target_results, first_failure, skip }) => ({
+      queue: state.queue.map(({ id, commit, status, targets, target_results, first_failure, skip,
+        recovery_confirmation_required }) => ({
         id, commit, status, targets: targets ?? null,
         target_results: target_results ?? {},
+        recovery_confirmation_required: requiresRecoveryConfirmation({ recovery_confirmation_required, target_results }),
         first_failure: first_failure ?? null,
         skip: skip ? { actor: skip.actor, at: skip.at } : null
       }))

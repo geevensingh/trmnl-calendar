@@ -36,11 +36,15 @@ function limitedEnvironment(extra = {}) {
   return { ...output, ...extra };
 }
 
-async function run(command, args, { cwd, env = limitedEnvironment(), code = "release_tool_failed" } = {}) {
+async function run(command, args, {
+  cwd, env = limitedEnvironment(), code = "release_tool_failed", signal
+} = {}) {
+  signal?.throwIfAborted();
   try {
     return await execFileAsync(command, args, {
       cwd,
       env,
+      signal,
       encoding: "utf8",
       windowsHide: true,
       timeout: 20 * 60 * 1000,
@@ -51,7 +55,7 @@ async function run(command, args, { cwd, env = limitedEnvironment(), code = "rel
   }
 }
 
-async function withCommitCheckout(repository, commit, action) {
+async function withCommitCheckout(repository, commit, action, signal) {
   if (!shaPattern.test(commit)) reject("invalid_commit");
   const temporary = await mkdtemp(join(tmpdir(), "calendar-release-checkout-"));
   const checkout = join(temporary, "source");
@@ -59,6 +63,7 @@ async function withCommitCheckout(repository, commit, action) {
   try {
     await run("git", ["-C", repository, "worktree", "add", "--detach", checkout, commit], {
       env: limitedEnvironment(),
+      signal,
       code: "release_checkout_failed"
     });
     added = true;
@@ -107,7 +112,8 @@ function readRequiredEnv(name, pattern, code) {
   return value;
 }
 
-async function githubApi(path, method, payload, token) {
+async function githubApi(path, method, payload, token, signal) {
+  signal?.throwIfAborted();
   const api = process.env.GITHUB_API_URL ?? "https://api.github.com";
   const repository = readRequiredEnv("GITHUB_REPOSITORY", /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "github_deployment_record_failed");
   if (!token || !/^https:\/\/[A-Za-z0-9.-]+(?::[0-9]+)?(?:\/[A-Za-z0-9._/-]*)?$/.test(api) ||
@@ -125,7 +131,7 @@ async function githubApi(path, method, payload, token) {
         "X-GitHub-Api-Version": "2022-11-28"
       },
       body: payload === undefined ? undefined : JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000)
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000)
     });
   } catch {
     reject("github_deployment_record_failed");
@@ -138,7 +144,7 @@ async function githubApi(path, method, payload, token) {
   }
 }
 
-async function withDeploymentRecord(target, commit, action) {
+async function withDeploymentRecord(target, commit, action, signal) {
   const token = process.env.GITHUB_TOKEN;
   const environment = `production-${target}`;
   const deployment = await githubApi("/deployments", "POST", {
@@ -149,19 +155,19 @@ async function withDeploymentRecord(target, commit, action) {
     environment,
     description: `Release ${target} for ${commit}`,
     production_environment: true
-  }, token);
+  }, token, signal);
   if (!Number.isSafeInteger(deployment.id)) reject("github_deployment_record_failed");
   const server = process.env.GITHUB_SERVER_URL ?? "https://github.com";
   const repo = process.env.GITHUB_REPOSITORY;
   const runId = process.env.GITHUB_RUN_ID;
   const runUrl = `${server}/${repo}/actions/runs/${runId}`;
-  const update = async (state, description) => {
+  const update = async (state, description, updateSignal = signal) => {
     await githubApi(`/deployments/${deployment.id}/statuses`, "POST", {
       state,
       description,
       log_url: runUrl,
       environment
-    }, token);
+    }, token, updateSignal);
   };
   await update("in_progress", `Deploying ${target} for ${commit}`);
   try {
@@ -169,7 +175,7 @@ async function withDeploymentRecord(target, commit, action) {
     await update("success", `Verified ${target} for ${commit}`);
     return result;
   } catch (error) {
-    await update("failure", `Failed ${target} for ${commit}`);
+    await update("failure", `Failed ${target} for ${commit}`, null);
     throw error;
   }
 }
@@ -184,7 +190,7 @@ function makeArtifact(commit, references, digests, metadata = {}) {
   };
 }
 
-export async function createTrmnlArchive(source, output) {
+export async function createTrmnlArchive(source, output, { signal } = {}) {
   const entries = await readdir(source, { withFileTypes: true });
   const paths = entries.map(entry => entry.name).sort();
   if (paths.length !== expectedPluginFiles.size ||
@@ -198,6 +204,7 @@ export async function createTrmnlArchive(source, output) {
   ], {
     cwd: archiveDirectory,
     env: limitedEnvironment(),
+    signal,
     code: "trmnl_artifact_prepare_failed"
   });
   const bytes = await readFile(archive);
@@ -205,13 +212,14 @@ export async function createTrmnlArchive(source, output) {
   return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
-export async function unpackTrmnlArchive(archive, destination) {
+export async function unpackTrmnlArchive(archive, destination, { signal } = {}) {
   const archivePath = resolve(archive);
   const archiveName = `./${basename(archivePath)}`;
   const archiveDirectory = dirname(archivePath);
   const listing = await run("tar", ["-tf", archiveName], {
     cwd: archiveDirectory,
     env: limitedEnvironment(),
+    signal,
     code: "trmnl_artifact_invalid"
   });
   const paths = listing.stdout.split(/\r?\n/).filter(Boolean)
@@ -224,6 +232,7 @@ export async function unpackTrmnlArchive(archive, destination) {
   await run("tar", ["-xf", archiveName, "-C", resolve(destination)], {
     cwd: archiveDirectory,
     env: limitedEnvironment(),
+    signal,
     code: "trmnl_artifact_invalid"
   });
 }
@@ -239,17 +248,18 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
   const artifactStore = new AzureBlobArtifacts({ account, container: artifactContainer });
 
   return {
-    async changedPaths(from, to) {
+    async changedPaths(from, to, { signal } = {}) {
       const result = await run("git", [
         "-C", repository, "diff", "--no-renames", "--name-only", "-z", from, to
       ], {
         env: limitedEnvironment(),
+        signal,
         code: "release_git_diff_failed"
       });
       return result.stdout.split("\0").filter(Boolean);
     },
 
-    async prepare(commit, targets) {
+    async prepare(commit, targets, { signal } = {}) {
       return withCommitCheckout(repository, commit, async checkout => {
         const references = {};
         const digests = {};
@@ -259,7 +269,7 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
           const packaged = await run("pwsh", [
             "-NoProfile", "-NonInteractive", "-File", join(checkout, "scripts", "package-function.ps1"),
             "-OutputDirectory", outputDirectory
-          ], { cwd: checkout, env: limitedEnvironment(), code: "azure_package_failed" });
+          ], { cwd: checkout, env: limitedEnvironment(), code: "azure_package_failed", signal });
           let result;
           try {
             result = JSON.parse(packaged.stdout);
@@ -277,27 +287,27 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
           ) reject("azure_package_identity_invalid");
           const archiveDigest = createHash("sha256").update(archive).digest("hex");
           const reference = `releases/${commit}/azure-${archiveDigest}.zip`;
-          const upload = await artifactStore.put(reference, archive);
+          const upload = await artifactStore.put(reference, archive, { signal });
           references.azure = upload.reference;
           digests.azure = upload.sha256;
           metadata.azure_manifest = manifest;
         }
         if (targets.includes("trmnl")) {
           const bundle = await createTrmnlArchive(join(checkout, "display", "src"),
-            join(checkout, "artifacts", `trmnl-${commit}.tar`));
+            join(checkout, "artifacts", `trmnl-${commit}.tar`), { signal });
           const reference = `releases/${commit}/trmnl-${bundle.sha256}.tar`;
-          const upload = await artifactStore.put(reference, bundle.bytes);
+          const upload = await artifactStore.put(reference, bundle.bytes, { signal });
           references.trmnl = upload.reference;
           digests.trmnl = upload.sha256;
         }
         return makeArtifact(commit, references, digests, metadata);
-      });
+      }, signal);
     },
 
-    async verifyArtifact(artifact, commit) {
+    async verifyArtifact(artifact, commit, { signal } = {}) {
       if (artifact.commit !== commit) return false;
       for (const target of Object.keys(artifact.references)) {
-        const stored = await artifactStore.get(artifact.references[target]);
+        const stored = await artifactStore.get(artifact.references[target], { signal });
         if (stored.sha256 !== artifact.digests[target]) return false;
         if (target === "azure" && stored.bytes.length !== artifact.metadata.azure_manifest.archive_bytes) {
           return false;
@@ -306,9 +316,9 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
       return true;
     },
 
-    async deployAndVerifyAzure(commit, artifact) {
+    async deployAndVerifyAzure(commit, artifact, { signal } = {}) {
       return withDeploymentRecord("azure", commit, async () => {
-        const stored = await artifactStore.get(artifact.references.azure);
+        const stored = await artifactStore.get(artifact.references.azure, { signal });
         const manifest = artifact.metadata.azure_manifest;
         if (
           stored.sha256 !== artifact.digests.azure ||
@@ -340,7 +350,7 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
               "-ApprovedResourceGroupName", approvedGroup,
               "-ParametersFile", parametersPath,
               "-ReviewedMainCommit", commit
-            ], { cwd: checkout, env: limitedEnvironment(), code: "azure_infrastructure_failed" });
+            ], { cwd: checkout, env: limitedEnvironment(), code: "azure_infrastructure_failed", signal });
             if (!infra.stdout.includes("reconciliation completed")) reject("azure_infrastructure_failed");
 
             const packageDirectory = join(checkout, "artifacts", "recovered-package");
@@ -359,38 +369,40 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
             ], {
               cwd: checkout,
               env: limitedEnvironment({ TRMNL_FUNCTION_KEY: functionKey }),
+              signal,
               code: "azure_deployment_or_verification_failed"
             });
             if (!deployed.stdout.includes("redacted current-agenda/authentication smoke checks passed")) {
               reject("azure_deployment_or_verification_failed");
             }
             return { verified: true };
-          });
+          }, signal);
         });
-      });
+      }, signal);
     },
 
-    async publishAndVerifyTrmnl(commit, artifact) {
+    async publishAndVerifyTrmnl(commit, artifact, { signal } = {}) {
       return withDeploymentRecord("trmnl", commit, async () => {
-        const stored = await artifactStore.get(artifact.references.trmnl);
+        const stored = await artifactStore.get(artifact.references.trmnl, { signal });
         if (stored.sha256 !== artifact.digests.trmnl) reject("trmnl_artifact_unavailable");
         const directory = await mkdtemp(join(tmpdir(), "calendar-trmnl-release-"));
         const archive = join(directory, "source.tar");
         const source = join(directory, "src");
         try {
           await writeFile(archive, stored.bytes, { flag: "wx", mode: 0o600 });
-          await unpackTrmnlArchive(archive, source);
+          await unpackTrmnlArchive(archive, source, { signal });
           const result = await publishTrmnl({
             sourceDirectory: source,
             pluginId: process.env.TRMNL_PLUGIN_ID,
             preservationVerifiedPluginId: process.env.TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID,
-            apiKey: process.env.TRMNL_API_KEY
+            apiKey: process.env.TRMNL_API_KEY,
+            signal
           });
           return { verified: result.verified };
         } finally {
           await rm(directory, { recursive: true, force: true });
         }
-      });
+      }, signal);
     }
   };
 }

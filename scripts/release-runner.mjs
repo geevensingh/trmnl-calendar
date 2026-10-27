@@ -97,11 +97,26 @@ async function runGit(cwd, args) {
   }
 }
 
+export async function activateFromMain({ ledger, services, cwd, through, ...options }) {
+  const status = await listReleaseStatus({ ledger });
+  const commit = status.activation?.commit ?? through;
+  if (!status.activation) {
+    const main = await runGit(cwd, ["rev-parse", "refs/remotes/origin/main"]);
+    if (main !== through) throw new Error("activation_commit_must_be_current_main");
+  } else if (!(await isGitAncestor(cwd, commit, through))) {
+    throw new Error("activation_commit_not_on_main");
+  }
+  return activateReleaseBaseline({ ...options, ledger, services, commit });
+}
+
 async function runCli() {
   const { values } = parseArgs({
     options: {
       operation: { type: "string", default: "main" },
-      reason: { type: "string", default: "" }
+      reason: { type: "string", default: "" },
+      "previous-mutation-stopped": {
+        type: "boolean", default: process.env.PREVIOUS_MUTATION_STOPPED === "true"
+      }
     }
   });
   const operation = values.operation;
@@ -119,17 +134,18 @@ async function runCli() {
   if (operation === "status") return listReleaseStatus({ ledger });
 
   const services = createReleaseServices({ repository: cwd });
+  const previousMutationStopped = values["previous-mutation-stopped"];
   if (operation === "activate") {
-    const main = await runGit(cwd, ["rev-parse", "refs/remotes/origin/main"]);
-    if (main !== through) throw new Error("activation_commit_must_be_current_main");
-    return activateReleaseBaseline({
+    return activateFromMain({
       ledger,
-      commit: through,
+      cwd,
+      through,
       actor: process.env.GITHUB_ACTOR ?? "",
       reason: values.reason,
       azureBootstrapVerified: process.env.AZURE_BOOTSTRAP_VERIFIED === "true",
       trmnlPreservationVerified: Boolean(process.env.TRMNL_PLUGIN_ID) &&
         process.env.TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID === process.env.TRMNL_PLUGIN_ID,
+      previousMutationStopped,
       services
     });
   }
@@ -143,13 +159,15 @@ async function runCli() {
         ledger,
         actor: process.env.GITHUB_ACTOR ?? "",
         reason: values.reason,
+        previousMutationStopped,
         services
       });
     } else {
       await skipFailedRelease({
         ledger,
         actor: process.env.GITHUB_ACTOR ?? "",
-        reason: values.reason
+        reason: values.reason,
+        previousMutationStopped
       });
     }
   }

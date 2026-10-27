@@ -22,6 +22,11 @@ on:
         description: Required attribution for activation, retry, or skip
         type: string
         required: false
+      previous_mutation_stopped:
+        description: I verified all previous release processes and remote mutations have stopped
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -84,6 +89,7 @@ jobs:
         env:
           RELEASE_OPERATION: ${{ github.event.inputs.operation || 'main' }}
           RELEASE_REASON: ${{ github.event.inputs.reason || '' }}
+          PREVIOUS_MUTATION_STOPPED: ${{ github.event.inputs.previous_mutation_stopped || 'false' }}
           AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
           AZURE_RELEASE_CONTAINER: ${{ vars.AZURE_RELEASE_CONTAINER }}
           AZURE_ARTIFACT_CONTAINER: ${{ vars.AZURE_ARTIFACT_CONTAINER }}

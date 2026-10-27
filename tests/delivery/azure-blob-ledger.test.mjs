@@ -20,6 +20,7 @@ test("Azure Blob ledger uses an exclusive lease and conditional writes without e
       return new Response("", { status: 404 });
     }
     if (request.method === "PUT" && !request.headers["x-ms-lease-action"]) {
+      assert.equal(request.headers["x-ms-blob-type"], "BlockBlob");
       created = true;
       return new Response("", { status: 201, headers: { etag: '"ledger-1"' } });
     }
@@ -69,6 +70,41 @@ test("Azure Blob ledger rejects unsafe target configuration before making reques
     () => new AzureBlobLedger({ account: "bad account", container: "release-control" }),
     { message: "invalid_ledger_configuration" }
   );
+});
+
+test("lease-renewal failure aborts active work immediately and refuses subsequent ledger writes", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let writes = 0;
+  const ledger = new AzureBlobLedger({
+    account: "trmnlcalendar",
+    container: "release-control",
+    getToken: async () => "synthetic-token",
+    fetchImpl: async (_url, request) => {
+      const action = request.headers["x-ms-lease-action"];
+      if (action === "acquire") {
+        return new Response("", { status: 201, headers: { "x-ms-lease-id": "lease-id" } });
+      }
+      if (action === "renew") return new Response("", { status: 500 });
+      if (action === "release") return new Response("", { status: 200 });
+      if (request.method === "GET") return new Response("{}", { headers: { etag: '"ledger-1"' } });
+      writes += 1;
+      return new Response("", { status: 201, headers: { etag: '"ledger-2"' } });
+    }
+  });
+  let entered;
+  const active = new Promise(resolve => { entered = resolve; });
+  const operation = ledger.withExclusive(async signal => {
+    await ledger.read();
+    const cancelled = new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+    entered();
+    await cancelled;
+    assert.equal(signal.reason.message, "storage_lease_lost");
+    await assert.rejects(ledger.write({}), { message: "storage_lease_lost" });
+  });
+  await active;
+  t.mock.timers.tick(20_000);
+  await assert.rejects(operation, { message: "storage_lease_lost" });
+  assert.equal(writes, 0);
 });
 
 test("artifact storage is write-once, address-checked, and verifies existing bytes", async () => {

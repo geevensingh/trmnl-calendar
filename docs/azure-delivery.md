@@ -238,7 +238,13 @@ Set these GitHub Actions secrets:
 
 The first manual `activate` operation on `main` publishes and verifies both targets at the selected reviewed main commit before recording target baselines. It refuses to activate unless the evidence variables are set, the plugin IDs match, and the reason is attributed. It does not run the synthetic preservation test or establish missing live evidence on the owner's behalf. Do not set either evidence variable until the corresponding owner verification is complete.
 
+If activation fails, rerun `activate` on `main` with a new attributed reason. Recovery resumes the ledger's original activation commit and retained artifacts, even if `main` has advanced; verified targets are not redeployed. The current-main restriction applies only to a new activation. An interrupted activation is first recorded as uncertain and blocked before a later explicit recovery can resume it.
+
 Use **Actions > Coordinated production release > Run workflow** on `main` for `status`, `activate`, `retry`, or `skip`. Supply a concise reason for activation/retry/skip. A retry reuses the original commit and artifacts; a skip records the actor and reason without advancing either target baseline. `main` is the normal automatic operation. Never manually edit the Blob ledger or delete retained release artifacts to clear a barrier. Keep GitHub deployment permissions enabled for the workflow; do not add CI checks or rerun unrelated CI as part of release recovery.
+
+Lease-renewal failure cancels active local commands and prevents subsequent deployment stages or ledger writes by that controller. Cancellation is not proof that descendants or an already accepted Azure/TRMNL request have stopped. Before every external mutation, the ledger records `recovery_confirmation_required`; failure or interruption leaves that barrier in place. To retry, skip, or resume activation after a mutation failure, first verify that the previous runner processes (including descendants) have ended and that all Azure deployment-stack/code deployments or TRMNL publishing requests have completed or been stopped. Do not merely break the lease or cancel a GitHub run and assume remote work stopped.
+
+Only after that verification, select **I verified all previous release processes and remote mutations have stopped** in the manual workflow and provide the evidence/context in the attributed reason. The controller records this confirmation with the actor and time before allowing recovery. The equivalent CLI switch is `--previous-mutation-stopped`. Status exposes the barrier; automatic scans cannot clear it. Selection/preparation failures before any mutation can be retried without this confirmation.
 
 ## Redacted HTTP smoke and live limits
 

@@ -169,6 +169,57 @@ test("what-if sends only a runtime parameter-file reference and emits no recipie
   assert.equal((await readFile(callsPath, "utf8")).trim().split(/\r?\n/).length, 1);
 });
 
+test("release reconciliation uses the supported resource-only deletion action on the approved group", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "agenda-release-stack-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const callsPath = join(directory, "azure-calls.jsonl");
+  const parameterPath = join(directory, "parameters.json");
+  const document = JSON.parse(await readFile(join(root, "infra", "parameters.example.json"), "utf8"));
+  for (const [name, parameter] of Object.entries(document.parameters)) {
+    if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
+      ? "synthetic@example.invalid"
+      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
+        : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
+          : "syntheticresource";
+  }
+  await writeFile(parameterPath, JSON.stringify(document));
+  const stub = `
+    function global:git {
+      if ($args -contains 'rev-parse') { 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
+      $global:LASTEXITCODE = 0
+    }
+    function global:az {
+      ConvertTo-Json -InputObject @($args) -Compress | Add-Content -LiteralPath $env:AZURE_TEST_CALLS
+      if ($args[0] -eq 'group' -and $args[1] -eq 'show') { 'syntheticresource' }
+      elseif ($args[0] -eq 'stack') {
+        $action = $args[[Array]::IndexOf($args, '--action-on-unmanage') + 1]
+        if ($action -notin @('deleteAll', 'deleteResources', 'detachAll')) {
+          $global:LASTEXITCODE = 2
+          return
+        }
+      }
+      $global:LASTEXITCODE = 0
+    }
+    & .\\scripts\\deploy-release-infrastructure.ps1 `
+    + "-SubscriptionId 00000000-0000-0000-0000-000000000001 "
+    + "-ApprovedResourceGroupName syntheticresource -ParametersFile $env:AZURE_TEST_PARAMETERS "
+    + "-ReviewedMainCommit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const result = spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", stub], {
+    cwd: root, encoding: "utf8", env: {
+      ...process.env, AZURE_TEST_CALLS: callsPath, AZURE_TEST_PARAMETERS: parameterPath
+    }
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0].slice(0, 2), ["group", "show"]);
+  const reconciliation = calls[1];
+  assert.deepEqual(reconciliation.slice(0, 3), ["stack", "group", "create"]);
+  assert.equal(reconciliation[reconciliation.indexOf("--action-on-unmanage") + 1], "deleteResources");
+  assert.equal(reconciliation[reconciliation.indexOf("--resource-group") + 1], "syntheticresource");
+  assert.equal(reconciliation[reconciliation.indexOf("--deny-settings-mode") + 1], "denyDelete");
+});
+
 test("code deployment requires a clean reviewed package and the approved on-demand .NET 10 Flex target", async t => {
   const directory = await mkdtemp(join(tmpdir(), "agenda-code-deploy-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

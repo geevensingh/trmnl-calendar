@@ -56,6 +56,7 @@ export class AzureBlobLedger {
   #getToken;
   #etag = null;
   #leaseId = null;
+  #operationAbort = null;
 
   constructor({ account, container, blob = "release-ledger.json", fetchImpl = fetch, getToken } = {}) {
     if (
@@ -169,6 +170,8 @@ export class AzureBlobLedger {
 
   async withExclusive(operation) {
     await this.#acquireLease();
+    this.#operationAbort = new AbortController();
+    const signal = this.#operationAbort.signal;
     let heartbeatError = null;
     let operationError = null;
     let renewing = false;
@@ -178,7 +181,8 @@ export class AzureBlobLedger {
       try {
         await this.#renewLease();
       } catch {
-        heartbeatError = new Error("storage_lease_lost");
+        heartbeatError = Object.assign(new Error("storage_lease_lost"), { code: "storage_lease_lost" });
+        this.#operationAbort.abort(heartbeatError);
       } finally {
         renewing = false;
       }
@@ -186,7 +190,7 @@ export class AzureBlobLedger {
     heartbeat.unref?.();
     let result;
     try {
-      result = await operation();
+      result = await operation(signal);
     } catch (error) {
       operationError = error;
       throw error;
@@ -195,13 +199,14 @@ export class AzureBlobLedger {
       if (renewing) {
         while (renewing) await new Promise(resolve => setTimeout(resolve, 10));
       }
+      this.#operationAbort = null;
       const failures = operationError ? [operationError] : [];
       try {
         await this.#releaseLease();
       } catch {
         failures.push(new Error("storage_lease_release_failed"));
       }
-      if (heartbeatError) failures.push(heartbeatError);
+      if (heartbeatError && !failures.includes(heartbeatError)) failures.push(heartbeatError);
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) {
         throw new AggregateError(failures, "storage_lease_cleanup_failed");
@@ -211,6 +216,7 @@ export class AzureBlobLedger {
   }
 
   async read() {
+    this.#operationAbort?.signal.throwIfAborted();
     if (!this.#leaseId) throw new Error("storage_lease_required");
     const response = await this.#request("GET", {
       headers: { "x-ms-lease-id": this.#leaseId }
@@ -226,9 +232,11 @@ export class AzureBlobLedger {
   }
 
   async write(state) {
+    this.#operationAbort?.signal.throwIfAborted();
     if (!this.#leaseId || !this.#etag) throw new Error("storage_lease_required");
     const response = await this.#request("PUT", {
       headers: {
+        "x-ms-blob-type": "BlockBlob",
         "x-ms-lease-id": this.#leaseId,
         "If-Match": this.#etag,
         "Content-Type": "application/json"
@@ -266,7 +274,8 @@ export class AzureBlobArtifacts {
     return storageUrl(this.#account, this.#container, encoded);
   }
 
-  async #request(method, reference, { headers = {}, body, statuses = [] } = {}) {
+  async #request(method, reference, { headers = {}, body, statuses = [], signal } = {}) {
+    signal?.throwIfAborted();
     const url = this.#url(reference);
     const token = await this.#getToken();
     let response;
@@ -280,7 +289,7 @@ export class AzureBlobArtifacts {
         ...headers
       },
       body,
-      signal: AbortSignal.timeout(15_000)
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000)
       });
     } catch {
       throw new Error("artifact_storage_request_failed");
@@ -293,7 +302,7 @@ export class AzureBlobArtifacts {
     return response;
   }
 
-  async put(reference, bytes) {
+  async put(reference, bytes, { signal } = {}) {
     if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > maximumArtifactBytes) {
       throw new Error("artifact_size_invalid");
     }
@@ -307,10 +316,11 @@ export class AzureBlobArtifacts {
         "Content-Type": "application/octet-stream"
       },
       body: bytes,
-      statuses: [409, 412]
+      statuses: [409, 412],
+      signal
     });
     if (response.status === 409 || response.status === 412) {
-      const existing = await this.get(reference);
+      const existing = await this.get(reference, { signal });
       if (existing.sha256 !== digest || existing.bytes.length !== bytes.length) {
         throw new Error("artifact_identity_conflict");
       }
@@ -318,8 +328,8 @@ export class AzureBlobArtifacts {
     return { reference, sha256: digest, bytes: bytes.length };
   }
 
-  async get(reference) {
-    const response = await this.#request("GET", reference);
+  async get(reference, { signal } = {}) {
+    const response = await this.#request("GET", reference, { signal });
     const advertisedLength = Number(response.headers.get("content-length"));
     if (advertisedLength > maximumArtifactBytes) {
       await response.body?.cancel();

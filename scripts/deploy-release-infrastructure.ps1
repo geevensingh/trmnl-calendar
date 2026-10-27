@@ -111,7 +111,7 @@ try {
         '--subscription', $SubscriptionId.ToString(),
         '--template-file', (Join-Path $root 'infra\resources.bicep'),
         '--parameters', "@$scopedPath",
-        '--action-on-unmanage', 'delete',
+        '--action-on-unmanage', 'deleteResources',
         '--deny-settings-mode', 'denyDelete',
         '--description', "Reviewed main release $ReviewedMainCommit; deployment $deploymentName",
         '--yes',

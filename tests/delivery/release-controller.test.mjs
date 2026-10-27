@@ -77,8 +77,73 @@ test("classification selects only affected production targets and defaults unkno
   assert.deepEqual(classifyPaths(["scripts/publish-trmnl.mjs"]), ["azure", "trmnl"]);
   assert.deepEqual(classifyPaths(["tests/CalendarAgenda.Tests/AgendaHttpTests.cs"]), ["azure"]);
   assert.deepEqual(classifyPaths(["display/workbench/preview.mjs", "README.md"]), []);
+  assert.deepEqual(classifyPaths(["scripts/agenda-workbench.mjs", "display/render.rb"]), []);
   assert.deepEqual(classifyPaths(["new-and-unclassified/file.txt"]), ["azure", "trmnl"]);
 });
+
+test("target selection uses only the corresponding target baseline after alternating commits", async () => {
+  const ledger = await activatedLedger();
+  await admitMainCommits({
+    ledger,
+    commits: [
+      { commit: commit("b"), parent: commit("a"), paths: ["display/src/full.liquid"] },
+      { commit: commit("c"), parent: commit("b"), paths: ["src/CalendarAgenda/AgendaFunction.cs"] }
+    ],
+    through: commit("c"),
+    isAncestor: async () => false
+  });
+  const deployed = [];
+  const services = {
+    async changedPaths(base, head) {
+      if (head === commit("b")) return ["display/src/full.liquid"];
+      return base === commit("a")
+        ? ["display/src/full.liquid", "src/CalendarAgenda/AgendaFunction.cs"]
+        : ["src/CalendarAgenda/AgendaFunction.cs"];
+    },
+    async prepare(head, targets) {
+      return releaseArtifact(head, Object.fromEntries(targets.map(target => [target, `${target}/${head}`])));
+    },
+    async deployAndVerifyAzure(head) { deployed.push(["azure", head]); return { verified: true }; },
+    async publishAndVerifyTrmnl(head) { deployed.push(["trmnl", head]); return { verified: true }; }
+  };
+  assert.deepEqual((await runNextRelease({ ledger, services })).targets, ["trmnl"]);
+  assert.deepEqual((await runNextRelease({ ledger, services })).targets, ["azure"]);
+  assert.deepEqual(deployed, [["trmnl", commit("b")], ["azure", commit("c")]]);
+});
+
+for (const stage of ["selection", "prepare"]) {
+  test(`artifact-free ${stage} failure can be retried before any deployment`, async () => {
+    const ledger = await activatedLedger();
+    await admitMainCommits({
+      ledger, commits: [{
+        commit: commit("b"), parent: commit("a"), paths: ["src/CalendarAgenda/AgendaFunction.cs"]
+      }], through: commit("b"), isAncestor: async () => false
+    });
+    let fail = true;
+    let deployments = 0;
+    const services = {
+      async changedPaths() {
+        if (fail && stage === "selection") throw Object.assign(new Error(), { code: "selection_failed" });
+        return ["src/CalendarAgenda/AgendaFunction.cs"];
+      },
+      async prepare(head) {
+        assert.equal((await ledger.read()).queue[0].attempts.at(-1).stage, "prepare");
+        if (fail && stage === "prepare") throw Object.assign(new Error(), { code: "prepare_failed" });
+        return releaseArtifact(head);
+      },
+      async deployAndVerifyAzure() { deployments += 1; return { verified: true }; }
+    };
+    const failure = await runNextRelease({ ledger, services });
+    assert.equal(failure.stage, stage);
+    assert.equal(deployments, 0);
+    assert.equal((await ledger.read()).queue[0].artifact, null);
+    await retryFailedRelease({ ledger, actor: "owner", reason: "Retry before deployment", services });
+    assert.equal((await ledger.read()).queue[0].status, "queued");
+    fail = false;
+    assert.equal((await runNextRelease({ ledger, services })).status, "succeeded");
+    assert.equal(deployments, 1);
+  });
+}
 
 test("activation refuses missing bootstrap or synthetic preservation evidence before deploying", async () => {
   const ledger = memoryLedger();
@@ -264,13 +329,21 @@ test("Azure failure blocks TRMNL and successors; retry keeps the original commit
   };
   const failed = await runNextRelease({ ledger, services });
   assert.equal(failed.status, "failed");
+  assert.equal(failed.started, true);
+  assert.deepEqual(failed.targets, ["azure", "trmnl"]);
   assert.equal(failed.code, "azure_verification_failed");
   assert.deepEqual(stages, ["azure"]);
   assert.doesNotMatch(JSON.stringify(await ledger.read()), /secret-bearing diagnostic/);
   assert.deepEqual(await runNextRelease({ ledger, services }), {
     started: false, blocked_by: commit("b"), status: "failed"
   });
-  await retryFailedRelease({ ledger, actor: "maintainer", reason: "Retry exact release", services });
+  await assert.rejects(retryFailedRelease({
+    ledger, actor: "maintainer", reason: "Retry exact release", services
+  }), { message: "previous_mutation_stop_confirmation_required" });
+  await retryFailedRelease({
+    ledger, actor: "maintainer", reason: "Retry exact release after confirming completion",
+    services, previousMutationStopped: true
+  });
   retry = true;
   assert.equal((await runNextRelease({ ledger, services })).status, "succeeded");
   assert.deepEqual(stages, ["azure", "azure", "trmnl"]);
@@ -309,7 +382,13 @@ test("partial TRMNL failure preserves Azure success and skip does not advance ta
   assert.deepEqual((await listReleaseStatus({ ledger })).queue[0].target_results, {
     azure: "verified", trmnl: "failed"
   });
-  await skipFailedRelease({ ledger, actor: "owner", reason: "Explicitly bypass blocked TRMNL deployment" });
+  await assert.rejects(skipFailedRelease({
+    ledger, actor: "owner", reason: "Explicitly bypass blocked TRMNL deployment"
+  }), { message: "previous_mutation_stop_confirmation_required" });
+  await skipFailedRelease({
+    ledger, actor: "owner", reason: "Confirmed publication stopped before bypassing",
+    previousMutationStopped: true
+  });
   const status = await listReleaseStatus({ ledger });
   assert.equal(status.queue[0].status, "skipped");
   assert.deepEqual(status.baselines, { azure: commit("b"), trmnl: commit("a") });
@@ -333,5 +412,55 @@ test("interrupted active work becomes an uncertain failure barrier, never presum
   });
   assert.equal((await listReleaseStatus({ ledger })).queue[0].first_failure.code, "interrupted_uncertain");
   assert.equal((await listReleaseStatus({ ledger })).queue[0].target_results.azure, "uncertain");
+  assert.equal((await listReleaseStatus({ ledger })).queue[0].recovery_confirmation_required, true);
   assert.deepEqual((await runNextRelease({ ledger, services: {} })).status, "failed");
+  await assert.rejects(retryFailedRelease({
+    ledger, actor: "owner", reason: "Retry an interrupted release", services: {}
+  }), { message: "previous_mutation_stop_confirmation_required" });
+  await assert.rejects(skipFailedRelease({
+    ledger, actor: "owner", reason: "Skip an interrupted release"
+  }), { message: "previous_mutation_stop_confirmation_required" });
+});
+
+test("lease cancellation reaches the active deployment and preserves a durable recovery barrier", async () => {
+  const ledger = await activatedLedger();
+  await admitMainCommits({
+    ledger, commits: [{
+      commit: commit("b"), parent: commit("a"), paths: ["docs/agenda-contract.md"]
+    }], through: commit("b"), isAncestor: async () => false
+  });
+  const abort = new AbortController();
+  const withExclusive = ledger.withExclusive;
+  ledger.withExclusive = operation => withExclusive(() => operation(abort.signal));
+  const services = {
+    async changedPaths() { return ["docs/agenda-contract.md"]; },
+    async prepare(head, targets) {
+      return releaseArtifact(head, Object.fromEntries(targets.map(target => [target, `${target}/${head}`])));
+    },
+    async deployAndVerifyAzure(_head, _artifact, { signal }) {
+      assert.equal(signal, abort.signal);
+      assert.equal((await ledger.read()).queue[0].recovery_confirmation_required, true);
+      const completed = new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+      abort.abort(Object.assign(new Error("storage_lease_lost"), { code: "storage_lease_lost" }));
+      return completed;
+    },
+    async publishAndVerifyTrmnl() { assert.fail("Cancelled releases cannot publish TRMNL"); },
+    async verifyArtifact() { return true; }
+  };
+  await assert.rejects(runNextRelease({ ledger, services }), { message: "storage_lease_lost" });
+  ledger.withExclusive = withExclusive;
+  assert.equal((await ledger.read()).queue[0].status, "running");
+  await recoverInterruptedRelease({ ledger });
+  await assert.rejects(retryFailedRelease({
+    ledger, services, actor: "owner", reason: "Retry without stop evidence"
+  }), { message: "previous_mutation_stop_confirmation_required" });
+  await retryFailedRelease({
+    ledger, services, actor: "owner", reason: "Verified previous processes and remote mutations stopped",
+    previousMutationStopped: true
+  });
+  const release = (await ledger.read()).queue[0];
+  assert.equal(release.status, "queued");
+  assert.equal(release.retry.previous_mutation_stopped, true);
 });

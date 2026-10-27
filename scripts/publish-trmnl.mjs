@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
@@ -43,13 +43,14 @@ async function digestFiles(root, paths) {
   return hash.digest("hex");
 }
 
-async function canonicalSettings(path) {
+async function canonicalSettings(path, signal) {
   try {
     const { stdout } = await execFileAsync("ruby", [
       "-rjson", "-ryaml", "-e",
       "value = YAML.safe_load_file(ARGV.fetch(0)); abort unless value.is_a?(Hash); value.delete('id'); STDOUT.write(JSON.generate(value))",
       path
     ], {
+      signal,
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 1024 * 1024
@@ -60,12 +61,14 @@ async function canonicalSettings(path) {
   }
 }
 
-function runCli(command, args, env, cwd, runCommand) {
-  if (runCommand) return runCommand(command, args, { env, cwd });
+function runCli(command, args, env, cwd, runCommand, signal) {
+  signal?.throwIfAborted();
+  if (runCommand) return runCommand(command, args, { env, cwd, signal });
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd,
       env,
+      signal,
       stdio: "ignore",
       windowsHide: true
     });
@@ -99,7 +102,8 @@ export async function publishTrmnl({
   pluginId,
   preservationVerifiedPluginId,
   apiKey = process.env.TRMNL_API_KEY,
-  runCommand
+  runCommand,
+  signal
 }) {
   if (!pluginIdPattern.test(pluginId ?? "")) fail("trmnl_target_identity_missing");
   if (preservationVerifiedPluginId !== pluginId) fail("trmnl_preservation_gate_missing");
@@ -119,9 +123,11 @@ export async function publishTrmnl({
     const childEnvironment = publisherEnvironment(apiKey);
     try {
       await runCli("trmnlp", ["push", "--force", "--id", pluginId],
-        childEnvironment, workingDirectory, runCommand);
+        childEnvironment, workingDirectory, runCommand, signal);
+      await rm(stagedSource, { recursive: true });
+      await mkdir(stagedSource);
       await runCli("trmnlp", ["pull", "--force", "--id", pluginId],
-        childEnvironment, workingDirectory, runCommand);
+        childEnvironment, workingDirectory, runCommand, signal);
     } catch {
       fail("trmnl_publish_or_verify_failed");
     } finally {
@@ -138,8 +144,8 @@ export async function publishTrmnl({
     ]);
     if (deployedTemplatesHash !== sourceTemplatesHash) fail("trmnl_deployed_content_mismatch");
     const [sourceSettings, deployedSettings] = await Promise.all([
-      canonicalSettings(join(source, "settings.yml")),
-      canonicalSettings(join(stagedSource, "settings.yml"))
+      canonicalSettings(join(source, "settings.yml"), signal),
+      canonicalSettings(join(stagedSource, "settings.yml"), signal)
     ]);
     if (deployedSettings !== sourceSettings) fail("trmnl_deployed_content_mismatch");
     const deployedHash = createHash("sha256")

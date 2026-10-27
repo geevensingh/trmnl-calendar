@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -228,13 +228,21 @@ export async function unpackTrmnlArchive(archive, destination, { signal } = {}) 
   if (paths.length !== expectedPluginFiles.size ||
     paths.some(path => !expectedPluginFiles.has(path)) ||
     new Set(paths).size !== expectedPluginFiles.size) reject("trmnl_artifact_invalid");
-  await mkdir(destination, { recursive: true });
-  await run("tar", ["-xf", archiveName, "-C", resolve(destination)], {
-    cwd: archiveDirectory,
-    env: limitedEnvironment(),
-    signal,
-    code: "trmnl_artifact_invalid"
-  });
+  const destinationDirectory = resolve(destination);
+  await mkdir(destinationDirectory, { recursive: true });
+  // GNU tar unquotes -C paths; a local input also avoids drive-qualified archive names.
+  const extraction = await mkdtemp(join(destinationDirectory, ".trmnl-archive-"));
+  try {
+    await copyFile(archivePath, join(extraction, "source.tar"));
+    await run("tar", ["-xf", `./${basename(extraction)}/source.tar`], {
+      cwd: destinationDirectory,
+      env: limitedEnvironment(),
+      signal,
+      code: "trmnl_artifact_invalid"
+    });
+  } finally {
+    await rm(extraction, { recursive: true, force: true });
+  }
 }
 
 export function createReleaseServices({ repository = process.cwd() } = {}) {

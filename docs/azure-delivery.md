@@ -244,6 +244,8 @@ Routine releases compare live capacity against the `reviewedFunctionCapacity` va
 
 Before any TRMNL push, the publisher pulls the existing non-secret definition and compares custom-field identifiers and types. Removing, renaming or changing a deployed field type fails with `trmnl_field_migration_required` before mutation. There is no implicit migration or configured-value reset: retain the existing schema until an explicit owner-reviewed value-preserving migration has been implemented. Post-push verification pulls into an empty source directory and compares templates and parsed settings, ignoring mapping-key order but preserving array order.
 
+Retained TRMNL archives are restored using a destination-local temporary input, removed before publication. This avoids GNU tar unquoting Windows directory arguments or treating drive-qualified archive names as remote.
+
 Set these GitHub repository variables:
 
 | Variable | Value |

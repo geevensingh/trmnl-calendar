@@ -192,8 +192,7 @@ export async function createTrmnlArchive(source, output) {
     entries.some(entry => !entry.isFile() || entry.isSymbolicLink())) reject("trmnl_source_invalid");
   await mkdir(dirname(output), { recursive: true });
   await run("tar", [
-    "--sort=name", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner",
-    "-cf", output, "-C", source, "."
+    "--format=ustar", "-cf", output, "-C", source, ...paths
   ], { env: limitedEnvironment(), code: "trmnl_artifact_prepare_failed" });
   const bytes = await readFile(output);
   if (bytes.length === 0 || bytes.length > maximumArtifactBytes) reject("artifact_size_invalid");

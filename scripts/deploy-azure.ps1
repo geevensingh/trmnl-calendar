@@ -74,7 +74,7 @@ $required = @(
 )
 $allowed = $required + @(
     'sourceSecretName', 'cacheContainerName', 'deploymentContainerName', 'retainHostDiagnostics',
-    'releaseControlContainerName', 'releaseControllerPrincipalId'
+    'releaseControlContainerName', 'releaseArtifactContainerName', 'releaseControllerPrincipalId'
 )
 foreach ($name in $parameters.Keys) {
     if ($name -notin $allowed) {
@@ -185,9 +185,9 @@ if ($Mode -eq 'DeployCode') {
             $httpTrigger = @($agendaBindings | Where-Object type -CEQ 'httpTrigger')
             $httpOutput = @($agendaBindings | Where-Object type -CEQ 'http')
             $timerTrigger = @($refreshBindings | Where-Object type -CEQ 'timerTrigger')
-            $methods = if ($httpTrigger.Count -eq 1) {
-                @($httpTrigger[0].methods | ForEach-Object { [string]$_ } | Sort-Object)
-            } else { @() }
+            $methods = @(if ($httpTrigger.Count -eq 1) {
+                $httpTrigger[0].methods | ForEach-Object { [string]$_ } | Sort-Object
+            })
             if ($httpTrigger.Count -eq 1 -and $httpOutput.Count -eq 1 -and
                 $agendaBindings.Count -eq 2 -and
                 $httpTrigger[0].authLevel -CEQ 'function' -and

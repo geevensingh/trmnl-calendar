@@ -134,7 +134,9 @@ test("what-if sends only a runtime parameter-file reference and emits no recipie
   for (const [name, parameter] of Object.entries(document.parameters)) {
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "SYNTHETIC_PRIVATE_RECIPIENT@example.invalid"
-      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z" : "syntheticresource";
+      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
+        : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
+          : "syntheticresource";
   }
   await writeFile(parameterPath, JSON.stringify(document));
   const stub = `
@@ -186,7 +188,9 @@ test("code deployment requires a clean reviewed package and the approved on-dema
   for (const [name, parameter] of Object.entries(document.parameters))
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "synthetic@example.invalid"
-      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z" : "syntheticresource";
+      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
+        : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
+          : "syntheticresource";
   await writeFile(parameterPath, JSON.stringify(document));
   const site = {
     kind: "functionapp,linux",
@@ -244,11 +248,14 @@ test("code deployment requires a clean reviewed package and the approved on-dema
   assert.deepEqual(deployment.slice(0, 4), ["functionapp", "deployment", "source", "config-zip"]);
   assert.equal(deployment[deployment.indexOf("--build-remote") + 1], "false");
   assert.equal(deployment[deployment.indexOf("--src") + 1], archivePath);
+  assert.equal(calls.filter(args => args[0] === "functionapp" && args[1] === "deployment").length, 1);
+  assert.equal(calls.filter(args => args[0] === "functionapp" && args[1] === "function").length, 1);
+  const verifiedCalls = calls;
   manifest.working_tree_clean = false;
   await writeFile(manifestPath, JSON.stringify(manifest));
   const dirty = run();
   assert.notEqual(dirty.status, 0);
   assert.match(dirty.stderr, /clean.*reviewed|reviewed.*clean/);
   calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
-  assert.equal(calls.filter(args => args[0] === "functionapp").length, 1);
+  assert.deepEqual(calls, verifiedCalls);
 });

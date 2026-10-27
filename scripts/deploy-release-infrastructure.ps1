@@ -62,7 +62,7 @@ $names = @(
     'location', 'functionAppName', 'planName', 'storageAccountName', 'hostIdentityName',
     'keyVaultName', 'logAnalyticsName', 'applicationInsightsName', 'budgetName',
     'budgetAlertEmail', 'budgetStartDate', 'sourceSecretName', 'cacheContainerName',
-    'deploymentContainerName', 'releaseControlContainerName',
+    'deploymentContainerName', 'releaseControlContainerName', 'releaseArtifactContainerName',
     'releaseControllerPrincipalId', 'retainHostDiagnostics'
 )
 $allowed = $names + @('resourceGroupName')
@@ -81,7 +81,7 @@ foreach ($name in @(
     'location', 'functionAppName', 'planName', 'storageAccountName', 'hostIdentityName',
     'keyVaultName', 'logAnalyticsName', 'applicationInsightsName', 'budgetName',
     'budgetAlertEmail', 'budgetStartDate', 'sourceSecretName', 'cacheContainerName',
-    'deploymentContainerName', 'releaseControlContainerName'
+    'deploymentContainerName', 'releaseControlContainerName', 'releaseArtifactContainerName'
 )) {
     if (!$scopedParameters.parameters.ContainsKey($name) -or
         [string]::IsNullOrWhiteSpace([string]$scopedParameters.parameters[$name].value)) {

@@ -36,10 +36,21 @@ test("release-stack parameters example supplies every required resource paramete
   const acceptedNames = [...nameBlock.matchAll(/'([A-Za-z]\w*)'/g)].map(([, name]) => name);
   const required = [...template.matchAll(/^param\s+([A-Za-z]\w*)\s+\w+\s*$/gm)]
     .map(([, name]) => name);
+  const deploy = await readFile(join(root, "scripts", "deploy-azure.ps1"), "utf8");
+  const requiredNames = deploy.match(/\$required = @\(([\s\S]*?)\)/)?.[1] ?? "";
+  const optionalNames = deploy.match(/\$allowed = \$required \+ @\(([\s\S]*?)\)/)?.[1] ?? "";
+  const deploymentNames = [...`${requiredNames}${optionalNames}`.matchAll(/'([A-Za-z]\w*)'/g)]
+    .map(([, name]) => name);
   for (const name of required) {
     assert.ok(Object.hasOwn(example.parameters, name), `missing required resource parameter: ${name}`);
     assert.notEqual(example.parameters[name].value, undefined, `missing value for resource parameter: ${name}`);
     assert.ok(acceptedNames.includes(name), `release stack script omits resource parameter: ${name}`);
+  }
+  for (const name of Object.keys(example.parameters)) {
+    assert.ok(deploymentNames.includes(name), `Azure deploy script rejects example parameter: ${name}`);
+    if (name !== "resourceGroupName") {
+      assert.ok(acceptedNames.includes(name), `release stack script rejects example parameter: ${name}`);
+    }
   }
 });
 

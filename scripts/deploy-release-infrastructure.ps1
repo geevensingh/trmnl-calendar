@@ -61,7 +61,7 @@ if ($values.resourceGroupName -cne $ApprovedResourceGroupName) {
 $names = @(
     'location', 'functionAppName', 'planName', 'storageAccountName', 'hostIdentityName',
     'keyVaultName', 'logAnalyticsName', 'applicationInsightsName', 'budgetName',
-    'budgetAlertEmail', 'budgetStartDate', 'sourceSecretName', 'cacheContainerName',
+    'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate', 'sourceSecretName', 'cacheContainerName',
     'deploymentContainerName', 'releaseControlContainerName', 'releaseArtifactContainerName',
     'releaseControllerPrincipalId', 'retainHostDiagnostics'
 )
@@ -80,7 +80,7 @@ foreach ($name in $names) {
 foreach ($name in @(
     'location', 'functionAppName', 'planName', 'storageAccountName', 'hostIdentityName',
     'keyVaultName', 'logAnalyticsName', 'applicationInsightsName', 'budgetName',
-    'budgetAlertEmail', 'budgetStartDate', 'sourceSecretName', 'cacheContainerName',
+    'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate', 'sourceSecretName', 'cacheContainerName',
     'deploymentContainerName', 'releaseControlContainerName', 'releaseArtifactContainerName'
 )) {
     if (!$scopedParameters.parameters.ContainsKey($name) -or
@@ -88,6 +88,7 @@ foreach ($name in @(
         throw "Missing infrastructure runtime parameter: $name."
     }
 }
+Assert-AgendaOwnerAddress $scopedParameters.parameters.agendaOwnerAddress.value
 if ($scopedParameters.parameters.ContainsKey('releaseControllerPrincipalId') -and
     $scopedParameters.parameters.releaseControllerPrincipalId.value -ne '') {
     $principal = [guid]::Empty

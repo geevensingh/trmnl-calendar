@@ -3,7 +3,7 @@
   "name": "Normal mixed agenda",
   "description": "Timed and all-day commitments on both working days, with optional locations.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "current",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-23T18:00:00Z",
@@ -13,9 +13,9 @@
       "label": "Friday, Oct 23",
       "eligible_total": 3,
       "occurrences": [
-        { "time_kind": "all_day", "id": "primary-all-day", "title": "Project preparation", "location": null, "start_date": "2026-10-23", "end_date_exclusive": "2026-10-24" },
-        { "time_kind": "timed", "id": "primary-planning", "title": "Synthetic planning", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
-        { "time_kind": "timed", "id": "primary-review", "title": "Design review", "location": null, "start_at": "2026-10-23T20:00:00Z", "end_at": "2026-10-23T21:00:00Z" }
+        { "time_kind": "all_day", "id": "primary-all-day", "title": "Project preparation", "participation_expectation": "unknown", "location": null, "start_date": "2026-10-23", "end_date_exclusive": "2026-10-24" },
+        { "time_kind": "timed", "id": "primary-planning", "title": "Synthetic planning", "participation_expectation": "likely", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" },
+        { "time_kind": "timed", "id": "primary-review", "title": "Design review", "participation_expectation": "maybe", "location": null, "start_at": "2026-10-23T20:00:00Z", "end_at": "2026-10-23T21:00:00Z" }
       ]
     },
     "secondary": {
@@ -23,9 +23,9 @@
       "label": "Monday, Oct 26",
       "eligible_total": 3,
       "occurrences": [
-        { "time_kind": "all_day", "id": "secondary-all-day", "title": "Team workshop", "location": "Studio B", "start_date": "2026-10-26", "end_date_exclusive": "2026-10-27" },
-        { "time_kind": "timed", "id": "secondary-check-in", "title": "Project check-in", "location": "Studio B", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
-        { "time_kind": "timed", "id": "secondary-follow-up", "title": "Workshop follow-up", "location": null, "start_at": "2026-10-26T20:00:00Z", "end_at": "2026-10-26T21:00:00Z" }
+        { "time_kind": "all_day", "id": "secondary-all-day", "title": "Team workshop", "participation_expectation": "definite", "location": "Studio B", "start_date": "2026-10-26", "end_date_exclusive": "2026-10-27" },
+        { "time_kind": "timed", "id": "secondary-check-in", "title": "Project check-in", "participation_expectation": "unlikely", "location": "Studio B", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" },
+        { "time_kind": "timed", "id": "secondary-follow-up", "title": "Workshop follow-up", "participation_expectation": "unknown", "location": null, "start_at": "2026-10-26T20:00:00Z", "end_at": "2026-10-26T21:00:00Z" }
       ]
     },
     "error": null

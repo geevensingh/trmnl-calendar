@@ -71,7 +71,7 @@ finally {
 $required = @(
     'location', 'resourceGroupName', 'functionAppName', 'planName', 'storageAccountName',
     'hostIdentityName', 'keyVaultName', 'logAnalyticsName', 'applicationInsightsName',
-    'budgetName', 'budgetAlertEmail', 'budgetStartDate'
+    'budgetName', 'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate'
 )
 $allowed = $required + @(
     'sourceSecretName', 'cacheContainerName', 'deploymentContainerName', 'retainHostDiagnostics',
@@ -98,6 +98,7 @@ foreach ($name in $required) {
 if ($parameters.location.value -ne 'westus2') {
     throw 'This resource plan is approved only for westus2; a region change requires renewed approval.'
 }
+Assert-AgendaOwnerAddress $parameters.agendaOwnerAddress.value
 $budgetStart = [DateTimeOffset]::MinValue
 if ($parameters.budgetStartDate.value -notmatch '^\d{4}-\d{2}-01T00:00:00Z$' -or
     ![DateTimeOffset]::TryParse($parameters.budgetStartDate.value, [Globalization.CultureInfo]::InvariantCulture,

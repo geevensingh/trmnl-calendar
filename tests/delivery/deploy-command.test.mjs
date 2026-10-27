@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -134,9 +134,10 @@ test("what-if sends only a runtime parameter-file reference and emits no recipie
   for (const [name, parameter] of Object.entries(document.parameters)) {
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "SYNTHETIC_PRIVATE_RECIPIENT@example.invalid"
-      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
-        : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
-          : "syntheticresource";
+      : name === "agendaOwnerAddress" ? "mailto:SYNTHETIC_OWNER@example.invalid"
+        : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
+          : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
+            : "syntheticresource";
   }
   await writeFile(parameterPath, JSON.stringify(document));
   const stub = `
@@ -159,7 +160,15 @@ test("what-if sends only a runtime parameter-file reference and emits no recipie
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].slice(0, 3), ["deployment", "sub", "what-if"]);
   assert.ok(calls[0].includes(`@${parameterPath}`));
-  assert.doesNotMatch(preview.stdout + preview.stderr + JSON.stringify(calls), /SYNTHETIC_PRIVATE_RECIPIENT/);
+  assert.doesNotMatch(preview.stdout + preview.stderr + JSON.stringify(calls),
+    /SYNTHETIC_PRIVATE_RECIPIENT|SYNTHETIC_OWNER/);
+  document.parameters.agendaOwnerAddress.value = "https://synthetic.invalid/owner";
+  await writeFile(parameterPath, JSON.stringify(document));
+  const invalidOwner = run();
+  assert.notEqual(invalidOwner.status, 0);
+  assert.match(invalidOwner.stderr, /one exact mailto: address/);
+  assert.doesNotMatch(invalidOwner.stderr, /SYNTHETIC_OWNER/);
+  assert.equal((await readFile(callsPath, "utf8")).trim().split(/\r?\n/).length, 1);
   document.parameters.sourceUrl = { value: "https://synthetic.invalid/CONFIDENTIAL_SOURCE_KEY" };
   await writeFile(parameterPath, JSON.stringify(document));
   const refused = run();
@@ -178,9 +187,10 @@ test("release reconciliation uses the supported resource-only deletion action on
   for (const [name, parameter] of Object.entries(document.parameters)) {
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "synthetic@example.invalid"
-      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
-        : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
-          : "syntheticresource";
+      : name === "agendaOwnerAddress" ? "mailto:SYNTHETIC_OWNER@example.invalid"
+        : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
+          : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
+            : "syntheticresource";
   }
   await writeFile(parameterPath, JSON.stringify(document));
   const stub = `
@@ -193,7 +203,10 @@ test("release reconciliation uses the supported resource-only deletion action on
       if ($args[0] -eq 'group' -and $args[1] -eq 'show') { 'syntheticresource' }
       elseif ($args[0] -eq 'stack') {
         $action = $args[[Array]::IndexOf($args, '--action-on-unmanage') + 1]
-        if ($action -notin @('deleteAll', 'deleteResources', 'detachAll')) {
+        $parameterFile = $args[[Array]::IndexOf($args, '--parameters') + 1].Substring(1)
+        $parameters = Get-Content -LiteralPath $parameterFile -Raw | ConvertFrom-Json
+        if ($action -notin @('deleteAll', 'deleteResources', 'detachAll') -or
+            $parameters.parameters.agendaOwnerAddress.value -cne 'mailto:SYNTHETIC_OWNER@example.invalid') {
           $global:LASTEXITCODE = 2
           return
         }
@@ -205,11 +218,12 @@ test("release reconciliation uses the supported resource-only deletion action on
     + "-SubscriptionId 00000000-0000-0000-0000-000000000001 "
     + "-ApprovedResourceGroupName syntheticresource -ParametersFile $env:AZURE_TEST_PARAMETERS "
     + "-ReviewedMainCommit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  const result = spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", stub], {
+  const run = () => spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", stub], {
     cwd: root, encoding: "utf8", env: {
       ...process.env, AZURE_TEST_CALLS: callsPath, AZURE_TEST_PARAMETERS: parameterPath
     }
   });
+  const result = run();
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
     status: "reconciled", commit: "a".repeat(40),
@@ -218,6 +232,7 @@ test("release reconciliation uses the supported resource-only deletion action on
       alwaysReady: [{ name: "http", instanceCount: 1 }]
     }
   });
+  assert.doesNotMatch(result.stdout + result.stderr, /SYNTHETIC_OWNER/);
   const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[0].slice(0, 2), ["group", "show"]);
@@ -226,6 +241,80 @@ test("release reconciliation uses the supported resource-only deletion action on
   assert.equal(reconciliation[reconciliation.indexOf("--action-on-unmanage") + 1], "deleteResources");
   assert.equal(reconciliation[reconciliation.indexOf("--resource-group") + 1], "syntheticresource");
   assert.equal(reconciliation[reconciliation.indexOf("--deny-settings-mode") + 1], "denyDelete");
+  assert.doesNotMatch(JSON.stringify(calls), /SYNTHETIC_OWNER/);
+
+  for (const owner of [undefined, true, "https://SYNTHETIC_OWNER@example.invalid"]) {
+    if (owner === undefined) delete document.parameters.agendaOwnerAddress;
+    else document.parameters.agendaOwnerAddress = { value: owner };
+    await writeFile(parameterPath, JSON.stringify(document));
+    const refused = run();
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /runtime parameter|one exact mailto: address/);
+    assert.doesNotMatch(refused.stdout + refused.stderr, /SYNTHETIC_OWNER/);
+    assert.deepEqual((await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse), calls);
+  }
+});
+
+test("owner identity validation rejects missing and unsafe values before Azure without disclosing them", async t => {
+  await mkdir(join(root, "artifacts"), { recursive: true });
+  const directory = await mkdtemp(join(root, "artifacts", "agenda-owner-validation-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const callsPath = join(directory, "azure-calls.jsonl");
+  const parameterPath = join(directory, "parameters.json");
+  const document = JSON.parse(await readFile(join(root, "infra", "parameters.example.json"), "utf8"));
+  for (const [name, parameter] of Object.entries(document.parameters)) {
+    if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
+      ? "SYNTHETIC_PRIVATE_RECIPIENT@example.invalid"
+      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
+        : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
+          : "syntheticresource";
+  }
+  const stub = `
+    function global:az {
+      ConvertTo-Json -InputObject @($args) -Compress | Add-Content -LiteralPath $env:AZURE_TEST_CALLS
+      '{"status":"Succeeded","changes":[]}'
+      $global:LASTEXITCODE = 0
+    }
+    & .\\scripts\\deploy-azure.ps1 -Mode WhatIf -SubscriptionId 00000000-0000-0000-0000-000000000001 -ParametersFile $env:AZURE_TEST_PARAMETERS
+  `;
+  const run = () => spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", stub], {
+    cwd: root, encoding: "utf8", env: {
+      ...process.env, AZURE_TEST_CALLS: callsPath, AZURE_TEST_PARAMETERS: parameterPath
+    }
+  });
+  const privateAddress = "SYNTHETIC_OWNER@example.invalid";
+  const invalid = [
+    undefined, "", " ", 42, null,
+    `https://${privateAddress}`, `mailto:${privateAddress}?subject=private`,
+    `mailto:${privateAddress}#private`, `mailto:${privateAddress},other@example.invalid`,
+    `mailto:${privateAddress};other@example.invalid`, `mailto:Display Name <${privateAddress}>`,
+    ` mailto:${privateAddress}`, `mailto:${privateAddress} `, `mailto:${privateAddress}\r\n`,
+    `mailto:${privateAddress}%0A`, `mailto:%20${privateAddress}`,
+    `mailto:Display%20Name%20%3C${privateAddress}%3E`, "mailto:SYNTHETIC_OWNER"
+  ];
+  for (const [index, owner] of invalid.entries()) {
+    if (owner === undefined) delete document.parameters.agendaOwnerAddress;
+    else document.parameters.agendaOwnerAddress = { value: owner };
+    await writeFile(parameterPath, JSON.stringify(document));
+    const refused = run();
+    assert.equal(refused.status, 1, `owner input case ${index}`);
+    assert.match(refused.stderr, /runtime parameter|Runtime parameter|one exact mailto: address/);
+    assert.doesNotMatch(refused.stdout + refused.stderr, /SYNTHETIC_OWNER|SYNTHETIC_PRIVATE_RECIPIENT/);
+  }
+  await assert.rejects(readFile(callsPath), { code: "ENOENT" });
+
+  for (const owner of [`mailto:${privateAddress}`, `MAILTO:${privateAddress}`, "mailto:SYNTHETIC_OWNER%2Bcalendar@example.invalid"]) {
+    document.parameters.agendaOwnerAddress = { value: owner };
+    await writeFile(parameterPath, JSON.stringify(document));
+    const accepted = run();
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(JSON.parse(accepted.stdout).azure_resources_changed, false);
+    assert.doesNotMatch(accepted.stdout + accepted.stderr, /SYNTHETIC_OWNER|SYNTHETIC_PRIVATE_RECIPIENT/);
+  }
+  const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every(args => args.includes(`@${parameterPath}`)));
+  assert.doesNotMatch(JSON.stringify(calls), /SYNTHETIC_OWNER|SYNTHETIC_PRIVATE_RECIPIENT/);
 });
 
 test("code deployment requires a clean reviewed package and the approved on-demand .NET 10 Flex target", async t => {
@@ -247,9 +336,10 @@ test("code deployment requires a clean reviewed package and the approved on-dema
   for (const [name, parameter] of Object.entries(document.parameters))
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "synthetic@example.invalid"
-      : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
-        : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
-          : "syntheticresource";
+      : name === "agendaOwnerAddress" ? "mailto:synthetic-owner@example.invalid"
+        : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
+          : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
+            : "syntheticresource";
   await writeFile(parameterPath, JSON.stringify(document));
   const site = {
     kind: "functionapp,linux",

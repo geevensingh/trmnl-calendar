@@ -18,14 +18,27 @@
   .agenda .table.table--large tbody tr { height: auto; }
   .agenda .table td { padding: 2px 0; vertical-align: top; }
   .agenda .agenda-day td .title {
-    display: block; width: 100%; overflow: hidden;
+    display: block; flex: 1 1 auto; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
+  .agenda .agenda-event-heading {
+    display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  }
+  .agenda .agenda-participation { flex: 0 0 auto; white-space: nowrap; }
+  .agenda .agenda-participation[data-expectation="definite"] { font-weight: bold; }
   .agenda .agenda-location {
     display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 16px; line-height: 1.4;
   }
   .agenda .agenda-time { width: 230px; white-space: nowrap; }
+  .agenda .agenda-day tr.agenda-emphasized td {
+    padding: 4px 8px; background-color: #000; color: #fff;
+  }
+  .agenda .agenda-day tr.agenda-emphasized td .title {
+    color: #fff; font-size: 24px; font-weight: 700; line-height: 1.25;
+  }
+  .agenda .agenda-emphasized .label { color: #fff; font-weight: 700; }
+  .agenda .agenda-status { display: block; }
   .agenda .agenda-secondary { border-top: 2px solid; padding-top: 4px; }
   .agenda .agenda-source {
     display: flex; flex-wrap: wrap; justify-content: flex-end; column-gap: 4px;
@@ -74,7 +87,9 @@
           <table class="table table--large">
             <tbody>
               {% for occurrence in day.occurrences %}
-                <tr hidden>
+                {% assign occurrence_emphasis = nil %}
+                {% if schema_version == 2 and occurrence contains "emphasis" %}{% assign occurrence_emphasis = occurrence.emphasis %}{% endif %}
+                <tr hidden data-agenda-id="{{ occurrence.id | escape }}"{% if occurrence_emphasis %} class="agenda-emphasized" data-agenda-emphasis="{{ occurrence_emphasis | escape }}"{% endif %}>
                   <td class="agenda-time">
                     {% if occurrence.time_kind == "all_day" %}
                       <span class="label label--large">All day</span>
@@ -85,7 +100,21 @@
                     {% endif %}
                   </td>
                   <td>
-                    <span class="title">{{ occurrence.title | escape }}</span>
+                    <div class="agenda-event-heading">
+                      <span class="title">{{ occurrence.title | escape }}</span>
+                      {% case occurrence.participation_expectation %}
+                        {% when "definite" %}<span class="label agenda-participation" data-expectation="definite">Definite</span>
+                        {% when "likely" %}<span class="label agenda-participation" data-expectation="likely">Likely</span>
+                        {% when "maybe" %}<span class="label agenda-participation" data-expectation="maybe">Maybe</span>
+                        {% when "unlikely" %}<span class="label agenda-participation" data-expectation="unlikely">Unlikely</span>
+                        {% when "unknown" %}<span class="label agenda-participation" data-expectation="unknown">Unknown</span>
+                      {% endcase %}
+                    </div>
+                    {% if occurrence_emphasis == "in_progress" %}
+                      <span class="label agenda-status">IN PROGRESS</span>
+                    {% elsif occurrence_emphasis == "upcoming" %}
+                      <span class="label agenda-status">UPCOMING</span>
+                    {% endif %}
                     {% if occurrence.location and occurrence.location != empty %}
                       <span class="label agenda-location" hidden>{{ occurrence.location | escape }}</span>
                     {% endif %}
@@ -143,17 +172,21 @@
             : `${day.visible} of ${day.total} ${noun} shown`;
         }
       };
-      const admitRows = day => {
-        for (const row of day.rows) {
-          row.hidden = false;
-          day.visible++;
+      const admitRow = (day, row) => {
+        row.hidden = false;
+        day.visible++;
+        updateCount(day);
+        if (!fits()) {
+          row.hidden = true;
+          day.visible--;
           updateCount(day);
-          if (!fits()) {
-            row.hidden = true;
-            day.visible--;
-            updateCount(day);
-            break;
-          }
+          return false;
+        }
+        return true;
+      };
+      const admitRows = (day, rows) => {
+        for (const row of rows) {
+          if (!admitRow(day, row)) break;
         }
       };
       agenda.querySelectorAll(".agenda-location").forEach(location => { location.hidden = true; });
@@ -162,12 +195,23 @@
         updateCount(day);
       }
       const [primary, secondary] = days;
-      if (primary) {
-        admitRows(primary);
-        if (primary.visible === primary.rows.length && secondary) admitRows(secondary);
+      const emphasizedRows = days.flatMap(day => day.rows
+        .filter(row => row.dataset.agendaEmphasis)
+        .map(row => ({ day, row })));
+      let allEmphasizedAdmitted = true;
+      for (const { day, row } of emphasizedRows) {
+        if (!admitRow(day, row)) {
+          allEmphasizedAdmitted = false;
+          break;
+        }
+      }
+      if (allEmphasizedAdmitted && primary) {
+        admitRows(primary, primary.rows.filter(row => !row.dataset.agendaEmphasis));
+        if (primary.visible === primary.rows.length && secondary)
+          admitRows(secondary, secondary.rows.filter(row => !row.dataset.agendaEmphasis));
       }
       for (const day of days) {
-        for (const row of day.rows.slice(0, day.visible)) {
+        for (const row of day.rows.filter(candidate => !candidate.hidden)) {
           const location = row.querySelector(".agenda-location");
           if (location) {
             location.hidden = false;

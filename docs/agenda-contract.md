@@ -1,4 +1,4 @@
-# Agenda HTTP and display contract, version 1
+# Agenda HTTP and display contract, version 2
 
 The agenda module's public interface is `POST /api/agenda`, with function-scoped Azure authentication using the `x-functions-key` header. Host authentication failures are rejected, not encoded as calendar data. The application does not implement a competing key check. Local test hosting does not establish Azure authentication behavior.
 
@@ -16,7 +16,7 @@ The agenda module's public interface is `POST /api/agenda`, with function-scoped
 
 This deliberately preserves quotes, newlines, and malformed edited text for validation at the HTTP interface. The request must be an object with exactly this one required string field. Missing fields, nulls, duplicate/unknown fields, malformed outer or inner JSON (including invalid Unicode escapes), and non-array rule configuration are `configuration_invalid`. The entire UTF-8 request is limited to 16 KiB, inclusive, and both JSON documents have a maximum nesting depth of 16. There is no implicit default or old-rules fallback.
 
-The one source URL is secret runtime configuration `Agenda__SourceUrl`, never an HTTP input, display setting, query parameter, or result field.
+The source URL is secret runtime configuration `Agenda__SourceUrl`, never an HTTP input, display setting, query parameter, or result field. The owner identity for protected participation-capability inspection is adapter-side runtime configuration `Agenda__OwnerAddress`, an exact `mailto:` address from the calendar. It is not a request field or result field; address aliases are not inferred. Configuring it does not enable production classification in this Unknown-only tracer.
 
 ### Exclusion rules
 
@@ -53,7 +53,7 @@ Authorized, completed polls return HTTP 200 and `application/json`, with `Cache-
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "state": "current",
   "time_zone": "America/Los_Angeles",
   "generated_at": "2026-10-23T18:00:00+00:00",
@@ -66,7 +66,9 @@ Authorized, completed polls return HTTP 200 and `application/json`, with `Cache-
       "time_kind": "timed",
       "id": "opaque-occurrence-identifier",
       "title": "Synthetic planning",
+      "participation_expectation": "unknown",
       "location": "Studio A",
+      "emphasis": "in_progress",
       "start_at": "2026-10-23T18:00:00+00:00",
       "end_at": "2026-10-23T19:00:00+00:00"
     }]
@@ -85,9 +87,9 @@ Authorized, completed polls return HTTP 200 and `application/json`, with `Cache-
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Integer `1`; incompatible shape changes require a new version. |
+| `schema_version` | Integer `2`; incompatible shape changes require a new version. |
 | `state` | `current`, `stale`, or `error`. Never infer health from empty arrays. |
-| `time_zone` | IANA timezone for date selection and display; version 1 uses `America/Los_Angeles`. |
+| `time_zone` | IANA timezone for date selection and display; version 2 uses `America/Los_Angeles`. |
 | `generated_at` | UTC instant when this agenda result was evaluated, not the source freshness clock. |
 | `source_succeeded_at` | UTC instant of the latest known successful fetch **and supported interpretation**, persisted with the last-good source. Null when unavailable. Storage reads, failed checks, stale HTTP responses, and rendering must not renew it. |
 | `primary`, `secondary` | The selected dates and their complete eligible totals/ordered occurrences. |
@@ -99,14 +101,32 @@ The primary day is the first Monday-Friday date on or after the Los Angeles curr
 
 Each day has ISO date-only `date`, a literal weekday/date `label` (not misleading today/tomorrow aliases), nullable integer `eligible_total`, and `occurrences`. Current and stale totals are complete **after** supported calendar selection, current exclusions, and current time filtering, not the visible row count. An occurrence overlapping both selected local dates appears and counts on each; its end is exclusive. Overnight timing is not clipped or rewritten to midnight. A timed occurrence disappears at `end_at <= now`, including ongoing occurrences only while their end is still ahead.
 
-Each occurrence has an opaque `id`, `title`, optional/null `location`, and a `time_kind` discriminator. Descriptions, attendees, source URL, raw UID, and rule contents are absent. IDs distinguish occurrences; consumers must not decode them. The implementation hashes the parser's UID and resolved UTC start for timed occurrences, or its date-only start for all-day occurrences. It uses Ical.Net's normalization and occurrence evaluation, not a separate hand-written RFC parser.
+Each occurrence has an opaque `id`, `title`, required `participation_expectation`, optional/null `location`, and a `time_kind` discriminator. The expectation is one of `definite`, `likely`, `maybe`, `unlikely`, or `unknown`; `unknown` means there is insufficient owner-specific evidence, not the lowest likelihood. Descriptions, attendees, organizer addresses, source URL, raw UID, and rule contents are absent. IDs distinguish occurrences; consumers must not decode them. The implementation hashes the parser's UID and resolved UTC start for timed occurrences, or its date-only start for all-day occurrences. It uses Ical.Net's normalization and occurrence evaluation, not a separate hand-written RFC parser.
 
-- **`timed`:** UTC offset-bearing `start_at` and `end_at`, with end strictly after start. There are no all-day date fields. Explicit DTSTART/DTEND or DTSTART/DURATION are interpreted by Ical.Net. UTC, ordinary IANA timezone IDs, and verified Outlook Windows timezone identifiers are supported; floating/unknown zones are explicit compatibility errors.
+Timed occurrences may also carry optional `emphasis`; this is independent of participation expectation. The producer, strict validators, and renderer use version 2 with required participation values; version-1 payloads are incompatible. Direct rendering rejects missing, null, or unsupported participation values on every occurrence before evaluating Liquid. The workbench requires matching version-2 baseline contracts with the required participation field, shared templates consuming that field, and framework pins rather than substituting a different baseline; earlier schema-2 baselines without participation support are incompatible.
+
+The current production slice emits **`unknown` for every occurrence**, including timed, all-day, and changed recurring instances, regardless of configured owner or available metadata. This is the intentional end-to-end tracer from #61, not a claim that the source lacks evidence. Known-label production classification is deferred until the owner-authorized actual-publication evidence in #60 is accepted for #62; synthetic scenarios retain all five controlled values for presentation checks.
+
+The agreed future classification precedence, **not enabled in this slice**, is:
+
+| Evidence | Expectation |
+|---|---|
+| Explicit transparent (`TRANSP:TRANSPARENT`), a recognized `Following: ` title marker, or the calendar owner's declined response | `unlikely` |
+| Otherwise, the configured calendar owner is the organizer | `definite` |
+| Otherwise, the configured owner's response is accepted | `likely` |
+| Otherwise, the configured owner's explicitly supplied response is tentative or needs action | `maybe` |
+| Otherwise, including missing owner identity, unmatched/ambiguous owner attendees, or insufficient evidence | `unknown` |
+
+Future classification must bind these signals to accepted source semantics. Free/transparent, followed, and declined evidence outranks organizer role and acceptance only after that prerequisite. The default `Following: ` title exclusion remains unchanged. An owner attendee entry without an explicitly supplied `PARTSTAT` is missing evidence, not proof of an unanswered invitation; the parser's default must not establish a personal response. Missing, ambiguous, multiple, or unsupported response values remain insufficient. Event-level `STATUS:TENTATIVE` is distinct from the owner's `PARTSTAT`. Exact address matching must use only approved adapter-side identity, never attendee order, display names, titles, or guessed aliases. None of these signals changes the tracer's current `unknown` output.
+
+The protected source preflight reports only allowlisted booleans for whether the configured owner identity and matching organizer/attendee/response signals, transparent events, and the followed title marker were observed. It does not print addresses or calendar content. These observations are not a guarantee that every event carries the relevant metadata; actual publication capability remains an owner-authorized evidence gate.
+
+- **`timed`:** UTC offset-bearing `start_at` and `end_at`, with end strictly after start. There are no all-day date fields. Optional `emphasis` is `in_progress` or `upcoming`, assigned by the adapter against the same `generated_at` instant. Every eligible timed event with `start_at <= generated_at < end_at` is `in_progress`. If none is in progress, only the earliest future start-time group is `upcoming`, and only when its start is no more than 15 minutes after `generated_at`, inclusive. Exclusions and ended-event filtering precede classification; all-day occurrences never receive emphasis. Explicit DTSTART/DTEND or DTSTART/DURATION are interpreted by Ical.Net. UTC, ordinary IANA timezone IDs, and verified Outlook Windows timezone identifiers are supported; floating/unknown zones are explicit compatibility errors.
 - **`all_day`:** ISO date-only `start_date` and `end_date_exclusive`, with no timed instant fields. An all-day range is `[start_date, end_date_exclusive)` and must never be reinterpreted as midnight instants. Without an explicit end/duration, Ical.Net supplies the implicit one-day range. A multiday occurrence appears and counts once on each selected date in its range, never on its exclusive end date. The display labels it `All day`.
 
 Ical.Net stays at **5.2.3**, with timezone rules from pinned **NodaTime 3.3.5 / embedded TZDB 2026e**. The process-wide resolver first uses Ical's unchanged default lookup. Only an unresolved identifier is eligible for **TimeZoneConverter 8.0.0**'s maintained exact Windows-to-IANA conversion with territory `001`, followed by resolution through the same NodaTime TZDB provider. This covers the public 2026 Canadian Windows IDs with their updated permanent-DST rules without mapping them back to older seasonal Windows IDs. Existing IANA and Windows resolution still uses the default path with current packaged rules. No source-dependent global aliases, fixed offsets, calendar-field rewrites, custom DST interpretation, host Windows/ICU mapping, or runtime data downloads are used. Concurrent sources share only this source-independent resolver and packaged data. Unrecognized IDs, floating times, and custom `VTIMEZONE` IDs absent from these supported resolvers fail the whole source check; embedded observances alone do not establish support.
 
-Within a day, all-day occurrences come first, ordered by start date, exclusive end date, then opaque ID. Timed occurrences follow, ordered by start instant, end instant, then opaque ID. Ordering never changes complete eligible totals.
+Within a day, all-day occurrences come first, ordered by start date, exclusive end date, then opaque ID. Timed occurrences follow, ordered by start instant, end instant, then opaque ID. Emphasis never changes this order or complete eligible totals.
 
 The installed stable Ical.Net 5.2.3 engine resolves `RRULE`, `RDATE` (dates or explicit periods), and `EXDATE` before time filtering, exclusion evaluation, and counting. Date-only `EXDATE` also follows the library's Outlook-compatible whole-date exclusion behavior. A moved individual instance replaces its original even when either date is outside the selected window. Cancelled overrides remain present during replacement resolution so they suppress originals, including overrides with only `RECURRENCE-ID` and cancellation status. They are omitted from the resulting agenda; a cancelled series suppresses its overrides as well. Equivalent timed recurrence identifiers for timed series are converted by the library into the series' timezone before its wall-time identity lookup.
 
@@ -147,7 +167,7 @@ Current error codes:
 | `source_unavailable` | Timeout, transport failure, rejected HTTP status, or redirect. |
 | `source_invalid` | Invalid source encoding/calendar/interval/identity, or a source above 2 MiB. |
 | `compatibility_unsupported` | Recognized semantics outside the supported subset; no partial result. |
-| `agenda_too_large` | The complete serialized current or stale agenda exceeds 95,000 UTF-8 bytes. Return a bounded error, never a silently shortened agenda. |
+| `agenda_too_large` | The required metadata envelope alone cannot fit within 95,000 UTF-8 bytes. Ordinary occurrence volume instead uses the bounded admission policy below, retaining complete totals. |
 | `cache_configuration` | Missing/unsafe persistent-storage runtime settings; no storage credentials or local production fallback are accepted. |
 | `cache_unavailable` | Persistent source could not be read or written, including access/authentication/timeout failures. |
 | `cache_invalid` | Stored source envelope is malformed, unsupported, oversized, or missing required information. |
@@ -157,15 +177,25 @@ Current error codes:
 
 Codes are extensible safe strings; consumers display the message/code and must not treat an unknown error as current or empty. Configuration errors are not source failures eligible for old-rules fallback. Only an actual supported source check can set source success; HTTP evaluation, reads, status writes and rendering never do. The smoke validator uses native seven-digit timestamp precision at the strict 15-minute/hour boundaries, not rounded millisecond ages.
 
+## Private diagnostics
+
+Owner-approved Azure diagnostics and Copilot investigations may include eligible meeting titles and locations. This is separate from the public HTTP shape and does not permit private calendar contents in Git, GitHub tickets/PRs, local previews, or public log exports. Azure data remains Entra/RBAC-protected; reading it into a Copilot session necessarily brings those selected fields into that conversation.
+
+Each current or stale HTTP result emits one information-level `Agenda poll ` message followed by JSON with `poll_id`, `state`, `generated_at`, `source_succeeded_at`, `primary_date`, `primary_eligible_total`, `secondary_date`, and `secondary_eligible_total`. One `Agenda occurrence ` JSON record per returned day/occurrence includes `poll_id`, `occurrence_id`, `date`, `time_kind`, `start`, `end_exclusive`, `title`, `location`, `title_truncated`, and `location_truncated`. All-day ranges remain date-only; timed ranges retain offset-bearing UTC instants. A multiday occurrence has a record for each selected date on which it appears. Null locations remain null, not an inferred room or online meeting.
+
+Records describe eligible data sent to the consumer after response bounding, **not** which details fit on a device or whether the device refreshed. The request's exclusions and current ended-event cutoff have already run. Summary totals remain complete even when response bounding omits occurrences; omitted occurrences have no meeting records. Errors, including an unrepresentable metadata envelope reported as `agenda_too_large`, retain fixed warning codes without logging unreturned meetings. Current/stale responses with no supplied occurrences have a summary but no meeting records, even when their eligible totals are nonzero.
+
+Each diagnostic title/location is limited to 1,024 UTF-16 code units without splitting a surrogate pair, with explicit truncation flags; this never changes HTTP data. JSON escaping keeps calendar text as single-line data, and each occurrence record is below 14 KiB even at maximum escaping. No raw ICS, source URL, credentials, raw UID, rule text, excluded/ended events, descriptions, attendees, or upstream exceptions enter these records. The Functions host may discard structured logger properties, so the JSON is carried in the formatted message and queried there. Trace telemetry is excluded from adaptive sampling to avoid losing individual meetings within a poll; ingestion failure/caps and device delivery remain separate limitations. See the [runbook](azure-delivery.md#bounded-storage-and-diagnostics) for queries, retention, access, and deployment verification.
+
 ## Display ownership
 
 The display consumes this result and the platform's view context. It does not select dates, reevaluate exclusions, drop ended meetings, reorder occurrences, or change totals. OG and X each support full-screen, half-horizontal, and half-vertical placements using actual native dimensions, not model-specific row limits. Selected labels/dates remain authoritative: Friday/Monday and weekend Monday/Tuesday windows are not renamed tomorrow, and empty selected days remain explicitly empty.
 
-Reserve both selected-day headers and absolute source-success information before admitting ordered primary rows. Valid zero-eligible days use one date/`No remaining events` line. Populated-day counts remain beside dates on the left, showing `N events` when complete or `N of M events shown` otherwise, with natural singular/plural grammar. The displayed count is the number of visible details; the eligible total includes occurrences not supplied as rows. Zero displayed rows never imply an empty day. There is no standalone overflow row or footer: source-success metadata is at the right of the primary header in wide views and may use its second line in narrow views. Unavailable presentation retains last-success information or `No successful source check` without fabricating valid days or counts.
+Reserve both selected-day headers and absolute source-success information before admitting ordered primary rows. Emphasized timed rows have priority over ordinary rows across both selected days; admitted rows remain in their supplied chronological positions. If not all emphasized rows fit, admit them in chronological order and withhold ordinary rows. Otherwise, ordinary secondary rows use only space left after primary rows. Valid zero-eligible days use one date/`No remaining events` line. Populated-day counts remain beside dates on the left, showing `N events` when complete or `N of M events shown` otherwise, with natural singular/plural grammar. The displayed count is the number of visible details; the eligible total includes occurrences not supplied as rows. Zero displayed rows never imply an empty day. There is no standalone overflow row or footer: source-success metadata is at the right of the primary header in wide views and may use its second line in narrow views. Unavailable presentation retains last-success information or `No successful source check` without fabricating valid days or counts.
 
-Secondary details use only space left after the supplied primary rows fit; optional locations are admitted last and never reduce the essential visible row count. Counts update during actual-space fitting before native capture readiness and may wrap beside longer dates rather than shrinking required text. Timed entries retain readable 21px logical start-end AM/PM labels and titles. All-day entries use `time_kind` to render `All day` without accessing or inventing timed instants. Long titles may be clamped to two readable lines and locations elided or removed; neither can clip mandatory information. Descriptions and attendees are never rendered.
+Secondary ordinary details use only space left after the supplied primary rows fit; optional locations are admitted last and never reduce the essential visible row count. Counts update during actual-space fitting before native capture readiness and may wrap beside longer dates rather than shrinking required text. Timed entries retain readable start-end AM/PM labels and titles. An emphasized timed event is rendered once as an inverse card with white text, a larger bold title, scheduled time, and the `IN PROGRESS` or `UPCOMING` status; both statuses share the same treatment. All-day entries use `time_kind` to render `All day` without accessing or inventing timed instants. Every displayed event keeps its explicit right-hand participation label, including white text on inverse cards. Titles retain their complete escaped text on one line and yield width with visual end ellipsis rather than hiding the label. Existing event/title/time typography is retained; optional locations may be elided or removed but cannot clip mandatory information. No legend, extra participation badge, meter, or fading is used. Descriptions and attendees are never rendered.
 
-Overflow is `eligible_total - visible_rows`, not supplied-array length minus visible rows. Synthetic bounded-row fixtures exercise totals larger than the supplied array without changing the current adapter's 95,000-byte policy: it still returns `agenda_too_large` instead of silently truncating. Any future producer-side bounding must preserve these complete totals and ordered occurrence identities.
+Overflow is `eligible_total - visible_rows`, not supplied-array length minus visible rows. The producer classifies the complete eligible set before constructing a response of at most **95,000 serialized UTF-8 bytes**, including JSON escaping, punctuation, both day headers, complete totals, warnings and original source-success metadata. It reserves that envelope, then admits emphasized occurrences in existing primary/secondary chronological order, followed by ordinary primary and then ordinary secondary occurrences in their existing order. Admission stops at the first occurrence that cannot fit: if that is an emphasized occurrence, no ordinary occurrences are supplied. Thus emphasized-only overflow is a deterministic chronological prefix, even if a later shorter occurrence could fit. An individually oversized occurrence is omitted whole, never shortened; it still counts in `eligible_total`. The admitted arrays are restored to their original day order (all-day before timed). IDs, timing, titles and locations are not rewritten to save bytes. Byte measurement serializes individual occurrences, not an unbounded complete response. Synthetic bounded-row fixtures exercise the same truthful omission contract; ordinary volume is not a whole-agenda error.
 
 TRMNL prepends `shared.liquid` to the selected `full.liquid`, `half_horizontal.liquid`, or `half_vertical.liquid` template. Shared content captures the common markup/fitter once; `display\render.rb` uses that exact production template sequence with `TRMNL::Liquid`. Only the local preview adds the native screen/mashup shell. Framework CSS, JavaScript, and fonts are pinned to real version 3.4.3, not test approximations. OG's physical canvas is 800 x 480; X uses native `screen--v2` with a 1040 x 780 logical canvas transformed by 1.8 to 1872 x 1404 physical pixels. Native padding/gaps reduce usable full/split view bounds, as documented in the README.
 

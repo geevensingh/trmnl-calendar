@@ -21,6 +21,12 @@ param releaseArtifactContainerName string = 'release-artifacts'
 param releaseControllerPrincipalId string = ''
 param retainHostDiagnostics bool
 
+var reviewedFunctionCapacity = {
+  maximumInstanceCount: 1
+  instanceMemoryMB: 2048
+  alwaysReady: []
+}
+
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
   location: location
@@ -224,11 +230,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         name: 'dotnet-isolated'
         version: '10.0'
       }
-      scaleAndConcurrency: {
-        maximumInstanceCount: 1
-        instanceMemoryMB: 2048
-        alwaysReady: []
-      }
+      scaleAndConcurrency: reviewedFunctionCapacity
       deployment: {
         storage: {
           type: 'blobContainer'
@@ -378,3 +380,4 @@ output deploymentContainerResourceId string = packages.id
 output releaseControlContainerResourceId string = releaseControl.id
 output releaseArtifactContainerResourceId string = releaseArtifacts.id
 output functionPrincipalId string = app.identity.principalId
+output reviewedCapacity object = reviewedFunctionCapacity

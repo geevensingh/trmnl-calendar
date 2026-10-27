@@ -57,7 +57,7 @@ test("release-stack parameters example supplies every required resource paramete
 test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and separate identities", () => {
     const build = spawnSync("pwsh", [
       "-NoProfile", "-NonInteractive", "-Command",
-      "az bicep build --file .\\infra\\main.bicep --stdout --only-show-errors"
+      "az bicep build --file ./infra/main.bicep --stdout --only-show-errors"
     ], { cwd: root, encoding: "utf8", timeout: 120_000 });
     assert.equal(build.status, 0, build.stderr);
     const main = JSON.parse(build.stdout);
@@ -71,7 +71,9 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
     assert.equal(app.kind, "functionapp,linux");
     assert.equal(app.properties.httpsOnly, true);
     assert.deepEqual(app.properties.functionAppConfig.runtime, { name: "dotnet-isolated", version: "10.0" });
-    assert.deepEqual(app.properties.functionAppConfig.scaleAndConcurrency, {
+    assert.equal(app.properties.functionAppConfig.scaleAndConcurrency, "[variables('reviewedFunctionCapacity')]");
+    assert.equal(template.outputs.reviewedCapacity.value, "[variables('reviewedFunctionCapacity')]");
+    assert.deepEqual(template.variables.reviewedFunctionCapacity, {
       maximumInstanceCount: 1, instanceMemoryMB: 2048, alwaysReady: []
     });
     assert.equal(app.identity.type, "SystemAssigned, UserAssigned");

@@ -351,7 +351,14 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
               "-ParametersFile", parametersPath,
               "-ReviewedMainCommit", commit
             ], { cwd: checkout, env: limitedEnvironment(), code: "azure_infrastructure_failed", signal });
-            if (!infra.stdout.includes("reconciliation completed")) reject("azure_infrastructure_failed");
+            let capacity;
+            try {
+              capacity = JSON.parse(infra.stdout);
+            } catch {
+              reject("azure_infrastructure_failed");
+            }
+            if (capacity.status !== "reconciled" || capacity.commit !== commit ||
+              !capacity.scaleAndConcurrency) reject("azure_infrastructure_failed");
 
             const packageDirectory = join(checkout, "artifacts", "recovered-package");
             await mkdir(packageDirectory, { recursive: true });
@@ -365,7 +372,8 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
               "-SubscriptionId", subscription,
               "-ParametersFile", parametersPath,
               "-PackageFile", packagePath,
-              "-ReviewedIntegrationCommit", commit
+              "-ReviewedIntegrationCommit", commit,
+              "-ReviewedCapacityJson", JSON.stringify(capacity)
             ], {
               cwd: checkout,
               env: limitedEnvironment({ TRMNL_FUNCTION_KEY: functionKey }),

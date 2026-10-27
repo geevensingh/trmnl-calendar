@@ -78,8 +78,54 @@ test("classification selects only affected production targets and defaults unkno
   assert.deepEqual(classifyPaths(["tests/CalendarAgenda.Tests/AgendaHttpTests.cs"]), ["azure"]);
   assert.deepEqual(classifyPaths(["display/workbench/preview.mjs", "README.md"]), []);
   assert.deepEqual(classifyPaths(["scripts/agenda-workbench.mjs", "display/render.rb"]), []);
+  assert.deepEqual(classifyPaths(["scripts/setup-display.ps1", "scripts/display-toolchain.ps1"]), []);
   assert.deepEqual(classifyPaths(["new-and-unclassified/file.txt"]), ["azure", "trmnl"]);
 });
+
+for (const target of ["azure", "trmnl"]) {
+  test(`skipping an unverified ${target} mutation forces reconciliation even when the next commit reverts`, async () => {
+    const ledger = await activatedLedger();
+    const path = target === "azure" ? "src/CalendarAgenda/AgendaFunction.cs" : "display/src/full.liquid";
+    await admitMainCommits({
+      ledger, commits: [
+        { commit: commit("b"), parent: commit("a"), paths: [path] },
+        { commit: commit("c"), parent: commit("b"), paths: [path] }
+      ], through: commit("c"), isAncestor: async () => false
+    });
+    const mutations = [];
+    const mutate = async head => {
+      mutations.push(head);
+      return { verified: head === commit("c") };
+    };
+    const services = {
+      async changedPaths(_base, head) { return head === commit("b") ? [path] : []; },
+      async prepare(head, targets) {
+        assert.deepEqual(targets, [target]);
+        return releaseArtifact(head, { [target]: `${target}/${head}` });
+      },
+      deployAndVerifyAzure: mutate,
+      publishAndVerifyTrmnl: mutate
+    };
+    assert.equal((await runNextRelease({ ledger, services })).status, "failed");
+    assert.equal((await listReleaseStatus({ ledger })).pending_reconciliation[target], true);
+    await skipFailedRelease({
+      ledger, actor: "owner", reason: "Previous mutation stopped; skip failed verification",
+      previousMutationStopped: true
+    });
+    assert.equal((await listReleaseStatus({ ledger })).baselines[target], commit("a"));
+    assert.equal((await listReleaseStatus({ ledger })).pending_reconciliation[target], true);
+    const legacy = await ledger.read();
+    delete legacy.pending_reconciliation;
+    await ledger.replace(legacy);
+    assert.equal((await listReleaseStatus({ ledger })).pending_reconciliation[target], true);
+    assert.deepEqual(await runNextRelease({ ledger, services }), {
+      started: true, release: commit("c"), targets: [target], status: "succeeded"
+    });
+    assert.deepEqual(mutations, [commit("b"), commit("c")]);
+    assert.equal((await listReleaseStatus({ ledger })).pending_reconciliation[target], false);
+    assert.equal((await listReleaseStatus({ ledger })).baselines[target], commit("c"));
+  });
+}
 
 test("target selection uses only the corresponding target baseline after alternating commits", async () => {
   const ledger = await activatedLedger();

@@ -47,7 +47,21 @@ async function canonicalSettings(path, signal) {
   try {
     const { stdout } = await execFileAsync("ruby", [
       "-rjson", "-ryaml", "-e",
-      "value = YAML.safe_load_file(ARGV.fetch(0)); abort unless value.is_a?(Hash); value.delete('id'); STDOUT.write(JSON.generate(value))",
+      [
+        "def canonical(value)",
+        "  case value",
+        "  when Hash",
+        "    abort unless value.keys.all? { |key| key.is_a?(String) }",
+        "    value.keys.sort.to_h { |key| [key, canonical(value.fetch(key))] }",
+        "  when Array then value.map { |item| canonical(item) }",
+        "  else value",
+        "  end",
+        "end",
+        "value = YAML.safe_load_file(ARGV.fetch(0))",
+        "abort unless value.is_a?(Hash)",
+        "value.delete('id')",
+        "STDOUT.write(JSON.generate(canonical(value)))"
+      ].join("\n"),
       path
     ], {
       signal,
@@ -59,6 +73,20 @@ async function canonicalSettings(path, signal) {
   } catch {
     fail("trmnl_settings_invalid");
   }
+}
+
+function fieldSchema(settings) {
+  const fields = settings.custom_fields;
+  if (!Array.isArray(fields)) fail("trmnl_field_schema_invalid");
+  const schema = new Map();
+  for (const field of fields) {
+    if (!field || typeof field.keyname !== "string" || !field.keyname.trim() ||
+      typeof field.field_type !== "string" || !field.field_type.trim() || schema.has(field.keyname)) {
+      fail("trmnl_field_schema_invalid");
+    }
+    schema.set(field.keyname, field.field_type);
+  }
+  return schema;
 }
 
 function runCli(command, args, env, cwd, runCommand, signal) {
@@ -117,18 +145,31 @@ export async function publishTrmnl({
   const workingDirectory = join(temporaryRoot, "plugin");
   const stagedSource = join(workingDirectory, "src");
   try {
-    await cp(source, stagedSource, { recursive: true, errorOnExist: true, force: false });
+    await mkdir(stagedSource, { recursive: true });
     await writeFile(join(workingDirectory, ".trmnlp.yml"),
       "---\nwatch: false\ncustom_fields: {}\n", { flag: "wx" });
     const childEnvironment = publisherEnvironment(apiKey);
     try {
+      const sourceSettings = await canonicalSettings(join(source, "settings.yml"), signal);
+      const expectedSchema = fieldSchema(JSON.parse(sourceSettings));
+      await runCli("trmnlp", ["pull", "--force", "--id", pluginId],
+        childEnvironment, workingDirectory, runCommand, signal);
+      const deployedSchema = fieldSchema(JSON.parse(
+        await canonicalSettings(join(stagedSource, "settings.yml"), signal)
+      ));
+      for (const [key, type] of deployedSchema) {
+        if (expectedSchema.get(key) !== type) fail("trmnl_field_migration_required");
+      }
+      await rm(stagedSource, { recursive: true });
+      await cp(source, stagedSource, { recursive: true, errorOnExist: true, force: false });
       await runCli("trmnlp", ["push", "--force", "--id", pluginId],
         childEnvironment, workingDirectory, runCommand, signal);
       await rm(stagedSource, { recursive: true });
       await mkdir(stagedSource);
       await runCli("trmnlp", ["pull", "--force", "--id", pluginId],
         childEnvironment, workingDirectory, runCommand, signal);
-    } catch {
+    } catch (error) {
+      if (["trmnl_field_schema_invalid", "trmnl_field_migration_required"].includes(error?.code)) throw error;
       fail("trmnl_publish_or_verify_failed");
     } finally {
       delete childEnvironment.TRMNL_API_KEY;

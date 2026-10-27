@@ -197,6 +197,7 @@ test("release reconciliation uses the supported resource-only deletion action on
           $global:LASTEXITCODE = 2
           return
         }
+        '{"outputs":{"reviewedCapacity":{"value":{"maximumInstanceCount":3,"instanceMemoryMB":4096,"alwaysReady":[{"name":"http","instanceCount":1}]}}}}'
       }
       $global:LASTEXITCODE = 0
     }
@@ -210,6 +211,13 @@ test("release reconciliation uses the supported resource-only deletion action on
     }
   });
   assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    status: "reconciled", commit: "a".repeat(40),
+    scaleAndConcurrency: {
+      maximumInstanceCount: 3, instanceMemoryMB: 4096,
+      alwaysReady: [{ name: "http", instanceCount: 1 }]
+    }
+  });
   const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[0].slice(0, 2), ["group", "show"]);
@@ -281,13 +289,14 @@ test("code deployment requires a clean reviewed package and the approved on-dema
       elseif ($args[0] -eq 'functionapp' -and $args[1] -eq 'function') { $env:AZURE_TEST_FUNCTIONS }
       $global:LASTEXITCODE = 0
     }
-    & .\\scripts\\deploy-azure.ps1 -Mode DeployCode -ApprovedResourcePlan -SubscriptionId 00000000-0000-0000-0000-000000000001 -ParametersFile $env:AZURE_TEST_PARAMETERS -PackageFile $env:AZURE_TEST_PACKAGE -ReviewedIntegrationCommit $env:AZURE_TEST_COMMIT
+    & .\\scripts\\deploy-azure.ps1 -Mode DeployCode -ApprovedResourcePlan -SubscriptionId 00000000-0000-0000-0000-000000000001 -ParametersFile $env:AZURE_TEST_PARAMETERS -PackageFile $env:AZURE_TEST_PACKAGE -ReviewedIntegrationCommit $env:AZURE_TEST_COMMIT -ReviewedCapacityJson $env:AZURE_TEST_CAPACITY
   `;
-  const run = () => spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", stub], {
+  const run = (capacity = "") => spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", stub], {
     cwd: root, encoding: "utf8", env: {
       ...process.env, AZURE_TEST_CALLS: callsPath, AZURE_TEST_PARAMETERS: parameterPath,
       AZURE_TEST_PACKAGE: archivePath, AZURE_TEST_COMMIT: commit, AZURE_TEST_SITE: JSON.stringify(site),
       AZURE_TEST_FUNCTIONS: JSON.stringify(functions), AZURE_TEST_SMOKE: JSON.stringify(smoke),
+      AZURE_TEST_CAPACITY: capacity,
       TRMNL_FUNCTION_KEY: "synthetic-function-key"
     }
   });
@@ -309,4 +318,24 @@ test("code deployment requires a clean reviewed package and the approved on-dema
   assert.match(dirty.stderr, /clean.*reviewed|reviewed.*clean/);
   calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
   assert.deepEqual(calls, verifiedCalls);
+
+  manifest.working_tree_clean = true;
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const revisedScale = { maximumInstanceCount: 3, instanceMemoryMB: 4096, alwaysReady: [{ name: "http", instanceCount: 1 }] };
+  site.properties.functionAppConfig.scaleAndConcurrency = revisedScale;
+  const missingPlan = run();
+  assert.notEqual(missingPlan.status, 0);
+  assert.match(missingPlan.stderr, /live target differs/);
+  const reviewedPlan = JSON.stringify({ commit, scaleAndConcurrency: revisedScale });
+  const revised = run(reviewedPlan);
+  assert.equal(revised.status, 0, revised.stderr);
+  const previousCalls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  const stalePlan = run(JSON.stringify({ commit: "b".repeat(40), scaleAndConcurrency: revisedScale }));
+  assert.notEqual(stalePlan.status, 0);
+  assert.match(stalePlan.stderr, /capacity plan must come/);
+  assert.deepEqual((await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse), previousCalls);
+  site.properties.functionAppConfig.scaleAndConcurrency = { ...revisedScale, alwaysReady: [] };
+  const mismatch = run(reviewedPlan);
+  assert.notEqual(mismatch.status, 0);
+  assert.match(mismatch.stderr, /live target differs/);
 });

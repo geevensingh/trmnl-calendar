@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { artifactIdentity, activateReleaseBaseline, listReleaseStatus } from "../../scripts/release-controller.mjs";
 import { activateFromMain, runReleaseBatch } from "../../scripts/release-runner.mjs";
+import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -35,6 +36,12 @@ function memoryLedger() {
 async function git(cwd, ...args) {
   const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
     encoding: "utf8",
+    env: isolatedGitEnvironment({
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+      GIT_TEMPLATE_DIR: "",
+      GIT_TERMINAL_PROMPT: "0"
+    }),
     windowsHide: true
   });
   return stdout.trim();

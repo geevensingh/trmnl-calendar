@@ -11,11 +11,20 @@ import {
   mainCommitsAfter
 } from "../../scripts/git-release-history.mjs";
 import { classifyPaths } from "../../scripts/release-controller.mjs";
+import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
 const execFileAsync = promisify(execFile);
 
 async function git(cwd, args) {
-  return execFileAsync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+  return execFileAsync("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    env: isolatedGitEnvironment({
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+      GIT_TEMPLATE_DIR: "",
+      GIT_TERMINAL_PROMPT: "0"
+    })
+  });
 }
 
 test("main history preserves first-parent merge order and changed paths", async t => {

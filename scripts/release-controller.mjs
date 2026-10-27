@@ -14,6 +14,8 @@ function changedTargets(path) {
   const normalized = path.replaceAll("\\", "/").replace(/^\.\/+/, "");
   if (
     normalized === "scripts/agenda-workbench.mjs" ||
+    normalized === "scripts/setup-display.ps1" ||
+    normalized === "scripts/display-toolchain.ps1" ||
     normalized === "display/render.rb"
   ) return targetSets.none;
   if (
@@ -121,6 +123,7 @@ function newState() {
     active: false,
     checkpoint: null,
     baselines: { azure: null, trmnl: null },
+    pending_reconciliation: { azure: false, trmnl: false },
     queue: [],
     updated_at: null
   };
@@ -148,6 +151,30 @@ function validateState(state) {
       throw new Error("ledger_invalid");
     }
     if (release.artifact !== null) assertArtifact(release.artifact, release.commit);
+  }
+  if (state.pending_reconciliation === undefined) {
+    state.pending_reconciliation = { azure: false, trmnl: false };
+    for (const release of state.queue) {
+      for (const attempt of release.attempts) {
+        for (const target of TARGETS) {
+          if (attempt[`${target}_verified`] === true) state.pending_reconciliation[target] = false;
+          else if (attempt.stage === `${target}_deploy`) state.pending_reconciliation[target] = true;
+        }
+      }
+      for (const target of TARGETS) {
+        const result = release.target_results?.[target];
+        if (result === "verified") state.pending_reconciliation[target] = false;
+        if (["in_progress", "uncertain", "failed"].includes(result)) {
+          state.pending_reconciliation[target] = true;
+        }
+      }
+    }
+  }
+  if (!state.pending_reconciliation || typeof state.pending_reconciliation !== "object" ||
+    Array.isArray(state.pending_reconciliation) ||
+    Object.keys(state.pending_reconciliation).some(target => !TARGETS.includes(target)) ||
+    TARGETS.some(target => typeof state.pending_reconciliation[target] !== "boolean")) {
+    throw new Error("ledger_invalid");
   }
   return state;
 }
@@ -211,6 +238,7 @@ export async function activateReleaseBaseline({
       for (const target of TARGETS) {
         if (state.activation.target_results[target] === "in_progress") {
           state.activation.target_results[target] = "uncertain";
+          state.pending_reconciliation[target] = true;
         }
       }
       await ledger.write(state);
@@ -267,6 +295,7 @@ export async function activateReleaseBaseline({
         if (activation.target_results[target] === "verified") continue;
         activation.target_results[target] = "in_progress";
         activation.recovery_confirmation_required = true;
+        state.pending_reconciliation[target] = true;
         activation.stage = `${target}_deploy`;
         await save();
         const outcome = target === "azure"
@@ -278,6 +307,7 @@ export async function activateReleaseBaseline({
         }
         activation.target_results[target] = "verified";
         activation.recovery_confirmation_required = false;
+        state.pending_reconciliation[target] = false;
         await save();
       }
       activation.status = "succeeded";
@@ -375,6 +405,7 @@ export async function recoverInterruptedRelease({ ledger }) {
     if (TARGETS.includes(target)) {
       running.target_results ??= {};
       running.target_results[target] = "uncertain";
+      state.pending_reconciliation[target] = true;
     }
     return { recovered: true, release: running.commit, blocked: true };
   });
@@ -453,7 +484,7 @@ export async function runNextRelease({ ledger, services }) {
         const baseline = state.baselines[target];
         if (baseline === null) throw Object.assign(new Error(), { code: "target_baseline_missing" });
         const paths = await services.changedPaths(baseline, release.commit, { signal });
-        if (classifyPaths(paths).includes(target)) targets.push(target);
+        if (state.pending_reconciliation[target] || classifyPaths(paths).includes(target)) targets.push(target);
       }
       release.targets = targets;
       release.target_results ??= {};
@@ -479,9 +510,11 @@ export async function runNextRelease({ ledger, services }) {
       }
       await save();
       for (const target of TARGETS) {
-        if (!targets.includes(target) || state.baselines[target] === release.commit) continue;
+        if (!targets.includes(target) ||
+          (state.baselines[target] === release.commit && !state.pending_reconciliation[target])) continue;
         release.target_results[target] = "in_progress";
         release.recovery_confirmation_required = true;
+        state.pending_reconciliation[target] = true;
         attempt.stage = `${target}_deploy`;
         await save();
         const outcome = target === "azure"
@@ -494,6 +527,7 @@ export async function runNextRelease({ ledger, services }) {
         state.baselines[target] = release.commit;
         release.target_results[target] = "verified";
         release.recovery_confirmation_required = false;
+        state.pending_reconciliation[target] = false;
         attempt[`${target}_verified`] = true;
         await save();
       }
@@ -534,6 +568,7 @@ export async function listReleaseStatus({ ledger }) {
       active: state.active,
       checkpoint: state.checkpoint,
       baselines: { ...state.baselines },
+      pending_reconciliation: { ...state.pending_reconciliation },
       activation: state.activation ? {
         commit: state.activation.commit,
         status: state.activation.status,

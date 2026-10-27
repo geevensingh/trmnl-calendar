@@ -6,6 +6,7 @@ param(
     [string]$ParametersFile,
     [string]$PackageFile,
     [string]$ReviewedIntegrationCommit,
+    [string]$ReviewedCapacityJson,
     [switch]$ApprovedResourcePlan
 )
 
@@ -140,19 +141,59 @@ if ($Mode -eq 'DeployCode') {
         (Get-Item -LiteralPath $archive).Length -gt 100 * 1024 * 1024) {
         throw 'The deployment archive hash or size does not match the reviewed package.'
     }
+    $expectedScale = @{ maximumInstanceCount = 1; instanceMemoryMB = 2048; alwaysReady = @() }
+    if ($ReviewedCapacityJson) {
+        try {
+            $reviewedCapacity = $ReviewedCapacityJson | ConvertFrom-Json -AsHashtable
+        }
+        catch {
+            throw 'The reviewed capacity plan is invalid.'
+        }
+        if ($reviewedCapacity -isnot [System.Collections.IDictionary] -or
+            !$reviewedCapacity.Contains('commit') -or !$reviewedCapacity.Contains('scaleAndConcurrency') -or
+            $reviewedCapacity.commit -cne $ReviewedIntegrationCommit -or
+            $reviewedCapacity.scaleAndConcurrency -isnot [System.Collections.IDictionary]) {
+            throw 'The capacity plan must come from reconciliation of the reviewed integration commit.'
+        }
+        $expectedScale = $reviewedCapacity.scaleAndConcurrency
+    }
+    if (!$expectedScale.Contains('maximumInstanceCount') -or !$expectedScale.Contains('instanceMemoryMB') -or
+        !$expectedScale.Contains('alwaysReady') -or
+        ($expectedScale.maximumInstanceCount -isnot [long] -and $expectedScale.maximumInstanceCount -isnot [int]) -or
+        $expectedScale.maximumInstanceCount -lt 1 -or
+        ($expectedScale.instanceMemoryMB -isnot [long] -and $expectedScale.instanceMemoryMB -isnot [int]) -or
+        $expectedScale.instanceMemoryMB -lt 1 -or $expectedScale.alwaysReady -isnot [array]) {
+        throw 'The reviewed capacity plan is invalid.'
+    }
+    foreach ($entry in $expectedScale.alwaysReady) {
+        if ($entry -isnot [System.Collections.IDictionary] -or !$entry.Contains('name') -or
+            !$entry.Contains('instanceCount') -or $entry.name -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($entry.name) -or
+            ($entry.instanceCount -isnot [long] -and $entry.instanceCount -isnot [int]) -or $entry.instanceCount -lt 0) {
+            throw 'The reviewed always-ready capacity plan is invalid.'
+        }
+    }
     $siteUrl = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$($parameters.resourceGroupName.value)/providers/Microsoft.Web/sites/$($parameters.functionAppName.value)?api-version=2024-04-01"
     $site = Invoke-Azure -Stage 'Code-deployment target verification' -Json -Arguments @(
         'rest', '--method', 'get', '--url', $siteUrl, '--output', 'json'
     )
     $config = $site.properties.functionAppConfig
     $scale = $config.scaleAndConcurrency
+    $expectedWarm = @($expectedScale.alwaysReady | Where-Object { $_.instanceCount -ne 0 })
+    $actualWarm = @($scale['alwaysReady'] | Where-Object { $_.instanceCount -ne 0 })
+    $warmMatches = $expectedWarm.Count -eq $actualWarm.Count
+    foreach ($entry in $expectedWarm) {
+        if (@($actualWarm | Where-Object {
+            $_.name -ceq $entry.name -and $_.instanceCount -eq $entry.instanceCount
+        }).Count -ne 1) { $warmMatches = $false }
+    }
     $approvedPlanId = "/subscriptions/$SubscriptionId/resourceGroups/$($parameters.resourceGroupName.value)/providers/Microsoft.Web/serverfarms/$($parameters.planName.value)"
     if ($site.kind -notmatch 'functionapp' -or $site.kind -notmatch 'linux' -or !$site.properties.httpsOnly -or
         $site.properties.serverFarmId -ine $approvedPlanId -or
         $config.runtime.name -ne 'dotnet-isolated' -or $config.runtime.version -ne '10.0' -or
-        $scale.maximumInstanceCount -ne 1 -or $scale.instanceMemoryMB -ne 2048 -or
-        @($scale['alwaysReady'] | Where-Object { $_.instanceCount -ne 0 }).Count -ne 0) {
-        throw 'The live target differs from the approved HTTPS Linux .NET 10, 2 GiB/max-one, zero-always-ready plan.'
+        $scale.maximumInstanceCount -ne $expectedScale.maximumInstanceCount -or
+        $scale.instanceMemoryMB -ne $expectedScale.instanceMemoryMB -or !$warmMatches) {
+        throw 'The live target differs from the reviewed HTTPS Linux .NET 10 capacity plan.'
     }
     $plan = Invoke-Azure -Stage 'Flex plan verification' -Json -Arguments @(
         'rest', '--method', 'get', '--url', "https://management.azure.com$approvedPlanId`?api-version=2024-04-01",

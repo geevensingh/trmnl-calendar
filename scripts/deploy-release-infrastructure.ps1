@@ -104,7 +104,7 @@ try {
         throw 'The approved resource group must already exist. Routine releases never create or delete the group.'
     }
     $deploymentName = "calendar-$($ReviewedMainCommit.Substring(0, 12))"
-    Invoke-Azure -Stage 'Resource-group deployment-stack reconciliation' -Arguments @(
+    $reconciliation = Invoke-Azure -Stage 'Resource-group deployment-stack reconciliation' -Json -Arguments @(
         'stack', 'group', 'create',
         '--name', 'trmnl-calendar-managed',
         '--resource-group', $ApprovedResourceGroupName,
@@ -115,9 +115,16 @@ try {
         '--deny-settings-mode', 'denyDelete',
         '--description', "Reviewed main release $ReviewedMainCommit; deployment $deploymentName",
         '--yes',
-        '--output', 'none'
+        '--output', 'json'
     )
-    Write-Output 'Reviewed resource-group infrastructure reconciliation completed. The resource group and unmanaged resources were not targeted.'
+    if (!$reconciliation.outputs.reviewedCapacity.value) {
+        throw 'The reviewed deployment stack did not return its expected function capacity.'
+    }
+    @{
+        status = 'reconciled'
+        commit = $ReviewedMainCommit
+        scaleAndConcurrency = $reconciliation.outputs.reviewedCapacity.value
+    } | ConvertTo-Json -Depth 20 -Compress
 }
 finally {
     Remove-Item -LiteralPath $scopedPath -Force -ErrorAction SilentlyContinue

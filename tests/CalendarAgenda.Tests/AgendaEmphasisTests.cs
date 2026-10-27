@@ -123,7 +123,7 @@ public sealed partial class AgendaHttpTests
     }
 
     [Fact]
-    public async Task Http_schema_two_emphasis_reaches_strict_production_Liquid_while_ordinary_schema_one_remains_supported()
+    public async Task Http_schema_two_emphasis_and_participation_reach_strict_production_Liquid_while_schema_one_is_rejected()
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", CalendarWithEvents(
             "DTSTART:20261019T180000Z\nDTEND:20261019T190000Z\nSUMMARY:Current <meeting>"));
@@ -131,16 +131,21 @@ public sealed partial class AgendaHttpTests
         var html = DisplayTests.Render("full", current.RootElement);
         Assert.Contains("data-agenda-emphasis=\"in_progress\"", html);
         Assert.Contains("IN PROGRESS", html);
+        Assert.Contains("data-expectation=\"unknown\">Unknown</span>", html);
         Assert.Contains("Current &lt;meeting&gt;", html);
         var ordinary = DisplayTests.CurrentAgenda();
-        Assert.Equal(1, ordinary["schema_version"]!.GetValue<int>());
-        var legacyHtml = DisplayTests.Render("full", ordinary);
-        Assert.Contains("Synthetic planning", legacyHtml);
-        Assert.DoesNotContain("data-agenda-emphasis=", legacyHtml);
-        Assert.DoesNotContain("IN PROGRESS", legacyHtml);
+        Assert.Equal(2, ordinary["schema_version"]!.GetValue<int>());
+        var ordinaryHtml = DisplayTests.Render("full", ordinary);
+        Assert.Contains("Synthetic planning", ordinaryHtml);
+        Assert.Contains("data-expectation=\"likely\">Likely</span>", ordinaryHtml);
+        Assert.DoesNotContain("data-agenda-emphasis=", ordinaryHtml);
+        Assert.DoesNotContain("IN PROGRESS", ordinaryHtml);
+        ordinary["schema_version"] = 1;
+        Assert.Contains("Unsupported agenda schema",
+            Assert.ThrowsAny<Exception>(() => DisplayTests.Render("full", ordinary)).Message);
         var invalid = JsonNode.Parse(current.RootElement.GetRawText())!.AsObject();
         invalid["schema_version"] = 1;
-        Assert.Contains("Emphasis requires agenda schema 2.",
+        Assert.Contains("Unsupported agenda schema",
             Assert.ThrowsAny<Exception>(() => DisplayTests.Render("full", invalid)).Message);
         invalid["schema_version"] = 3;
         Assert.Contains("Unsupported agenda schema",

@@ -3,7 +3,7 @@
   "name": "Source error: no source success",
   "description": "An unavailable source with no successful source check.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "error",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-23T18:00:00Z",

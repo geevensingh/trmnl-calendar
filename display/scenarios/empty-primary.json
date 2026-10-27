@@ -3,7 +3,7 @@
   "name": "Empty primary day",
   "description": "The secondary day's commitments do not replace the selected empty primary day.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "current",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-23T18:00:00Z",
@@ -14,7 +14,7 @@
       "label": "Monday, Oct 26",
       "eligible_total": 1,
       "occurrences": [
-        { "time_kind": "timed", "id": "secondary-only", "title": "Secondary commitment", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" }
+        { "time_kind": "timed", "id": "secondary-only", "title": "Secondary commitment", "participation_expectation": "definite", "location": "Studio A", "start_at": "2026-10-26T18:00:00Z", "end_at": "2026-10-26T19:00:00Z" }
       ]
     },
     "error": null

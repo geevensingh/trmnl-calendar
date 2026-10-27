@@ -17,6 +17,7 @@
           "time_kind": "all_day",
           "id": "all-day-planning",
           "title": "Project preparation",
+          "participation_expectation": "unknown",
           "location": null,
           "start_date": "2026-10-23",
           "end_date_exclusive": "2026-10-24"
@@ -25,6 +26,7 @@
           "time_kind": "timed",
           "id": "upcoming-utc",
           "title": "Design review",
+          "participation_expectation": "unlikely",
           "location": null,
           "emphasis": "upcoming",
           "start_at": "2026-10-23T18:15:00Z",
@@ -34,6 +36,7 @@
           "time_kind": "timed",
           "id": "upcoming-offset",
           "title": "Planning session",
+          "participation_expectation": "maybe",
           "location": "Studio B",
           "emphasis": "upcoming",
           "start_at": "2026-10-23T11:15:00-07:00",
@@ -43,6 +46,7 @@
           "time_kind": "timed",
           "id": "ordinary-later",
           "title": "Follow-up",
+          "participation_expectation": "likely",
           "location": null,
           "start_at": "2026-10-23T18:20:00Z",
           "end_at": "2026-10-23T19:00:00Z"

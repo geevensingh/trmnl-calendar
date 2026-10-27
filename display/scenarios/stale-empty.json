@@ -3,7 +3,7 @@
   "name": "Stale empty agenda",
   "description": "Empty retained data still shows a stale warning and never renews source success.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "stale",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-23T18:45:00Z",

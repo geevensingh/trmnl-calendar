@@ -3,7 +3,7 @@
   "name": "Stale agenda",
   "description": "Retained commitments with an original source-success time 45 minutes before the fixed evaluation.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "stale",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-23T18:45:00Z",
@@ -13,8 +13,8 @@
       "label": "Friday, Oct 23",
       "eligible_total": 2,
       "occurrences": [
-        { "time_kind": "all_day", "id": "retained-all-day", "title": "All-day preparation", "location": null, "start_date": "2026-10-23", "end_date_exclusive": "2026-10-24" },
-        { "time_kind": "timed", "id": "retained-meeting", "title": "Retained planning", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" }
+        { "time_kind": "all_day", "id": "retained-all-day", "title": "All-day preparation", "participation_expectation": "definite", "location": null, "start_date": "2026-10-23", "end_date_exclusive": "2026-10-24" },
+        { "time_kind": "timed", "id": "retained-meeting", "title": "Retained planning", "participation_expectation": "likely", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" }
       ]
     },
     "secondary": { "date": "2026-10-26", "label": "Monday, Oct 26", "eligible_total": 0, "occurrences": [] },

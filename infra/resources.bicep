@@ -11,6 +11,10 @@ param budgetName string
 @secure()
 param budgetAlertEmail string
 
+@secure()
+@description('Adapter-only owner mailto: identity for the authorized source preflight; never an HTTP or plugin input.')
+param agendaOwnerAddress string
+
 param budgetStartDate string
 param sourceSecretName string
 param cacheContainerName string
@@ -239,6 +243,7 @@ resource settings 'Microsoft.Web/sites/config@2024-04-01' = {
     APPLICATIONINSIGHTS_CONNECTION_STRING: insights.properties.ConnectionString
     APPLICATIONINSIGHTS_AUTHENTICATION_STRING: 'Authorization=AAD'
     Agenda__SourceUrl: '@Microsoft.KeyVault(SecretUri=${vault.properties.vaultUri}secrets/${sourceSecretName})'
+    Agenda__OwnerAddress: agendaOwnerAddress
     Agenda__CacheServiceUri: storage.properties.primaryEndpoints.blob
     Agenda__CacheContainer: cacheContainerName
   }

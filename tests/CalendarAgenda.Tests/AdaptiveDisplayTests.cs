@@ -126,7 +126,8 @@ public sealed class AdaptiveDisplayTests
                 await page.Locator("""
                     .agenda-heading .title, .agenda-day-label .label, .agenda-source > span, [data-agenda-source],
                     .agenda-warning > *, .agenda > .title, .agenda > .label:not(.agenda-source), .agenda > .description,
-                    tbody tr:not([hidden]) .label--large, tbody tr.agenda-emphasized:not([hidden]) .title,
+                    tbody tr:not([hidden]) .label--large, tbody tr:not([hidden]) .agenda-participation,
+                    tbody tr.agenda-emphasized:not([hidden]) .title,
                     tbody tr.agenda-emphasized:not([hidden]) .agenda-status
                     """).AllAsync());
             Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
@@ -682,6 +683,7 @@ public sealed class AdaptiveDisplayTests
             ["time_kind"] = "all_day",
             ["id"] = "synthetic-all-day",
             ["title"] = "All-day preparation",
+            ["participation_expectation"] = "definite",
             ["location"] = null,
             ["start_date"] = "2026-10-23",
             ["end_date_exclusive"] = "2026-10-27"
@@ -1057,7 +1059,9 @@ public sealed class AdaptiveDisplayTests
     internal static async Task VisibleInk(IPage page, string name, NativeView view, IEnumerable<ILocator> required)
     {
         var regions = new List<JsonElement>();
-        foreach (var content in required)
+        var contents = required.ToList();
+        contents.AddRange(await page.Locator(".agenda-participation:visible").AllAsync());
+        foreach (var content in contents)
         {
             await VisibleInsideView(content, textMayBeTruncated:
                 await content.EvaluateAsync<bool>("element => element.matches('td .title')"));

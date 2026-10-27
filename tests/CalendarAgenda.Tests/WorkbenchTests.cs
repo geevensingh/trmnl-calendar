@@ -276,6 +276,24 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task Public_launcher_rejects_schema_two_baselines_without_the_required_participation_contract_or_template()
+    {
+        await using var fixture = await Workspace.Create();
+        var contractPath = Path.Combine(fixture.Root, "docs", "agenda-contract.md");
+        var contract = await File.ReadAllTextAsync(contractPath);
+        await File.WriteAllTextAsync(contractPath, contract.Replace("participation_expectation", "legacy_occurrence"));
+        await fixture.Commit("Synthetic schema-two contract without participation");
+        await fixture.StartFailure("HEAD", "Incompatible baseline");
+        await File.WriteAllTextAsync(contractPath, contract);
+        await fixture.WriteTemplate(fixture.Template.Replace("occurrence.participation_expectation", "nil"));
+        await fixture.Commit("Synthetic schema-two template without participation");
+        await fixture.StartFailure("HEAD", "Incompatible baseline");
+        await File.WriteAllTextAsync(contractPath, contract.Replace("participation_expectation", "legacy_occurrence"));
+        await fixture.Commit("Synthetic earlier schema-two baseline");
+        await fixture.StartFailure("HEAD", "Incompatible baseline");
+    }
+
+    [Fact]
     public async Task Public_launcher_rejects_unavailable_or_incompatible_history_and_missing_prerequisites()
     {
         await using var fixture = await Workspace.Create();

@@ -105,6 +105,16 @@ public sealed class AdaptiveDisplayTests
             var data = AgendaScenarios.Load(scenario);
             await DisplayTests.Show(page, data, view.Placement, view.Device);
             await NativeBounds(page, view);
+            var emphases = new[] { "primary", "secondary" }
+                .SelectMany(name => data[name]!["occurrences"]!.AsArray())
+                .Select(item => item!["emphasis"]?.GetValue<string>()).OfType<string>().Distinct();
+            foreach (var emphasis in emphases)
+            {
+                var status = emphasis == "in_progress" ? "IN PROGRESS" : "UPCOMING";
+                Assert.True(await page.Locator(".agenda-emphasized:visible").CountAsync() > 0,
+                    $"{scenario}/{view.Device}/{view.Placement} must retain an emphasized card.");
+                await Assertions.Expect(page.GetByText(status, new() { Exact = true }).First).ToBeVisibleAsync();
+            }
             var findings = await page.EvaluateAsync<JsonElement>("""
                 async input => {
                   const checks = await import("/workbench/layout-checks.mjs");
@@ -116,11 +126,131 @@ public sealed class AdaptiveDisplayTests
                 await page.Locator("""
                     .agenda-heading .title, .agenda-day-label .label, .agenda-source > span, [data-agenda-source],
                     .agenda-warning > *, .agenda > .title, .agenda > .label:not(.agenda-source), .agenda > .description,
-                    tbody tr:not([hidden]) .label--large
+                    tbody tr:not([hidden]) .label--large, tbody tr.agenda-emphasized:not([hidden]) .title,
+                    tbody tr.agenda-emphasized:not([hidden]) .agenda-status
                     """).AllAsync());
             Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
             Assert.Null(await page.EvaluateAsync<int?>("window.locationPwn"));
         }
+    }
+
+    [Fact]
+    public async Task Raster_ink_requires_painted_inverse_and_ordinary_text_not_just_background()
+    {
+        var view = new NativeView("og", "full", 800, 480, 1, 780, 460);
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        await page.RouteAsync("http://trmnl.local/", route => route.FulfillAsync(new()
+        {
+            Body = """
+                <!doctype html>
+                <style>
+                  body { margin: 0; }
+                  .view { width: 800px; height: 480px; overflow: hidden; }
+                  span { display: block; padding: 8px; font: bold 24px/32px sans-serif; }
+                  .inverse { background: black; color: white; }
+                  .ordinary { background: white; color: black; }
+                </style>
+                <main class="view">
+                  <span class="inverse">Inverse title</span>
+                  <span class="inverse">IN PROGRESS</span>
+                  <span class="inverse">11:00 AM - 12:00 PM</span>
+                  <span class="ordinary">Ordinary title</span>
+                </main>
+                """,
+            ContentType = "text/html"
+        }));
+        await page.RouteAsync("http://trmnl.local/workbench/layout-checks.mjs", route => route.FulfillAsync(new()
+        {
+            Path = Path.Combine(DisplayTests.Root, "display", "workbench", "layout-checks.mjs"),
+            ContentType = "application/javascript"
+        }));
+        await page.GotoAsync("http://trmnl.local/");
+        var required = await page.Locator("span").AllAsync();
+        await VisibleInk(page, "painted-foreground", view, required);
+        foreach (var content in required)
+        {
+            var originalStyle = await content.GetAttributeAsync("style");
+            try
+            {
+                await content.EvaluateAsync("""
+                    element => element.style.setProperty("-webkit-text-fill-color", "transparent", "important")
+                    """);
+                await Assert.ThrowsAsync<Xunit.Sdk.TrueException>(() =>
+                    VisibleInk(page, "unpainted-foreground", view, new[] { content }));
+            }
+            finally
+            {
+                await content.EvaluateAsync("""
+                    (element, style) => {
+                      if (style === null) element.removeAttribute("style");
+                      else element.setAttribute("style", style);
+                    }
+                    """, originalStyle);
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Emphasized_secondary_event_is_admitted_ahead_of_ordinary_primary_overflow(NativeView view)
+    {
+        var data = Agenda(primaryRows: 32, secondaryRows: 12);
+        data["schema_version"] = 2;
+        var secondary = data["secondary"]!["occurrences"]!.AsArray()[0]!.DeepClone();
+        secondary["id"] = "secondary-emphasized";
+        secondary["title"] = "Upcoming secondary event";
+        secondary["emphasis"] = "upcoming";
+        data["secondary"]!["eligible_total"] = 1;
+        data["secondary"]!["occurrences"] = new JsonArray(secondary);
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+
+        var emphasized = page.Locator(".agenda-secondary tbody tr.agenda-emphasized:visible");
+        await Assertions.Expect(emphasized).ToHaveCountAsync(1);
+        await Assertions.Expect(emphasized.GetByText("UPCOMING", new() { Exact = true })).ToBeVisibleAsync();
+        await DayCount(page, "primary", 32);
+        await DayCount(page, "secondary", 1);
+        await NativeBounds(page, view);
+    }
+
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Emphasized_overflow_is_admitted_in_chronological_order_before_ordinary_rows(NativeView view)
+    {
+        var data = Agenda(primaryRows: 56, secondaryRows: 0);
+        data["schema_version"] = 2;
+        foreach (var occurrence in data["primary"]!["occurrences"]!.AsArray().Skip(32))
+            occurrence!["emphasis"] = "in_progress";
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+
+        var visible = page.Locator(".agenda-primary tbody tr.agenda-emphasized:visible");
+        var visibleCount = await visible.CountAsync();
+        Assert.InRange(visibleCount, 1, 23);
+        Assert.Equal(32, await page.Locator(".agenda-primary tbody tr:not([data-agenda-emphasis])").CountAsync());
+        Assert.Equal(0, await page.Locator(".agenda-primary tbody tr:not([data-agenda-emphasis]):visible").CountAsync());
+        var ids = await visible.EvaluateAllAsync<string[]>("rows => rows.map(row => row.dataset.agendaId)");
+        Assert.Equal(Enumerable.Range(33, visibleCount).Select(index => $"primary-{index:D3}"), ids);
+        await DayCount(page, "primary", 56);
+        await NativeBounds(page, view);
     }
 
     [Theory]
@@ -652,7 +782,7 @@ public sealed class AdaptiveDisplayTests
             ("configuration_invalid", "Configuration error", "Rule configuration is missing or malformed.", false),
             ("source_unavailable", "Source error", "The calendar source could not be checked.", false),
             ("compatibility_unsupported", "Compatibility error", "The source contains unsupported calendar semantics.", false),
-            ("agenda_too_large", "Agenda error", "The complete agenda exceeds the response budget.", true),
+            ("agenda_too_large", "Agenda error", "The agenda metadata exceeds the polling response budget.", true),
             ("future_error", "Agenda error", "Synthetic failure <img src=x onerror=window.pwn=1> & \"quoted\".", false)
         })
         {
@@ -940,13 +1070,20 @@ public sealed class AdaptiveDisplayTests
         }
         Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
         var image = Path.Combine(DisplayTests.Root, "artifacts", $"{name}.png");
+        var comparison = Path.Combine(DisplayTests.Root, "artifacts", $"{name}-no-text.png");
         var screenshot = await ValidationTiming.Screenshot(page, new() { Path = image });
         Assert.Equal(view.PhysicalWidth, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
         Assert.Equal(view.PhysicalHeight, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
+        await ValidationTiming.Screenshot(page, new()
+        {
+            Path = comparison,
+            Style = "* { -webkit-text-fill-color: transparent !important; text-shadow: none !important; }"
+        });
         using var ink = JsonDocument.Parse(DisplayTests.RunRuby(
-            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image, regions }));
+            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"),
+            new { image, comparison_image = comparison, regions }));
         foreach (var region in ink.RootElement.EnumerateArray())
-            Assert.True(region.GetProperty("dark_pixels").GetInt32() >= 20,
+            Assert.True(region.GetProperty("different_pixels").GetInt32() >= 20,
                 $"Required text has no readable raster ink: {region.GetProperty("text").GetString()}");
     }
 

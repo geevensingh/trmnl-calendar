@@ -198,20 +198,65 @@ public sealed class AgendaDiagnosticsTests
     }
 
     [Fact]
-    public async Task Errors_and_oversize_responses_do_not_log_unreturned_meetings()
+    public async Task Bounded_responses_omit_unreturned_meeting_diagnostics_and_errors_do_not_log_agendas()
     {
         var diagnostics = new ExclusionTests.CapturedDiagnostics();
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z",
             Calendar(Event("oversize", new string('X', 100_000), "CONFIDENTIAL_UNRETURNED_LOCATION")),
             logger: diagnostics);
         using var result = await agenda.Poll();
-        Assert.Equal("agenda_too_large", result.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal("current", result.RootElement.GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("error").ValueKind);
+        Assert.Empty(result.RootElement.GetProperty("primary").GetProperty("occurrences").EnumerateArray());
+        var summary = Assert.Single(Entries(diagnostics, "Agenda poll "));
+        Assert.Equal(1, summary.GetProperty("primary_eligible_total").GetInt32());
+        Assert.Empty(Entries(diagnostics, "Agenda occurrence "));
+        Assert.All(diagnostics.Messages, message => Assert.DoesNotContain("CONFIDENTIAL", message));
+
+        diagnostics.Messages.Clear();
         using var invalid = await agenda.PollOnly("""{"rules_json":"invalid"}""");
+        Assert.Equal("error", invalid.RootElement.GetProperty("state").GetString());
 
         Assert.Empty(Entries(diagnostics, "Agenda poll "));
         Assert.Empty(Entries(diagnostics, "Agenda occurrence "));
         Assert.All(diagnostics.Messages, message => Assert.DoesNotContain("CONFIDENTIAL", message));
         Assert.All(diagnostics.Messages, message => Assert.True(Encoding.UTF8.GetByteCount(message) < 100));
+    }
+
+    [Theory]
+    [InlineData("2026-10-19T18:45:00Z", "upcoming")]
+    [InlineData("2026-10-19T19:00:00Z", "in_progress")]
+    public async Task Bounded_poll_diagnostics_match_returned_emphasized_rows_and_complete_totals(
+        string now, string emphasis)
+    {
+        var events = string.Concat(Enumerable.Range(0, 100).Select(index =>
+            Event($"ordinary-{index}", $"Ordinary {index:D3} {new string('X', 1000)}", null)
+                .Replace("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z",
+                    "DTSTART;VALUE=DATE:20261019\nDTEND;VALUE=DATE:20261020")))
+            + Event("priority", "Priority meeting", "Studio A");
+        var diagnostics = new ExclusionTests.CapturedDiagnostics();
+        using var agenda = new AgendaHttp(now, Calendar(events), logger: diagnostics);
+        using var result = await agenda.Poll();
+        var body = result.RootElement;
+        var occurrences = body.GetProperty("primary").GetProperty("occurrences").EnumerateArray().ToArray();
+        Assert.Equal("current", body.GetProperty("state").GetString());
+        Assert.InRange(Encoding.UTF8.GetByteCount(body.GetRawText()), 1, 95_000);
+        Assert.Equal(101, body.GetProperty("primary").GetProperty("eligible_total").GetInt32());
+        Assert.InRange(occurrences.Length, 2, 100);
+        Assert.Equal(emphasis, Assert.Single(occurrences,
+            item => item.GetProperty("title").GetString() == "Priority meeting").GetProperty("emphasis").GetString());
+
+        var summary = Assert.Single(Entries(diagnostics, "Agenda poll "));
+        Assert.Equal(101, summary.GetProperty("primary_eligible_total").GetInt32());
+        var meetings = Entries(diagnostics, "Agenda occurrence ").ToArray();
+        Assert.Equal(occurrences.Select(item => item.GetProperty("id").GetString()),
+            meetings.Select(item => item.GetProperty("occurrence_id").GetString()));
+        foreach (var (occurrence, meeting) in occurrences.Zip(meetings))
+        {
+            Assert.Equal(summary.GetProperty("poll_id").GetString(), meeting.GetProperty("poll_id").GetString());
+            Assert.Equal(occurrence.GetProperty("title").GetString(), meeting.GetProperty("title").GetString());
+            Assert.Equal(occurrence.GetProperty("location").GetString(), meeting.GetProperty("location").GetString());
+        }
     }
 
     private static IEnumerable<JsonElement> Entries(

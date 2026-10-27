@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test from "node:test";
 import { createTrmnlArchive, unpackTrmnlArchive } from "../../scripts/release-services.mjs";
 
@@ -26,6 +26,18 @@ test("TRMNL release archive round-trips the exact plugin source files", async ()
     assert.deepEqual((await readdir(destination)).sort(), [...pluginFiles].sort());
     for (const file of pluginFiles) {
       assert.equal(await readFile(join(destination, file), "utf8"), `content:${file}`);
+    }
+    const relativeArchive = join(directory, "relative archive", "trmnl-test.tar");
+    const relativeDestination = join(directory, "relative recovered", "src");
+    const relativeCreated = await createTrmnlArchive(
+      relative(process.cwd(), source), relative(process.cwd(), relativeArchive)
+    );
+    assert.ok(relativeCreated.bytes.length > 0);
+    await unpackTrmnlArchive(
+      relative(process.cwd(), relativeArchive), relative(process.cwd(), relativeDestination)
+    );
+    for (const file of pluginFiles) {
+      assert.equal(await readFile(join(relativeDestination, file), "utf8"), `content:${file}`);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

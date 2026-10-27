@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   AzureBlobArtifacts
 } from "./azure-blob-ledger.mjs";
@@ -190,17 +190,27 @@ export async function createTrmnlArchive(source, output) {
   if (paths.length !== expectedPluginFiles.size ||
     paths.some(path => !expectedPluginFiles.has(path)) ||
     entries.some(entry => !entry.isFile() || entry.isSymbolicLink())) reject("trmnl_source_invalid");
-  await mkdir(dirname(output), { recursive: true });
+  const archive = resolve(output);
+  const archiveDirectory = dirname(archive);
+  await mkdir(archiveDirectory, { recursive: true });
   await run("tar", [
-    "--format=ustar", "-cf", output, "-C", source, ...paths
-  ], { env: limitedEnvironment(), code: "trmnl_artifact_prepare_failed" });
-  const bytes = await readFile(output);
+    "--format=ustar", "-cf", `./${basename(archive)}`, "-C", resolve(source), ...paths
+  ], {
+    cwd: archiveDirectory,
+    env: limitedEnvironment(),
+    code: "trmnl_artifact_prepare_failed"
+  });
+  const bytes = await readFile(archive);
   if (bytes.length === 0 || bytes.length > maximumArtifactBytes) reject("artifact_size_invalid");
   return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
 export async function unpackTrmnlArchive(archive, destination) {
-  const listing = await run("tar", ["-tf", archive], {
+  const archivePath = resolve(archive);
+  const archiveName = `./${basename(archivePath)}`;
+  const archiveDirectory = dirname(archivePath);
+  const listing = await run("tar", ["-tf", archiveName], {
+    cwd: archiveDirectory,
     env: limitedEnvironment(),
     code: "trmnl_artifact_invalid"
   });
@@ -211,7 +221,8 @@ export async function unpackTrmnlArchive(archive, destination) {
     paths.some(path => !expectedPluginFiles.has(path)) ||
     new Set(paths).size !== expectedPluginFiles.size) reject("trmnl_artifact_invalid");
   await mkdir(destination, { recursive: true });
-  await run("tar", ["-xf", archive, "-C", destination], {
+  await run("tar", ["-xf", archiveName, "-C", resolve(destination)], {
+    cwd: archiveDirectory,
     env: limitedEnvironment(),
     code: "trmnl_artifact_invalid"
   });

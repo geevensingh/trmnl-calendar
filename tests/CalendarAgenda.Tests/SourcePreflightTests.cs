@@ -63,6 +63,40 @@ public sealed class SourcePreflightTests
         Assert.DoesNotContain(source.Url, result.Output + result.Errors);
     }
 
+    [Fact]
+    public async Task Participation_capability_report_contains_only_allowlisted_observations()
+    {
+        const string ownerAddress = "mailto:owner@example.invalid";
+        var calendar = Calendar(
+            "DTSTART:20261102T170000Z\nDTEND:20261102T180000Z\n"
+            + "ORGANIZER:mailto:owner@example.invalid\n"
+            + "ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\n"
+            + "TRANSP:TRANSPARENT\n"
+            + $"SUMMARY:Following: {Sentinel}");
+        await using var source = await SyntheticSource.Start(async context =>
+        {
+            context.Response.ContentType = "text/calendar";
+            await context.Response.WriteAsync(calendar);
+        });
+
+        var result = await RunWithOwnerAddress(ownerAddress, new { source = source.Url },
+            "--authorize-source-access", "--synthetic-local");
+
+        Assert.Equal(0, result.ExitCode);
+        using var report = JsonDocument.Parse(result.Output);
+        var capabilities = Assert.Single(report.RootElement.GetProperty("attempts").EnumerateArray())
+            .GetProperty("interpretation").GetProperty("participation_capabilities");
+        Assert.True(capabilities.GetProperty("owner_address_configured").GetBoolean());
+        Assert.True(capabilities.GetProperty("owner_organizer_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("owner_attendee_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("owner_participation_status_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("free_availability_observed").GetBoolean());
+        Assert.True(capabilities.GetProperty("followed_title_marker_observed").GetBoolean());
+        Assert.DoesNotContain(ownerAddress, result.Output + result.Errors);
+        Assert.DoesNotContain("owner@example.invalid", result.Output + result.Errors);
+        Assert.DoesNotContain(Sentinel, result.Output + result.Errors);
+    }
+
     [Theory]
     [InlineData("different_token", false, false)]
     [InlineData("whitespace", true, true)]
@@ -642,9 +676,17 @@ public sealed class SourcePreflightTests
     }
 
     private static Task<CommandResult> Run(object input, params string[] arguments) =>
-        RunRaw(JsonSerializer.Serialize(input), arguments);
+        RunInternal(JsonSerializer.Serialize(input), null, arguments);
 
-    private static async Task<CommandResult> RunRaw(string? input, params string[] arguments)
+    private static Task<CommandResult> RunWithOwnerAddress(
+        string ownerAddress, object input, params string[] arguments) =>
+        RunInternal(JsonSerializer.Serialize(input), ownerAddress, arguments);
+
+    private static Task<CommandResult> RunRaw(string? input, params string[] arguments) =>
+        RunInternal(input, null, arguments);
+
+    private static async Task<CommandResult> RunInternal(
+        string? input, string? ownerAddress, string[] arguments)
     {
         var start = new ProcessStartInfo("dotnet")
         {
@@ -653,6 +695,9 @@ public sealed class SourcePreflightTests
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+        start.Environment.Remove("Agenda__OwnerAddress");
+        if (ownerAddress is not null)
+            start.Environment["Agenda__OwnerAddress"] = ownerAddress;
         start.ArgumentList.Add(Path.Combine(DisplayTests.Root, "src", "CalendarAgenda", "bin",
 #if DEBUG
             "Debug",
@@ -710,6 +755,9 @@ public sealed class SourcePreflightTests
                         "leading_or_trailing_whitespace", "surrounding_quotes", "https", "loopback",
                         "has_credentials", "has_fragment", "uri_representation_unchanged",
                         "performed", "exact_equal", "same_after_trimming", "same_uri_representation",
+                        "participation_capabilities", "owner_address_configured", "owner_organizer_observed",
+                        "owner_attendee_observed", "owner_participation_status_observed",
+                        "free_availability_observed", "followed_title_marker_observed",
                         "number", "acquisition", "interpretation", "elapsed_ms", "code", "http_status",
                         "calendar_media_type", "html_media_type", "utf8_bytes", "headers_ms", "body_ms",
                         "acquisition_budget_ms", "overall_budget_ms", "fits_observed_budget", "attempt_number",

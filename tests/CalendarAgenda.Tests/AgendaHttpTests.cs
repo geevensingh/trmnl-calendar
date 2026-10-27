@@ -140,6 +140,56 @@ public sealed partial class AgendaHttpTests
     }
 
     [Theory]
+    [InlineData("ORGANIZER:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Organized", "mailto:owner@example.invalid", "definite")]
+    [InlineData("ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Accepted", "mailto:owner@example.invalid", "likely")]
+    [InlineData("ATTENDEE;PARTSTAT=TENTATIVE:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Tentative", "mailto:owner@example.invalid", "maybe")]
+    [InlineData("ATTENDEE:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Unanswered", "mailto:owner@example.invalid", "maybe")]
+    [InlineData("ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Needs action", "mailto:owner@example.invalid", "maybe")]
+    [InlineData("ORGANIZER:mailto:owner@example.invalid\nATTENDEE;PARTSTAT=DECLINED:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Declined organizer", "mailto:owner@example.invalid", "unlikely")]
+    [InlineData("ORGANIZER:mailto:owner@example.invalid\nATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nTRANSP:TRANSPARENT\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Free organizer", "mailto:owner@example.invalid", "unlikely")]
+    [InlineData("ATTENDEE;PARTSTAT=TENTATIVE:mailto:owner@example.invalid\nATTENDEE;PARTSTAT=ACCEPTED:mailto:guest@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Different attendee responses", "mailto:owner@example.invalid", "maybe")]
+    [InlineData("ATTENDEE;PARTSTAT=ACCEPTED:mailto:guest@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Unmatched owner", "mailto:owner@example.invalid", "unknown")]
+    [InlineData("STATUS:TENTATIVE\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Event status only", "mailto:owner@example.invalid", "unknown")]
+    [InlineData("ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nTRANSP:TRANSPARENT\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Free accepted", "mailto:owner@example.invalid", "unlikely")]
+    [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Following: Roadmap", null, "unlikely")]
+    [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Personal appointment", null, "unknown")]
+    public async Task Participation_expectation_uses_owner_specific_evidence_and_precedence(
+        string properties, string? ownerAddress, string expected)
+    {
+        var settings = ownerAddress is null ? null : new Dictionary<string, string?>
+        {
+            ["Agenda:OwnerAddress"] = ownerAddress
+        };
+        using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", CalendarWithEvent(properties),
+            runtimeSettings: settings);
+        using var result = await agenda.Poll();
+        var occurrence = Assert.Single(result.RootElement.GetProperty("primary")
+            .GetProperty("occurrences").EnumerateArray());
+
+        Assert.Equal(expected, occurrence.GetProperty("participation_expectation").GetString());
+        Assert.DoesNotContain("owner@example.invalid", result.RootElement.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("guest@example.invalid", result.RootElement.GetRawText(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task All_day_occurrences_use_the_owner_response()
+    {
+        using var agenda = new AgendaHttp("2026-10-19T18:00:00Z",
+            CalendarWithEvent("ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\n"
+                + "DTSTART;VALUE=DATE:20261019\nDTEND;VALUE=DATE:20261020\nSUMMARY:Personal appointment"),
+            runtimeSettings: new Dictionary<string, string?>
+            {
+                ["Agenda:OwnerAddress"] = "mailto:owner@example.invalid"
+            });
+        using var result = await agenda.Poll();
+        var occurrence = Assert.Single(result.RootElement.GetProperty("primary")
+            .GetProperty("occurrences").EnumerateArray());
+
+        Assert.Equal("all_day", occurrence.GetProperty("time_kind").GetString());
+        Assert.Equal("likely", occurrence.GetProperty("participation_expectation").GetString());
+    }
+
+    [Theory]
     [InlineData("DTSTART:20261019T200000Z\nDTEND:20261019T190000Z")]
     [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T190000Z")]
     [InlineData("DTEND:20261019T200000Z")]

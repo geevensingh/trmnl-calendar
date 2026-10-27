@@ -52,16 +52,20 @@ export function rowProblems(rows) {
     const bounds = row.getBoundingClientRect();
     const time = row.querySelector(".agenda-time .label");
     const title = row.querySelector("td .title");
-    if (!time || !title) {
-      problems.push(`Row ${index + 1} is missing essential time or title text.`);
+    const participation = row.querySelector(".agenda-participation");
+    if (!time || !title || !participation) {
+      problems.push(`Row ${index + 1} is missing essential time, title, or participation text.`);
       continue;
     }
     const timeBounds = time.getBoundingClientRect();
     const titleBounds = title.getBoundingClientRect();
+    const participationBounds = participation.getBoundingClientRect();
     if (bounds.top < previousBottom - 1) problems.push(`Row ${index + 1} overlaps its predecessor.`);
-    if (!inside(timeBounds, bounds) || !inside(titleBounds, bounds))
-      problems.push(`Row ${index + 1} does not contain its time and title.`);
-    if (!separate(timeBounds, titleBounds)) problems.push(`Row ${index + 1} has overlapping time and title.`);
+    if (!inside(timeBounds, bounds) || !inside(titleBounds, bounds) || !inside(participationBounds, bounds))
+      problems.push(`Row ${index + 1} does not contain its time, title, and participation label.`);
+    if (!separate(timeBounds, titleBounds) || !separate(timeBounds, participationBounds)
+      || !separate(titleBounds, participationBounds))
+      problems.push(`Row ${index + 1} has overlapping time, title, or participation text.`);
     const range = row.ownerDocument.createRange();
     range.selectNodeContents(title);
     const rectangles = [...range.getClientRects()];
@@ -174,10 +178,19 @@ export function checkLayout(document, agenda, target, allowLegacy = false) {
     for (const [index, row] of shown.entries()) {
       const timing = row.querySelector(".agenda-time .label");
       const title = row.querySelector("td .title");
+      const participation = row.querySelector(".agenda-participation");
       requireText(timing, `${name} row ${index + 1} time`);
       requireText(title, `${name} row ${index + 1} title`, true);
-      add("readability", timing && title && parseFloat(getComputedStyle(timing).fontSize) >= 20
-        && parseFloat(getComputedStyle(title).fontSize) >= 20, `${name} essential rows must retain readable logical type.`);
+      const expectation = day.occurrences[index].participation_expectation;
+      const labels = { definite: "Definite", likely: "Likely", maybe: "Maybe", unlikely: "Unlikely", unknown: "Unknown" };
+      requireText(participation, `${name} row ${index + 1} participation label`);
+      add("participation", participation?.textContent.trim() === labels[expectation],
+        `${name} row ${index + 1} must render the supplied participation expectation as its exact text label.`);
+      add("readability", timing && title && participation
+        && parseFloat(getComputedStyle(timing).fontSize) >= 20
+        && parseFloat(getComputedStyle(title).fontSize) >= 20
+        && parseFloat(getComputedStyle(participation).fontSize) >= 16,
+      `${name} essential rows must retain readable logical type, including participation labels.`);
       add("content", title?.textContent === day.occurrences[index]?.title,
         `${name} row ${index + 1} must retain the supplied title as text.`);
       if (day.occurrences[index]?.time_kind === "all_day")

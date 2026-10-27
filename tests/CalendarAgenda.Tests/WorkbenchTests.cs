@@ -271,7 +271,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
         var contractPath = Path.Combine(fixture.Root, "docs", "agenda-contract.md");
         var contract = await File.ReadAllTextAsync(contractPath);
         await File.WriteAllTextAsync(contractPath, contract.Replace(
-            "# Agenda HTTP and display contract, version 1", "# Agenda HTTP and display contract, version 2"));
+            "# Agenda HTTP and display contract, version 2", "# Agenda HTTP and display contract, version 3"));
         await fixture.Commit("Synthetic incompatible schema");
         await fixture.StartFailure("HEAD", "Incompatible baseline");
         await File.WriteAllTextAsync(contractPath, contract);

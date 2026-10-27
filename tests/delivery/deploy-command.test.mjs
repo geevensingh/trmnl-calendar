@@ -134,6 +134,7 @@ test("what-if sends only a runtime parameter-file reference and emits no recipie
   for (const [name, parameter] of Object.entries(document.parameters)) {
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "SYNTHETIC_PRIVATE_RECIPIENT@example.invalid"
+      : name === "agendaOwnerAddress" ? "mailto:SYNTHETIC_OWNER@example.invalid"
       : name === "budgetStartDate" ? "2026-10-01T00:00:00Z" : "syntheticresource";
   }
   await writeFile(parameterPath, JSON.stringify(document));
@@ -157,7 +158,15 @@ test("what-if sends only a runtime parameter-file reference and emits no recipie
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].slice(0, 3), ["deployment", "sub", "what-if"]);
   assert.ok(calls[0].includes(`@${parameterPath}`));
-  assert.doesNotMatch(preview.stdout + preview.stderr + JSON.stringify(calls), /SYNTHETIC_PRIVATE_RECIPIENT/);
+  assert.doesNotMatch(preview.stdout + preview.stderr + JSON.stringify(calls),
+    /SYNTHETIC_PRIVATE_RECIPIENT|SYNTHETIC_OWNER/);
+  document.parameters.agendaOwnerAddress.value = "https://synthetic.invalid/owner";
+  await writeFile(parameterPath, JSON.stringify(document));
+  const invalidOwner = run();
+  assert.notEqual(invalidOwner.status, 0);
+  assert.match(invalidOwner.stderr, /one exact mailto: address/);
+  assert.doesNotMatch(invalidOwner.stderr, /SYNTHETIC_OWNER/);
+  assert.equal((await readFile(callsPath, "utf8")).trim().split(/\r?\n/).length, 1);
   document.parameters.sourceUrl = { value: "https://synthetic.invalid/CONFIDENTIAL_SOURCE_KEY" };
   await writeFile(parameterPath, JSON.stringify(document));
   const refused = run();
@@ -186,6 +195,7 @@ test("code deployment requires a clean reviewed package and the approved on-dema
   for (const [name, parameter] of Object.entries(document.parameters))
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "synthetic@example.invalid"
+      : name === "agendaOwnerAddress" ? "mailto:synthetic-owner@example.invalid"
       : name === "budgetStartDate" ? "2026-10-01T00:00:00Z" : "syntheticresource";
   await writeFile(parameterPath, JSON.stringify(document));
   const site = {

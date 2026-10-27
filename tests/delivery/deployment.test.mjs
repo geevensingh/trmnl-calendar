@@ -63,6 +63,7 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
     assert.ok(settings.AzureWebJobsStorage__clientId);
     assert.ok(settings.Agenda__CacheServiceUri);
     assert.ok(settings.Agenda__CacheContainer);
+    assert.match(settings.Agenda__OwnerAddress, /parameters\('agendaOwnerAddress'\)/);
     assert.match(settings.Agenda__SourceUrl, /@Microsoft\.KeyVault\(SecretUri=/);
     assert.doesNotMatch(settings.Agenda__SourceUrl, /\/\)/,
       "Use the documented versionless secret URI, without an empty trailing version segment.");
@@ -72,6 +73,8 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
     assert.equal(settings.WEBSITE_RUN_FROM_PACKAGE, undefined);
     assert.equal(template.parameters.budgetAlertEmail.type.toLowerCase(), "securestring");
     assert.equal(template.parameters.budgetAlertEmail.defaultValue, undefined);
+    assert.equal(template.parameters.agendaOwnerAddress.type.toLowerCase(), "securestring");
+    assert.equal(template.parameters.agendaOwnerAddress.defaultValue, undefined);
     assert.equal(main.parameters.functionAppName.defaultValue, undefined);
     assert.equal(main.parameters.budgetStartDate.defaultValue, undefined,
       "The original budget start date must be a persistent runtime input, not drift on every month's redeploy.");

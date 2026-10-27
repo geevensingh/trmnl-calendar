@@ -31,11 +31,13 @@ public sealed class DisplayTests
         await Assertions.Expect(page.GetByText("Friday, Oct 23", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Synthetic planning", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("Likely", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("11:00 AM - 12:00 PM", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Monday, Oct 26", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("0 of 3 events shown", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Oct 23, 2026, 11:00 AM PDT", new() { Exact = true })).ToBeVisibleAsync();
         Assert.DoesNotContain("tomorrow", await page.Locator("body").InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("legend", await page.Locator("body").InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(800, await page.Locator(".screen").EvaluateAsync<int>("element => element.offsetWidth"));
         Assert.Equal(480, await page.Locator(".screen").EvaluateAsync<int>("element => element.offsetHeight"));
     }

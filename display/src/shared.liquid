@@ -18,9 +18,14 @@
   .agenda .table.table--large tbody tr { height: auto; }
   .agenda .table td { padding: 2px 0; vertical-align: top; }
   .agenda .agenda-day td .title {
-    display: block; width: 100%; overflow: hidden;
+    display: block; flex: 1 1 auto; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
+  .agenda .agenda-event-heading {
+    display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  }
+  .agenda .agenda-participation { flex: 0 0 auto; white-space: nowrap; }
+  .agenda .agenda-participation[data-expectation="definite"] { font-weight: bold; }
   .agenda .agenda-location {
     display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 16px; line-height: 1.4;
@@ -85,7 +90,16 @@
                     {% endif %}
                   </td>
                   <td>
-                    <span class="title">{{ occurrence.title | escape }}</span>
+                    <div class="agenda-event-heading">
+                      <span class="title">{{ occurrence.title | escape }}</span>
+                      {% case occurrence.participation_expectation %}
+                        {% when "definite" %}<span class="label agenda-participation" data-expectation="definite">Definite</span>
+                        {% when "likely" %}<span class="label agenda-participation" data-expectation="likely">Likely</span>
+                        {% when "maybe" %}<span class="label agenda-participation" data-expectation="maybe">Maybe</span>
+                        {% when "unlikely" %}<span class="label agenda-participation" data-expectation="unlikely">Unlikely</span>
+                        {% when "unknown" %}<span class="label agenda-participation" data-expectation="unknown">Unknown</span>
+                      {% endcase %}
+                    </div>
                     {% if occurrence.location and occurrence.location != empty %}
                       <span class="label agenda-location" hidden>{{ occurrence.location | escape }}</span>
                     {% endif %}

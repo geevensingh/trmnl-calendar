@@ -48,6 +48,34 @@ public sealed partial class AgendaHttpTests
         await DisplayTests.InsideScreen(page, page.Locator(".agenda-source"));
     }
 
+    [Fact]
+    public async Task Recurring_override_uses_its_effective_owner_response()
+    {
+        var calendar = CalendarWithEvent(
+            "DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nRRULE:FREQ=DAILY;COUNT=2\n"
+            + "ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nSUMMARY:Series meeting")
+            .Replace("END:VCALENDAR",
+                "BEGIN:VEVENT\nUID:event@synthetic.invalid\nDTSTAMP:20261018T120000Z\n"
+                + "RECURRENCE-ID:20261020T190000Z\nDTSTART:20261020T190000Z\nDTEND:20261020T200000Z\n"
+                + "ATTENDEE;PARTSTAT=TENTATIVE:mailto:owner@example.invalid\nSUMMARY:Changed occurrence\n"
+                + "END:VEVENT\nEND:VCALENDAR");
+        using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", calendar,
+            runtimeSettings: new Dictionary<string, string?>
+            {
+                ["Agenda:OwnerAddress"] = "mailto:owner@example.invalid"
+            });
+        using var result = await agenda.Poll();
+
+        var primary = Assert.Single(result.RootElement.GetProperty("primary")
+            .GetProperty("occurrences").EnumerateArray());
+        var secondary = Assert.Single(result.RootElement.GetProperty("secondary")
+            .GetProperty("occurrences").EnumerateArray());
+        Assert.Equal("likely", primary.GetProperty("participation_expectation").GetString());
+        Assert.Equal("maybe", secondary.GetProperty("participation_expectation").GetString());
+        Assert.Equal("Changed occurrence", secondary.GetProperty("title").GetString());
+        Assert.DoesNotContain("owner@example.invalid", result.RootElement.GetRawText(), StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("DTSTART:20261021T020000Z\nDTEND:20261021T030000Z")]
     [InlineData("DTSTART;TZID=Asia/Tokyo:20261021T110000\nDTEND;TZID=Asia/Tokyo:20261021T120000")]

@@ -28,6 +28,7 @@ No API Management, VNet/private endpoint, premium plan, extra storage account, q
 | Function system-assigned identity | **Storage Blob Data Contributor**, cache **container only** |
 | Function system-assigned identity | **Key Vault Secrets User**, dedicated vault |
 | Function system-assigned identity | **Monitoring Metrics Publisher**, Application Insights component |
+| Separately owner-approved diagnostic operator | **Storage Blob Data Reader**, private cache **container only**; not provisioned automatically |
 
 The parameter example explicitly retains host startup diagnostics and their Table role; setting that option to false forgoes that diagnostic storage. The application cache always uses an explicit **system-assigned** `ManagedIdentityCredential`, independent of the host's user-assigned client ID. No runtime identity receives control-plane Owner/Contributor.
 
@@ -268,6 +269,42 @@ Actual private-feed publication/compatibility is a separate owner gate. A techni
 
 The source cache overwrites bounded `last-good-source.json` (2 MiB source, 13 MiB escaped envelope) and one `source-refresh-status.json` (4 KiB of safe outcome/pending metadata only). Versioning, blob/container soft delete, change feed and restore history remain disabled. The existing lifecycle rule targets **only raw source** after more than one day without modification; the single overwritten status object contains no calendar content and cannot grow as history. Lifecycle deletion is asynchronous, not an exact privacy timer; serving eligibility stays strictly less than one hour. No active code or unrelated host state is deleted.
 
+### Operator cache read access
+
+An owner may authorize the signed-in operator to read the private source cache for diagnosis, including through a Copilot session. This is an explicit exception to keeping meeting titles/locations out of agent context, not permission to expose credentials, retrieve the Key Vault source secret, save raw calendar bodies, use private preview tooling, or publish calendar data in GitHub artifacts. The grant belongs to the Azure principal, not exclusively to Copilot; other processes authenticated as that user also gain this read access. Existing control-plane Contributor/Owner does not by itself establish Blob data-plane permission.
+
+After explicit approval of the principal, role, and container scope, use the approved resource-plan values for `$subscriptionId`, `$approvedResourceGroup`, `$approvedStorageAccount`, and `$approvedCacheContainer` (normally `source-cache`). Do not substitute account/resource-group/subscription-wide scope:
+
+```powershell
+$operatorObjectId = az ad signed-in-user show --query id --output tsv --only-show-errors
+if ($LASTEXITCODE -ne 0 -or !$operatorObjectId) { throw 'The signed-in operator could not be identified.' }
+$storageAccountId = az storage account show --subscription $subscriptionId `
+  --resource-group $approvedResourceGroup --name $approvedStorageAccount `
+  --query id --output tsv --only-show-errors
+if ($LASTEXITCODE -ne 0 -or !$storageAccountId) { throw 'The approved storage account could not be identified.' }
+$cacheScope = "$storageAccountId/blobServices/default/containers/$approvedCacheContainer"
+az role assignment create --subscription $subscriptionId `
+  --assignee-object-id $operatorObjectId --assignee-principal-type User `
+  --role 2a2b9908-6ea1-4ae2-8e65-a410df84e7d1 --scope $cacheScope `
+  --query '{principalType:principalType,roleDefinitionId:roleDefinitionId,scope:scope}' `
+  --output json --only-show-errors
+if ($LASTEXITCODE -ne 0) { throw 'The approved cache-reader assignment failed.' }
+```
+
+The role is **Storage Blob Data Reader**, with no calendar writes, account keys, container creation, or access to other containers. Allow RBAC propagation, then verify using metadata without displaying/saving source contents:
+
+```powershell
+az storage blob show --subscription $subscriptionId --account-name $approvedStorageAccount `
+  --container-name $approvedCacheContainer --name last-good-source.json --auth-mode login `
+  --query '{lastModified:properties.lastModified,sizeBytes:properties.contentLength}' `
+  --output json --only-show-errors
+if ($LASTEXITCODE -ne 0) { throw 'Cache read access is not yet verified.' }
+```
+
+Do not follow account-key fallback suggestions on a denied read. A different signed-in principal needs its own owner-approved grant. The existing application managed identities and roles are unchanged.
+
+### Package retention
+
 After each successful code deployment, retain the **active package and one previous successful package**, not simply the two newest uploads. Keep their matching reviewed archives/manifests privately for recovery. Under an exclusive deployment window, use Azure's **Flex Consumption Deployment** diagnostic tool (Function app > Diagnose and solve problems) to identify actual active/previous package names and success status. Never infer the active pointer from blob age or last upload.
 
 ```powershell
@@ -288,7 +325,15 @@ Use the runtime container name instead if deliberately configured differently. F
 
 Pruning defaults to read-only, verifies that Azure actually configures this deployment container, protects exact active/previous names regardless of age, deletes only other recognized ZIPs with ETag preconditions and Entra login, then verifies retention. It never enumerates/deletes another container or non-package host state. Unrecognized layouts, missing names/concurrency tokens, access failures or concurrent changes fail closed. If the operator lacks authorized data-plane access or cannot identify the real active package, stop further releases until retention is resolved; no broad lifecycle deletion or account-key fallback is acceptable.
 
-`host.json` permits fixed Agenda warning codes, fixed RefreshSource outcome/failure codes and host aggregate metrics. The refresh's information-level `Agenda refresh finished with code source_checked.` means supported source processing finished, not that an obsolete attempt replaced newer state; `refresh_superseded` means older-dated work was rejected before acquisition. Matching completed persisted outcome plus HTTP are authoritative. It disables automatic **dependency URL** capture, HTTP extended collection, raw invocation/default categories, live metrics, performance counters, snapshots and file logging, and samples toward one telemetry item/second. Production HttpClient loggers and cache SDK URL/content/tracing diagnostics remain disabled. No worker Application Insights SDK/auto-instrumentation is added.
+### Calendar-aware Azure telemetry
+
+Meeting titles and locations are authorized in private, RBAC-controlled Azure logs and owner-approved Copilot investigations. Reading these fields in Copilot brings them into the conversation, so storage inside the Azure subscription is not a promise that queried data never leaves Azure. Keep source URLs, keys, raw ICS, raw source IDs, rule text, excluded/ended meetings, descriptions, attendees, request/response bodies, and upstream exception text out of telemetry and GitHub artifacts. Private calendar content remains prohibited in local preview/screenshot tooling.
+
+`host.json` permits information-level Agenda poll/occurrence records, fixed Agenda warning codes, fixed RefreshSource outcome/failure codes, and host aggregate metrics. The refresh's `Agenda refresh finished with code source_checked.` means supported source processing finished, not that an obsolete attempt replaced newer state; `refresh_superseded` means older-dated work was rejected before acquisition. Matching completed persisted outcome plus HTTP are authoritative. Automatic **dependency URL** capture, HTTP extended collection, raw invocation/default categories, live metrics, performance counters, snapshots, and file logging remain disabled. Adaptive sampling retains its one-item/second target for other telemetry but explicitly excludes **Trace**, so meeting records emitted together are not sampled away. Production HttpClient loggers and cache SDK URL/content/tracing diagnostics remain disabled. No worker Application Insights SDK/auto-instrumentation is added.
+
+Each current/stale poll logs `Agenda poll ` plus a JSON summary and `Agenda occurrence ` plus JSON for each returned day/occurrence. A fresh opaque `poll_id` correlates them. The [exact diagnostic fields](agenda-contract.md#private-diagnostics) include original source freshness, timing, opaque occurrence IDs, title, nullable location, and explicit truncation flags. Titles/locations are capped at 1,024 UTF-16 code units without splitting a surrogate pair; the actual agenda is not shortened. JSON escaping keeps records single-line and below 14 KiB per occurrence even at maximum escaping. Errors log only fixed codes; an oversized agenda does not log the meetings that were replaced by the error. Empty agendas log a summary only.
+
+These are **eligible agenda** diagnostics, not rendered-device capture: locations may still be omitted by adaptive fitting, and an offline device may retain an older image. A selected poll's eligible totals and record counts distinguish a missing location in the API data from presentation fitting. Use the visible source timestamp, approximate observation time/timezone, and device/layout to select the relevant poll.
 
 Verify actual Entra-authenticated ingestion with a deliberate synthetic invalid-rule poll: the fixed `configuration_invalid` warning must arrive. Check source, compatibility and storage categories using controlled failures, never raw exception text. In the workspace, inspect only aggregate counts first:
 
@@ -308,7 +353,40 @@ AppTraces
 | summarize Checks=count() by Message
 ```
 
-Unexpected automatic capture is a stop condition, not permission to dump URLs or raw exceptions into artifacts. Verify 30-day workspace retention and the 0.1 GB/day cap in Azure, and review ingestion volume. Filtering/sampling is the primary control; caps can overshoot, suppress useful diagnostics when reached, and are **not** hard spending limits. Leave host-managed diagnostic tables/state to the host's own rotation, not generic cleanup.
+The host can omit structured logger properties, so query the JSON in **Message**, not assumed custom dimensions. First select a recent poll:
+
+```kusto
+AppTraces
+| where TimeGenerated >= ago(1d)
+| where Message startswith "Agenda poll "
+| extend Poll = parse_json(substring(Message, strlen("Agenda poll ")))
+| project TimeGenerated, PollId=tostring(Poll.poll_id), State=tostring(Poll.state),
+    GeneratedAt=todatetime(Poll.generated_at), SourceSucceededAt=todatetime(Poll.source_succeeded_at),
+    PrimaryDate=tostring(Poll.primary_date), PrimaryTotal=toint(Poll.primary_eligible_total),
+    SecondaryDate=tostring(Poll.secondary_date), SecondaryTotal=toint(Poll.secondary_eligible_total)
+| order by TimeGenerated desc
+| take 20
+```
+
+Then inspect only that poll's meeting fields:
+
+```kusto
+AppTraces
+| where TimeGenerated >= ago(1d)
+| where Message startswith "Agenda occurrence "
+| extend Meeting = parse_json(substring(Message, strlen("Agenda occurrence ")))
+| where tostring(Meeting.poll_id) == "<selected-poll-id>"
+| project Date=tostring(Meeting.date), OccurrenceId=tostring(Meeting.occurrence_id),
+    TimeKind=tostring(Meeting.time_kind), Start=tostring(Meeting.start),
+    EndExclusive=tostring(Meeting.end_exclusive), Title=tostring(Meeting.title),
+    Location=tostring(Meeting.location), HasLocation=isnotempty(tostring(Meeting.location)),
+    TitleTruncated=tobool(Meeting.title_truncated), LocationTruncated=tobool(Meeting.location_truncated)
+| order by Date asc, Start asc, OccurrenceId asc
+```
+
+Unexpected automatic capture is a stop condition, not permission to dump URLs or raw exceptions into artifacts. Verify 30-day workspace retention and the 0.1 GB/day cap in Azure, and review ingestion volume after enabling meeting traces. Allowed categories, bounded records, and retention are the primary controls for unsampled traces; ingestion caps can overshoot, suppress useful diagnostics when reached, and are **not** hard spending limits. Count per-day records against the selected poll's eligible totals before treating a missing record as evidence that a meeting was absent. Live ingestion is best-effort; do not infer a healthy/empty agenda from missing telemetry. Leave host-managed diagnostic tables/state to the host's own rotation, not generic cleanup.
+
+The reader grant can take effect independently, but calendar-aware logging requires a reviewed code deployment. Verify a natural current/stale poll emits a parseable summary and matching occurrence counts in Azure, including one nullable location, without unexpected automatic categories. Local handler/host-configuration checks do not prove deployed ingestion; keep this gate pending until the approved code is landed and deployed.
 
 ## Rotation, recovery and freshness
 
@@ -338,7 +416,7 @@ Record only redacted facts, metrics and owner confirmations in the ticket:
 | Actual scheduled host timer, existing UAI coordination, system-identity raw/outcome publication, LA cadence and delayed refresh | **Pending scheduled-revision deployment/verification**; local handler/indexing tests are not live timer evidence |
 | Real source response and actual native combined polling data strictly below 100,000 serialized UTF-8 bytes | **Not measured live**; local boundary checks do not substitute |
 | Cold-sensitive, warm and source-failure latency, including the one retry's separate outcome | **Historical first actual-source poll red: 8,646 ms/source_unavailable**; cache-only scheduled revision not yet measured live |
-| Entra telemetry ingestion and absence of automatic URL/private-field capture | **Not verified live** |
+| Entra telemetry ingestion, correlated title/location records, and absence of automatic URL/credential/body capture | **Calendar-aware logging requires reviewed deployment and live verification** |
 | Owner's physical OG/X, required placements, visible source timestamp and subsequent refresh/settings change | **Not observed**; no private screenshots |
 | Actual operating cost/ingestion and budget notification configuration | **Not observed**; estimates are not bills |
 

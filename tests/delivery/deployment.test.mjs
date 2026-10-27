@@ -7,7 +7,7 @@ import test from "node:test";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
-test("Functions diagnostics disable automatic URL capture and bound allowed telemetry", async () => {
+test("Functions diagnostics allow complete agenda traces without automatic URL capture", async () => {
   const host = JSON.parse(await readFile(join(root, "src", "CalendarAgenda", "host.json"), "utf8"));
   const insights = host.logging.applicationInsights;
 
@@ -18,9 +18,10 @@ test("Functions diagnostics disable automatic URL capture and bound allowed tele
   assert.equal(insights.snapshotConfiguration.isEnabled, false);
   assert.equal(insights.samplingSettings.isEnabled, true);
   assert.equal(insights.samplingSettings.maxTelemetryItemsPerSecond, 1);
+  assert.equal(insights.samplingSettings.excludedTypes, "Trace");
   assert.deepEqual(host.logging.logLevel, {
     default: "None",
-    "Function.Agenda.User": "Warning",
+    "Function.Agenda.User": "Information",
     "Function.RefreshSource.User": "Information",
     "Host.Aggregator": "Information",
     "System.Net.Http.HttpClient": "None",

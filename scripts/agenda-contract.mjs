@@ -1,4 +1,4 @@
-export const agendaSchemaVersion = 1;
+export const agendaSchemaVersion = 2;
 
 export class AgendaContractError extends Error {
   constructor(code, path, message) {
@@ -41,9 +41,9 @@ function instantTicks(value) {
 export function validateAgenda(data) {
   if (!fields(data, ["schema_version", "state", "time_zone", "generated_at",
     "source_succeeded_at", "primary", "secondary", "error"]))
-    reject("agenda", "supply exactly the version-1 agenda fields.");
-  if (data.schema_version !== agendaSchemaVersion)
-    reject("agenda.schema_version", `only schema ${agendaSchemaVersion} is supported.`);
+    reject("agenda", "supply exactly the agenda fields.");
+  if (![1, agendaSchemaVersion].includes(data.schema_version))
+    reject("agenda.schema_version", `only schemas 1 and ${agendaSchemaVersion} are supported.`);
   if (!["current", "stale", "error"].includes(data.state))
     reject("agenda.state", "use current, stale, or error.");
   if (data.time_zone !== "America/Los_Angeles")
@@ -73,9 +73,13 @@ export function validateAgenda(data) {
         reject(occurrencePath, "supply a timed or all_day occurrence object.");
       const allDay = occurrence.time_kind === "all_day";
       const timing = allDay ? ["start_date", "end_date_exclusive"] : ["start_at", "end_at"];
-      if (!fields(occurrence, ["time_kind", "id", "title", ...timing], ["location"])
+      const optional = !allDay && data.schema_version === 2 ? ["location", "emphasis"] : ["location"];
+      if (!fields(occurrence, ["time_kind", "id", "title", ...timing], optional)
         || !["all_day", "timed"].includes(occurrence.time_kind))
         reject(occurrencePath, "supply the fields for exactly one timed or all_day occurrence.");
+      if (!allDay && occurrence.emphasis !== undefined
+        && !["in_progress", "upcoming"].includes(occurrence.emphasis))
+        reject(`${occurrencePath}.emphasis`, "use in_progress or upcoming on a timed occurrence.");
       if (typeof occurrence.id !== "string" || !occurrence.id.length)
         reject(`${occurrencePath}.id`, "supply a nonempty opaque identifier.");
       if (typeof occurrence.title !== "string")

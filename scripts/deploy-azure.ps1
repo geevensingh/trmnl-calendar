@@ -232,7 +232,7 @@ if ($Mode -eq 'DeployCode') {
             })
             if ($httpTrigger.Count -eq 1 -and $httpOutput.Count -eq 1 -and
                 $agendaBindings.Count -eq 2 -and
-                $httpTrigger[0].authLevel -CEQ 'function' -and
+                $httpTrigger[0].authLevel -IEQ 'function' -and
                 $httpTrigger[0].route -CEQ 'agenda' -and
                 $methods.Count -eq 1 -and $methods[0] -CEQ 'post' -and
                 $timerTrigger.Count -eq 1 -and $refreshBindings.Count -eq 1 -and

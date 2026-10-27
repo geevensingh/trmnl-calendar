@@ -350,7 +350,7 @@ test("code deployment requires a clean reviewed package and the approved on-dema
   };
   const functions = [
     { name: "Agenda", config: { bindings: [
-      { type: "httpTrigger", authLevel: "function", route: "agenda", methods: ["post"] },
+      { type: "httpTrigger", authLevel: "Function", route: "agenda", methods: ["post"] },
       { type: "http", direction: "out" }
     ] } },
     { name: "RefreshSource", config: { bindings: [
@@ -367,9 +367,11 @@ test("code deployment requires a clean reviewed package and the approved on-dema
       $global:LASTEXITCODE = 0
     }
     function global:node {
+      ConvertTo-Json -InputObject @('node') -Compress | Add-Content -LiteralPath $env:AZURE_TEST_CALLS
       if ($args[0] -like '*smoke-delivery.mjs') { $env:AZURE_TEST_SMOKE }
       $global:LASTEXITCODE = 0
     }
+    function global:Start-Sleep { param([int]$Seconds) }
     function global:az {
       ConvertTo-Json -InputObject @($args) -Compress | Add-Content -LiteralPath $env:AZURE_TEST_CALLS
       if ($args[0] -eq 'rest') {
@@ -400,6 +402,7 @@ test("code deployment requires a clean reviewed package and the approved on-dema
   assert.equal(deployment[deployment.indexOf("--src") + 1], archivePath);
   assert.equal(calls.filter(args => args[0] === "functionapp" && args[1] === "deployment").length, 1);
   assert.equal(calls.filter(args => args[0] === "functionapp" && args[1] === "function").length, 1);
+  assert.equal(calls.filter(args => args[0] === "node").length, 1);
   const verifiedCalls = calls;
   manifest.working_tree_clean = false;
   await writeFile(manifestPath, JSON.stringify(manifest));
@@ -411,6 +414,17 @@ test("code deployment requires a clean reviewed package and the approved on-dema
 
   manifest.working_tree_clean = true;
   await writeFile(manifestPath, JSON.stringify(manifest));
+  for (const authLevel of ["Anonymous", "Admin"]) {
+    functions[0].config.bindings[0].authLevel = authLevel;
+    const rejected = run();
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /expected authenticated/);
+    const rejectedCalls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+    assert.equal(rejectedCalls.filter(args => args[0] === "node").length, 1);
+  }
+  functions[0].config.bindings[0].authLevel = "function";
+  const lowercase = run();
+  assert.equal(lowercase.status, 0, lowercase.stderr);
   const revisedScale = { maximumInstanceCount: 3, instanceMemoryMB: 4096, alwaysReady: [{ name: "http", instanceCount: 1 }] };
   site.properties.functionAppConfig.scaleAndConcurrency = revisedScale;
   const missingPlan = run();

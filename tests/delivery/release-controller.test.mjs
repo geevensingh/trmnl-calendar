@@ -79,8 +79,73 @@ test("classification selects only affected production targets and defaults unkno
   assert.deepEqual(classifyPaths(["display/workbench/preview.mjs", "README.md"]), []);
   assert.deepEqual(classifyPaths(["scripts/agenda-workbench.mjs", "display/render.rb"]), []);
   assert.deepEqual(classifyPaths(["scripts/setup-display.ps1", "scripts/display-toolchain.ps1"]), []);
+  for (const script of [
+    "azure-cli.ps1", "deploy-azure.ps1", "deploy-release-infrastructure.ps1",
+    "package-function.ps1", "prune-deployment-packages.ps1", "smoke-delivery.mjs"
+  ]) assert.deepEqual(classifyPaths([`scripts/${script}`]), ["azure"]);
+  for (const script of ["new-unclassified-helper.mjs", "new-unclassified-helper.ps1", "git-environment.mjs"]) {
+    assert.deepEqual(classifyPaths([`scripts/${script}`]), ["azure", "trmnl"]);
+  }
   assert.deepEqual(classifyPaths(["new-and-unclassified/file.txt"]), ["azure", "trmnl"]);
 });
+
+for (const target of ["azure", "trmnl"]) {
+  test(`recovery preserves a verified ${target} outcome after its success save`, async () => {
+    const ledger = await activatedLedger();
+    await admitMainCommits({
+      ledger, commits: [{
+        commit: commit("b"), parent: commit("a"), paths: ["docs/agenda-contract.md"]
+      }], through: commit("b"), isAncestor: async () => false
+    });
+    const abort = new AbortController();
+    const withExclusive = ledger.withExclusive;
+    const write = ledger.write;
+    ledger.withExclusive = operation => withExclusive(() => operation(abort.signal));
+    ledger.write = async state => {
+      await write(state);
+      if (state.queue[0].target_results?.[target] === "verified") {
+        abort.abort(new Error("runner_stopped_after_success_save"));
+      }
+    };
+    const mutations = [];
+    let preparations = 0;
+    const services = {
+      async changedPaths(base, head) { return base === head ? [] : ["docs/agenda-contract.md"]; },
+      async prepare(head, targets) {
+        preparations += 1;
+        return releaseArtifact(head, Object.fromEntries(targets.map(name => [name, `${name}/${head}`])));
+      },
+      async deployAndVerifyAzure() { mutations.push("azure"); return { verified: true }; },
+      async publishAndVerifyTrmnl() { mutations.push("trmnl"); return { verified: true }; },
+      async verifyArtifact() { return true; }
+    };
+    await assert.rejects(runNextRelease({ ledger, services }), {
+      message: "runner_stopped_after_success_save"
+    });
+    ledger.withExclusive = withExclusive;
+    ledger.write = write;
+    const persisted = await ledger.read();
+    assert.equal(persisted.queue[0].status, "running");
+    assert.equal(persisted.queue[0].attempts.at(-1).stage, `${target}_deploy`);
+    assert.equal(persisted.queue[0].target_results[target], "verified");
+    assert.equal(persisted.baselines[target], commit("b"));
+    assert.equal(persisted.pending_reconciliation[target], false);
+    await recoverInterruptedRelease({ ledger });
+    const recovered = await listReleaseStatus({ ledger });
+    assert.equal(recovered.queue[0].target_results[target], "verified");
+    assert.equal(recovered.pending_reconciliation[target], false);
+    assert.equal(recovered.queue[0].recovery_confirmation_required, false);
+    await retryFailedRelease({
+      ledger, services, actor: "owner", reason: "Resume after persisted target verification"
+    });
+    assert.equal((await runNextRelease({ ledger, services })).status, "succeeded");
+    assert.deepEqual(mutations, ["azure", "trmnl"]);
+    assert.equal(preparations, 1);
+    assert.deepEqual((await listReleaseStatus({ ledger })).baselines, {
+      azure: commit("b"), trmnl: commit("b")
+    });
+  });
+}
 
 for (const target of ["azure", "trmnl"]) {
   test(`skipping an unverified ${target} mutation forces reconciliation even when the next commit reverts`, async () => {

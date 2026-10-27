@@ -31,7 +31,12 @@ function changedTargets(path) {
     normalized.startsWith("src/") ||
     normalized.startsWith("infra/") ||
     normalized.startsWith("tests/CalendarAgenda.Tests/") ||
-    normalized.startsWith("scripts/") ||
+    normalized === "scripts/azure-cli.ps1" ||
+    normalized === "scripts/deploy-azure.ps1" ||
+    normalized === "scripts/deploy-release-infrastructure.ps1" ||
+    normalized === "scripts/package-function.ps1" ||
+    normalized === "scripts/prune-deployment-packages.ps1" ||
+    normalized === "scripts/smoke-delivery.mjs" ||
     normalized === "global.json" ||
     normalized === "NuGet.Config" ||
     normalized === "nuget.config"
@@ -402,7 +407,7 @@ export async function recoverInterruptedRelease({ ledger }) {
       attempt.failure = failure;
     }
     const target = attempt?.stage?.split("_")[0];
-    if (TARGETS.includes(target)) {
+    if (TARGETS.includes(target) && running.target_results?.[target] !== "verified") {
       running.target_results ??= {};
       running.target_results[target] = "uncertain";
       state.pending_reconciliation[target] = true;

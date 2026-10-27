@@ -27,8 +27,8 @@ public sealed class AdaptiveDisplayTests
     public async Task Empty_primary_dense_secondary_uses_reclaimed_space_without_changing_event_geometry()
     {
         var data = Agenda(primaryRows: 0, secondaryRows: 32);
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, data);
         var rows = page.Locator(".agenda-secondary tbody tr:visible");
@@ -69,8 +69,8 @@ public sealed class AdaptiveDisplayTests
     [MemberData(nameof(Views))]
     public async Task Empty_days_keep_date_and_message_on_one_line_without_a_zero_count(NativeView view)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -95,8 +95,8 @@ public sealed class AdaptiveDisplayTests
     public async Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(
         string scenario)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { DeviceScaleFactor = 1 });
         foreach (var values in Views.Cast<object[]>())
         {
@@ -145,8 +145,8 @@ public sealed class AdaptiveDisplayTests
                 occurrence["end_at"] = $"{date}T20:00:00Z";
             }
         }
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -168,8 +168,8 @@ public sealed class AdaptiveDisplayTests
     [MemberData(nameof(Views))]
     public async Task Counts_disclose_displayed_rows_and_complete_totals_even_without_occurrences(NativeView view)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -191,8 +191,8 @@ public sealed class AdaptiveDisplayTests
     public async Task Essential_agenda_information_fits_each_native_physical_device_and_placement(
         NativeView view)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
@@ -201,7 +201,7 @@ public sealed class AdaptiveDisplayTests
         await DisplayTests.Show(page, DisplayTests.CurrentAgenda(), view.Placement, view.Device);
 
         await NativeBounds(page, view);
-        var screenshot = await page.ScreenshotAsync();
+        var screenshot = await ValidationTiming.Screenshot(page);
         Assert.Equal(view.PhysicalWidth, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
         Assert.Equal(view.PhysicalHeight, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
 
@@ -221,8 +221,8 @@ public sealed class AdaptiveDisplayTests
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["primary"]!["eligible_total"] = 47;
         data["secondary"]!["eligible_total"] = 19;
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -265,8 +265,8 @@ public sealed class AdaptiveDisplayTests
     {
         var data = Agenda(primaryRows: 1, secondaryRows: 32);
         data["secondary"]!["eligible_total"] = 50;
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -298,8 +298,8 @@ public sealed class AdaptiveDisplayTests
         foreach (var day in new[] { "primary", "secondary" })
             foreach (var occurrence in data[day]!["occurrences"]!.AsArray())
                 occurrence!["location"] = null;
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -331,8 +331,8 @@ public sealed class AdaptiveDisplayTests
         NativeView view)
     {
         var data = DenseLongTitleAgenda();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
@@ -376,7 +376,7 @@ public sealed class AdaptiveDisplayTests
             })
             """);
         Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
-        await page.ScreenshotAsync(new()
+        await ValidationTiming.Screenshot(page, new()
         {
             Path = Path.Combine(DisplayTests.Root, "artifacts", $"title-density-{view.Device}-{view.Placement}.png")
         });
@@ -404,8 +404,8 @@ public sealed class AdaptiveDisplayTests
     public async Task Timed_and_all_day_titles_preserve_text_and_typography_with_visible_end_ellipsis(
         NativeView view)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
@@ -498,8 +498,8 @@ public sealed class AdaptiveDisplayTests
                 occurrence["description"] = "DO NOT DISPLAY DESCRIPTION";
                 occurrence["attendees"] = new JsonArray("DO NOT DISPLAY ATTENDEE");
             }
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -566,8 +566,8 @@ public sealed class AdaptiveDisplayTests
             occurrence!["start_at"] = "2026-10-27T18:00:00Z";
             occurrence["end_at"] = "2026-10-27T19:00:00Z";
         }
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -605,8 +605,8 @@ public sealed class AdaptiveDisplayTests
             ["code"] = "source_unavailable",
             ["message"] = "The calendar source could not be checked."
         };
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -641,8 +641,8 @@ public sealed class AdaptiveDisplayTests
     public async Task Configuration_source_compatibility_and_unknown_errors_are_readable_not_empty_agendas(
         NativeView view)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -686,8 +686,8 @@ public sealed class AdaptiveDisplayTests
     public async Task Empty_primary_days_keep_selected_dates_instead_of_promoting_secondary_commitments(
         NativeView view)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -722,8 +722,8 @@ public sealed class AdaptiveDisplayTests
     [Fact]
     public async Task Larger_native_views_use_extra_room_for_primary_then_secondary_commitments()
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var counts = new Dictionary<(string Device, string Placement), (int Primary, int Secondary)>();
         foreach (var (device, width, height) in new[] { ("og", 800, 480), ("v2", 1872, 1404) })
             foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
@@ -754,8 +754,8 @@ public sealed class AdaptiveDisplayTests
     [Fact]
     public async Task Fitting_reacts_to_available_view_dimensions_without_a_per_device_row_limit()
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 1872, Height = 1404 } });
         await DisplayTests.Show(page, Agenda(primaryRows: 32, secondaryRows: 12), "full", "v2");
         var rows = page.Locator(".agenda-primary tbody tr:visible");
@@ -781,8 +781,8 @@ public sealed class AdaptiveDisplayTests
         NativeView view)
     {
         var data = DenseLongTitleAgenda();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight }
@@ -940,7 +940,7 @@ public sealed class AdaptiveDisplayTests
         }
         Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
         var image = Path.Combine(DisplayTests.Root, "artifacts", $"{name}.png");
-        var screenshot = await page.ScreenshotAsync(new() { Path = image });
+        var screenshot = await ValidationTiming.Screenshot(page, new() { Path = image });
         Assert.Equal(view.PhysicalWidth, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
         Assert.Equal(view.PhysicalHeight, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
         using var ink = JsonDocument.Parse(DisplayTests.RunRuby(
@@ -962,13 +962,13 @@ public sealed class AdaptiveDisplayTests
         Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
         var image = Path.Combine(DisplayTests.Root, "artifacts", $"{name}.png");
         var comparison = Path.Combine(DisplayTests.Root, "artifacts", $"{name}-clip.png");
-        var screenshot = await page.ScreenshotAsync(new() { Path = image });
+        var screenshot = await ValidationTiming.Screenshot(page, new() { Path = image });
         Assert.Equal(view.PhysicalWidth, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(16, 4)));
         Assert.Equal(view.PhysicalHeight, BinaryPrimitives.ReadInt32BigEndian(screenshot.AsSpan(20, 4)));
         await title.EvaluateAsync("element => { element.style.textOverflow = 'clip'; }");
         try
         {
-            await page.ScreenshotAsync(new() { Path = comparison });
+            await ValidationTiming.Screenshot(page, new() { Path = comparison });
         }
         finally
         {

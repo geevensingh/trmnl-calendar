@@ -6,6 +6,7 @@ function Assert-DisplaySdk {
         if ($LASTEXITCODE -ne 0 -or "$sdk" -notmatch '^10\.') {
             throw "Reported '$sdk' (exit $LASTEXITCODE)."
         }
+        $script:DisplaySdkVersion = "$sdk"
     }
     catch {
         throw "The .NET 10 SDK selected by global.json is unavailable. $hint $($_.Exception.Message)"
@@ -41,6 +42,7 @@ function Get-DisplayRuby([string]$Root) {
         throw "Ruby 4 is required; '$selection' reported '$version'. $hint"
     }
     Write-Host "Ruby $version : $selection"
+    $script:DisplayRubyVersion = "$version"
     return $selection
 }
 

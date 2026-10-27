@@ -106,6 +106,23 @@ test("successful display setup preserves Bundler, framework, restore, build, and
   );
 });
 
+test("public setup reports observed cache reuse, stage durations and failure without environment dumps", async t => {
+  const fixture = await checkout(t);
+  for (const failure of [undefined, "dotnet:restore"]) {
+    const result = fixture.run(failure ? { DISPLAY_FAIL: failure } : {});
+    assert.equal(result.status, failure ? 1 : 0, result.stdout + result.stderr);
+    const reportPath = result.stdout.match(/Timing report: (.+)/)?.[1].trim();
+    assert.ok(reportPath, result.stdout + result.stderr);
+    const report = JSON.parse(await readFile(join(reportPath, "summary.json"), "utf8"));
+    assert.equal(report.scope, "Setup");
+    assert.equal(report.outcome, failure ? "failed" : "passed");
+    assert.ok(report.duration_ms >= Math.max(...report.stages.map(stage => stage.duration_ms)));
+    assert.ok(report.stages.every(stage => ["passed", "failed"].includes(stage.result)));
+    assert.equal(report.provenance.cache.bundler_reused, Boolean(failure));
+    assert.ok(!JSON.stringify(report).includes("BUNDLE_USER_CACHE"));
+  }
+});
+
 test("display setup reports failed stages and stops before dependent commands", async t => {
   for (const [failure, message, completed] of [
     ["dotnet:--version", ".NET 10 SDK", 1],

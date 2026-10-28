@@ -72,6 +72,16 @@ The affected public-process regressions require setup to reject an unloadable na
 
 Rollback is an ordinary revert of this isolated PNG candidate on a feature branch, followed by frozen worktree setup, review/validation and human landing. It restores the prior Gemfile/lock, pure-Ruby dependency load and readiness/docs/tests together. Retain the published baseline and #77/#78 gate/instrumentation, all original thresholds and coverage; do not change protection or delete shared tools/caches. Implementation review, feature backup, hosted acceptance and human publication remain separate.
 
+### Git fixture owner-startup checkpoint (#81)
+
+The approved next intervention reduces redundant synthetic owner construction in the completion and C# Workbench isolation matrices. Each matrix owns one disposable standard checkout, linked checkout and local bare remote instead of building another identical owner pair for each selector. All 48 original owner/selector cases retain their names, environments, actual fixture assertions and per-process deadlines. Each real fixture still creates its own independent repository; only the deliberately untouched adversarial owner is reused.
+
+Reuse requires byte-for-byte SHA-256 verification against the original owner/common/linked snapshot before and after **every** case. A contaminated owner cannot run another case; there is no reset, baseline renewal or ignored mutation. Child assertion failures propagate unchanged, and simultaneous owner corruption retains both failures. Public-child negative controls cover working-file/index corruption, rejected subsequent execution, failure/timeout outcomes, owned child termination, successful subsequent real completion-fixture execution and targeted directory cleanup without deleting unrelated state.
+
+There is no runner batching, new concurrency, persistent process, rendering, cache, scheduling or coverage change. Local matched matrix timings are correctness/development evidence, not hosted Full acceptance. The coordinator must compare two complete hosted samples with its new published-main reconciliation controls and the exact case inventory; final combined acceptance still requires three samples. Keep nested case work separate from elapsed/occupied runner time and retain all failed/cancelled attempts.
+
+Independent rollback: revert only the isolated #81 implementation commit on a feature branch, renew review/validation, and retain published-main reconciliation, the accepted PNG checkpoint, instrumentation and Required validation. No protection changes, shared-cache deletion or agent landing are needed.
+
 ## Explicit hook migration
 
 Automatic repository-managed `pre-commit`, `pre-merge-commit` and `pre-push` installation is retired. `scripts\git-hooks.ps1 -Action Install` fails with manual-validation and migration guidance without writing hooks/configuration. The command remains as a **Status/Remove migration interface** so deleting tracked tooling cannot strand old installed hooks.

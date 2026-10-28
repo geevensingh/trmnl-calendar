@@ -136,6 +136,8 @@ Foreign-repository Git subprocesses remove **all inherited `GIT_*` environment v
 
 `tests/validation/git-isolation.test.mjs` exercises actual completion and C# Workbench fixture commands with exported pre-push context from synthetic standard and linked owners, individual selectors, and injected configuration. It compares SHA-256s of all owner working files and Git metadata, including config, refs, HEAD, indexes and object storage; identity checks alone cannot detect inherited index/object targets. Build the existing test project before running this Node regression directly; Full already builds it before Node tests. No reproduction targets a real checkout's metadata.
 
+Each selector matrix reuses one synthetic standard/linked owner pair, verifying the complete original file/metadata snapshot **before and after every case**, including failed children. Contamination blocks subsequent cases rather than resetting or accepting a new baseline. Every case still starts its actual bounded public fixture runner with a fresh environment; no test-runner batching, shared worker or concurrency is introduced. Negative controls prove file/index contamination detection, combined failure diagnostics, timeout termination, subsequent real-fixture execution and cleanup confined to owned state.
+
 ### Display setup troubleshooting
 
 | Failure | Recovery |

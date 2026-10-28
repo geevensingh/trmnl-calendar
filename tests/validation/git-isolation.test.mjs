@@ -145,7 +145,25 @@ writeFileSync(process.env.ISOLATION_CAPTURE, JSON.stringify(Object.fromEntries(
     assert.deepEqual(await snapshot(checkout), before[0], `${label}: owner files/common metadata changed`);
     assert.deepEqual(await snapshot(linked), before[1], `${label}: linked files/HEAD/index changed`);
   };
-  return { directory, checkout, linked, contexts, git, unchanged };
+  const runCase = async (label, action) => {
+    await unchanged(`${label}: before`);
+    const failures = [];
+    let result;
+    try {
+      result = await action();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await unchanged(`${label}: after`);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, `${label}: child and owner verification failed`);
+    return result;
+  };
+  return { directory, checkout, linked, contexts, git, unchanged, runCase };
 }
 
 function injections(owner, context) {
@@ -170,20 +188,83 @@ function injections(owner, context) {
   ];
 }
 
+test("reused owner boundaries reject child contamination before allowing another case", async t => {
+  const fixture = await owner(t);
+  await assert.rejects(fixture.runCase("contaminating child", () => {
+    const result = spawnSync(process.execPath, [
+      "-e", "require('node:fs').writeFileSync(process.argv[1], 'Contaminated owner\\n')",
+      join(fixture.linked, "owner.txt")
+    ], { env: cleanEnvironment(), encoding: "utf8", timeout: 10_000 });
+    assert.equal(result.status, 0, result.stderr);
+  }), /contaminating child: after: linked files\/HEAD\/index changed/);
+  let invoked = false;
+  await assert.rejects(fixture.runCase("following child", () => { invoked = true; }),
+    /following child: before: linked files\/HEAD\/index changed/);
+  assert.equal(invoked, false, "A contaminated owner must not reach another public process.");
+});
+
+test("reused owner boundaries retain both child failure and owner corruption evidence", async t => {
+  const fixture = await owner(t);
+  await assert.rejects(fixture.runCase("failed contaminating child", () => {
+    const result = spawnSync(process.execPath, [
+      "-e", "require('node:fs').writeFileSync(process.argv[1], 'Corrupted index'); process.exit(23)",
+      join(fixture.contexts[0].gitDirectory, "index")
+    ], { env: cleanEnvironment(), encoding: "utf8", timeout: 10_000 });
+    assert.equal(result.status, 0, "Synthetic public child exited 23.");
+  }), error => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.errors.length, 2);
+    assert.match(error.errors[0].message, /Synthetic public child exited 23/);
+    assert.match(error.errors[1].message, /after: owner files\/common metadata changed/);
+    return true;
+  });
+});
+
+test("reused owner boundaries preserve child exit and timeout results and clean owned state", async t => {
+  let ownedDirectory;
+  const unrelated = await mkdtemp(join(tmpdir(), "agenda unrelated owner "));
+  t.after(() => rm(unrelated, { recursive: true, force: true }));
+  await writeFile(join(unrelated, "sentinel.txt"), "Unrelated work\n");
+  await t.test("failed and timed out children leave the owner reusable", async t => {
+    const fixture = await owner(t);
+    ownedDirectory = fixture.directory;
+    const failed = await fixture.runCase("failed child", () => spawnSync(process.execPath, [
+      "-e", "process.stderr.write('Synthetic child failure'); process.exit(23)"
+    ], { env: cleanEnvironment(), encoding: "utf8", timeout: 10_000 }));
+    assert.equal(failed.status, 23);
+    assert.equal(failed.stderr, "Synthetic child failure");
+    const timedOut = await fixture.runCase("timed out child", () => spawnSync(process.execPath, [
+      "-e", "setInterval(() => {}, 1000)"
+    ], { env: cleanEnvironment(), encoding: "utf8", timeout: 200 }));
+    assert.equal(timedOut.error?.code, "ETIMEDOUT");
+    assert.equal(timedOut.status, null);
+    assert.equal(timedOut.signal, "SIGTERM");
+    assert.throws(() => process.kill(timedOut.pid, 0), { code: "ESRCH" },
+      "The timed out owned child must have exited.");
+    const result = await fixture.runCase("following completion fixture", () => spawnSync(process.execPath, [
+      "--test", "--test-name-pattern=^completion repository is isolated",
+      join(root, "tests", "delivery", "completion.test.mjs")
+    ], { cwd: root, env: { ...cleanEnvironment(), ...fixture.contexts[1].exported },
+      encoding: "utf8", timeout: 30_000 }));
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /\bpass 1\b/, "The real fixture must still execute after failed children.");
+  });
+  await assert.rejects(readdir(ownedDirectory), { code: "ENOENT" });
+  assert.equal(await readFile(join(unrelated, "sentinel.txt"), "utf8"), "Unrelated work\n");
+});
+
 test("completion fixture preserves standard and linked owners under exported hook context and selectors", async t => {
-  const catalogue = await owner(t);
+  const fixture = await owner(t);
   for (const index of [0, 1]) {
-    for (const [name] of injections(catalogue, catalogue.contexts[index])) {
-      await t.test(`${index === 1 ? "linked" : "standard"}: ${name}`, async t => {
-        const fixture = await owner(t);
-        const injection = injections(fixture, fixture.contexts[index]).find(([label]) => label === name)[1];
+    for (const [name, injection] of injections(fixture, fixture.contexts[index])) {
+      const label = `${index === 1 ? "linked" : "standard"}: ${name}`;
+      await t.test(label, () => fixture.runCase(label, () => {
         const result = spawnSync(process.execPath, [
           "--test", "--test-name-pattern=^completion repository is isolated", join(root, "tests", "delivery", "completion.test.mjs")
         ], { cwd: root, env: { ...cleanEnvironment(), ...injection }, encoding: "utf8", timeout: 30_000 });
-        await fixture.unchanged(name);
         assert.equal(result.status, 0, result.stdout + result.stderr);
         assert.match(result.stdout, /\bpass 1\b/, "The actual completion fixture test must execute.");
-      });
+      }));
     }
   }
 });
@@ -212,12 +293,11 @@ test("review snapshot fixture preserves synthetic owners under combined inherite
 });
 
 test("Workbench Git fixture preserves standard and linked owners under exported hook context and selectors", async t => {
-  const catalogue = await owner(t);
+  const fixture = await owner(t);
   for (const index of [0, 1]) {
-    for (const [name] of injections(catalogue, catalogue.contexts[index])) {
-      await t.test(`${index === 1 ? "linked" : "standard"}: ${name}`, async t => {
-        const fixture = await owner(t);
-        const injection = injections(fixture, fixture.contexts[index]).find(([label]) => label === name)[1];
+    for (const [name, injection] of injections(fixture, fixture.contexts[index])) {
+      const label = `${index === 1 ? "linked" : "standard"}: ${name}`;
+      await t.test(label, () => fixture.runCase(label, () => {
         const result = spawnSync("dotnet", [
           "test", join(root, "tests", "CalendarAgenda.Tests", "CalendarAgenda.Tests.csproj"),
           "--no-build", "--no-restore", "--nologo", "--verbosity", "quiet",
@@ -226,10 +306,9 @@ test("Workbench Git fixture preserves standard and linked owners under exported 
           cwd: root, env: { ...cleanEnvironment(), ...injection, DOTNET_GENERATE_ASPNET_CERTIFICATE: "false" },
           encoding: "utf8", timeout: 30_000
         });
-        await fixture.unchanged(name);
         assert.equal(result.status, 0, result.stdout + result.stderr);
         assert.match(result.stdout, /Passed:\s+1\b/, "Build the Workbench isolation regression before this check.");
-      });
+      }));
     }
   }
 });

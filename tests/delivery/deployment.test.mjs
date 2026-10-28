@@ -29,6 +29,32 @@ test("Functions diagnostics allow complete agenda traces without automatic URL c
   });
 });
 
+test("release-stack parameters example supplies every required resource parameter", async () => {
+  const template = await readFile(join(root, "infra", "resources.bicep"), "utf8");
+  const example = JSON.parse(await readFile(join(root, "infra", "parameters.example.json"), "utf8"));
+  const script = await readFile(join(root, "scripts", "deploy-release-infrastructure.ps1"), "utf8");
+  const nameBlock = script.match(/\$names = @\(([\s\S]*?)\)/)?.[1] ?? "";
+  const acceptedNames = [...nameBlock.matchAll(/'([A-Za-z]\w*)'/g)].map(([, name]) => name);
+  const required = [...template.matchAll(/^param\s+([A-Za-z]\w*)\s+\w+\s*$/gm)]
+    .map(([, name]) => name);
+  const deploy = await readFile(join(root, "scripts", "deploy-azure.ps1"), "utf8");
+  const requiredNames = deploy.match(/\$required = @\(([\s\S]*?)\)/)?.[1] ?? "";
+  const optionalNames = deploy.match(/\$allowed = \$required \+ @\(([\s\S]*?)\)/)?.[1] ?? "";
+  const deploymentNames = [...`${requiredNames}${optionalNames}`.matchAll(/'([A-Za-z]\w*)'/g)]
+    .map(([, name]) => name);
+  for (const name of required) {
+    assert.ok(Object.hasOwn(example.parameters, name), `missing required resource parameter: ${name}`);
+    assert.notEqual(example.parameters[name].value, undefined, `missing value for resource parameter: ${name}`);
+    assert.ok(acceptedNames.includes(name), `release stack script omits resource parameter: ${name}`);
+  }
+  for (const name of Object.keys(example.parameters)) {
+    assert.ok(deploymentNames.includes(name), `Azure deploy script rejects example parameter: ${name}`);
+    if (name !== "resourceGroupName") {
+      assert.ok(acceptedNames.includes(name), `release stack script rejects example parameter: ${name}`);
+    }
+  }
+});
+
 test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and separate identities", () => {
     const build = spawnSync("pwsh", [
       "-NoProfile", "-NonInteractive", "-Command",
@@ -46,14 +72,21 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
     assert.equal(app.kind, "functionapp,linux");
     assert.equal(app.properties.httpsOnly, true);
     assert.deepEqual(app.properties.functionAppConfig.runtime, { name: "dotnet-isolated", version: "10.0" });
-    assert.deepEqual(app.properties.functionAppConfig.scaleAndConcurrency, {
+    assert.equal(app.properties.functionAppConfig.scaleAndConcurrency, "[variables('reviewedFunctionCapacity')]");
+    assert.equal(template.outputs.reviewedCapacity.value, "[variables('reviewedFunctionCapacity')]");
+    assert.deepEqual(template.variables.reviewedFunctionCapacity, {
       maximumInstanceCount: 1, instanceMemoryMB: 2048, alwaysReady: []
     });
     assert.equal(app.identity.type, "SystemAssigned, UserAssigned");
     assert.equal(app.properties.functionAppConfig.deployment.storage.authentication.type, "UserAssignedIdentity");
     assert.equal(resource("Microsoft.ManagedIdentity/userAssignedIdentities").length, 1);
-    const [storage] = resource("Microsoft.Storage/storageAccounts");
-    assert.equal(resource("Microsoft.Storage/storageAccounts").length, 1);
+    const accounts = resource("Microsoft.Storage/storageAccounts");
+    const storage = accounts.find(account => account.name === "[parameters('storageAccountName')]");
+    const releaseStorage = accounts.find(account => account.name === "[parameters('releaseStorageAccountName')]");
+    assert.equal(accounts.length, 2);
+    assert.ok(releaseStorage, "release records must not inherit runtime account-wide blob permissions");
+    assert.equal(releaseStorage.properties.allowSharedKeyAccess, false);
+    assert.equal(releaseStorage.properties.allowBlobPublicAccess, false);
     assert.equal(storage.kind, "StorageV2");
     assert.equal(storage.sku.name, "Standard_LRS");
     assert.equal(storage.properties.allowSharedKeyAccess, false);
@@ -91,18 +124,41 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
       "'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'",
       "'0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'",
       "'ba92f5b4-2d11-453d-a403-e96b0029c9fe'",
+      "'ba92f5b4-2d11-453d-a403-e96b0029c9fe'",
+      "'ba92f5b4-2d11-453d-a403-e96b0029c9fe'",
       "'4633458b-17de-408a-b874-0445c86b69e6'",
       "'3913510d-42f4-4e42-8a64-420c390055eb'"
     ].sort());
     const cacheRole = roles.find(role => role.properties.roleDefinitionId.includes("ba92f5b4"));
     assert.match(cacheRole.scope, /cacheContainerName/);
     assert.match(cacheRole.properties.principalId, /Microsoft\.Web\/sites.*identity\.principalId/);
+    const controllerRoles = roles.filter(role =>
+      role.properties.principalId.includes("releaseControllerPrincipalId"));
+    assert.equal(controllerRoles.length, 2);
+    assert.ok(controllerRoles.every(role =>
+      role.condition && role.properties.principalId.includes("releaseControllerPrincipalId")));
+    assert.ok(controllerRoles.some(role => role.scope.includes("releaseControlContainerName")));
+    assert.ok(controllerRoles.some(role => role.scope.includes("releaseArtifactContainerName")));
+    assert.ok(controllerRoles.every(role => role.scope.includes("releaseStorageAccountName")));
+    const runtimeBlobRoles = roles.filter(role =>
+      role.properties.principalId.includes("hostIdentityName") ||
+      role.properties.principalId.includes("Microsoft.Web/sites"));
+    assert.ok(runtimeBlobRoles.every(role => !role.scope.includes("releaseStorageAccountName")));
+    const containers = resource("Microsoft.Storage/storageAccounts/blobServices/containers");
+    for (const name of ["releaseControlContainerName", "releaseArtifactContainerName"]) {
+      assert.match(containers.find(container => container.name.includes(name)).name, /releaseStorageAccountName/);
+    }
+    assert.doesNotMatch(JSON.stringify(settings), /releaseStorageAccountName/);
+    assert.equal(resource("Microsoft.Storage/storageAccounts/blobServices/containers").length, 4);
     assert.match(roles.find(role => role.properties.roleDefinitionId.includes("0a9a7e1f")).condition,
       /retainHostDiagnostics/);
-    const [blobService] = resource("Microsoft.Storage/storageAccounts/blobServices");
-    assert.equal(blobService.properties.isVersioningEnabled, false);
-    assert.equal(blobService.properties.deleteRetentionPolicy.enabled, false);
-    assert.equal(blobService.properties.containerDeleteRetentionPolicy.enabled, false);
+    const blobServices = resource("Microsoft.Storage/storageAccounts/blobServices");
+    assert.equal(blobServices.length, 2);
+    for (const blobService of blobServices) {
+      assert.equal(blobService.properties.isVersioningEnabled, false);
+      assert.equal(blobService.properties.deleteRetentionPolicy.enabled, false);
+      assert.equal(blobService.properties.containerDeleteRetentionPolicy.enabled, false);
+    }
     const policy = resource("Microsoft.Storage/storageAccounts/managementPolicies")[0].properties.policy;
     assert.equal(policy.rules.length, 1);
     assert.match(policy.rules[0].definition.filters.prefixMatch[0], /cacheContainerName/);

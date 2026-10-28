@@ -14,19 +14,21 @@ The owner's private resource plan supplies the subscription, exact resource name
 | --- | --- |
 | Functions plan/app | Linux Flex Consumption `FC1`, .NET **10.0 isolated**, 2048 MB, maximum **one** on-demand instance, no always-ready instances, default HTTP concurrency, HTTPS/TLS 1.2+ |
 | Shared storage | One Hot StorageV2 Standard LRS account for host state, deployment packages, and a private source-cache container; no anonymous blobs or shared-key authentication |
+| Release storage | A separate Hot StorageV2 Standard LRS account for the private release ledger and retained artifacts; no Function runtime grants |
 | Host identity | User-assigned identity for host/deployment storage, not the application's cache credential |
 | Source secret | Standard RBAC Key Vault; versionless Key Vault reference in `Agenda__SourceUrl`; the template never accepts the source URL |
 | Participation owner identity | Adapter-only `Agenda__OwnerAddress`, an exact `mailto:` address; no HTTP or plugin input |
 | Telemetry | Workspace-based Application Insights with Entra ingestion authentication; Log Analytics PerGB2018, 30-day retention, 0.1 GB/day backup ingestion cap |
 | Budget | Resource-group monthly $20; actual-spend alerts at **$10/$16/$20** (50/80/100%), forecast warning at 100% |
 
-No API Management, VNet/private endpoint, premium plan, extra storage account, queue role, or paid warming is created. Basic SCM/FTP publishing credentials are disabled; supported Azure CLI deployment uses the operator's Entra authorization.
+No API Management, VNet/private endpoint, premium plan, queue role, or paid warming is created. The release account is separate because the host's required account-wide data role must not extend to release records. Its storage and transaction charges are additional; budget alerts are not a spending cap. Basic SCM/FTP publishing credentials are disabled; supported Azure CLI deployment uses the operator's Entra authorization.
 
 | Principal | Approved role and scope |
 | --- | --- |
 | Host user-assigned identity | **Storage Blob Data Owner**, shared storage account: the documented host minimum, intrinsically broader than the app cache |
 | Host identity, only when retaining startup diagnostics | **Storage Table Data Contributor**, same account; controlled by `retainHostDiagnostics` |
 | Function system-assigned identity | **Storage Blob Data Contributor**, cache **container only** |
+| Release controller identity | **Storage Blob Data Contributor**, separately scoped to each release container in the dedicated release account |
 | Function system-assigned identity | **Key Vault Secrets User**, dedicated vault |
 | Function system-assigned identity | **Monitoring Metrics Publisher**, Application Insights component |
 | Separately owner-approved diagnostic operator | **Storage Blob Data Reader**, private cache **container only**; not provisioned automatically |
@@ -231,6 +233,55 @@ Use production `display\src\settings.yml` and all four production template files
 Keep the editor text a **string**, including malformed JSON. Do not interpolate it as a JSON fragment, substitute defaults after an invalid edit, add the source URL, or wrap single-URL data in `IDX_0`/webhook `merge_variables`. TRMNL's documented single-URL polling exposes response fields at the top level; multiple polling URLs are outside this setup. Private Plugins access already exists and 15-minute polling does not require TRMNL+.
 
 In the actual native editor, verify quotes/newlines survive, malformed/unsupported rules produce a visible `configuration_invalid` state, `[]` deliberately clears exclusions, and subsequent valid edits affect subsequent polls without deployment. Restore intended exclusions afterward. Select OG/X and the required full, half-horizontal and half-vertical arrangements, including intended mashup placement. Confirm private device rendering and the source timestamp without saving private screenshots or bodies. A website preview is not device delivery.
+
+## Coordinated Azure/TRMNL releases
+
+`.github/workflows/coordinated-release.yml` is a separate production release controller, not a CI workflow. It scans first-parent `main` history on pushes and every 15 minutes, admits qualifying commits in order, and drains the durable queue under an Azure Blob lease. The scheduled scan recovers missed push events. Azure deploys and passes its redacted live smoke before TRMNL is updated; deployment records are created per target. Retries use the original immutable artifacts, failed releases block successors, and a skip requires an attributed manual operation. The controller never creates or deletes the resource group.
+
+Unfamiliar paths, including unfamiliar files under `scripts/`, conservatively select both targets. Only explicitly known Azure deployment inputs are Azure-only; known local-only inputs do not select a production target.
+
+Before enabling this workflow, the owner must complete and record the initial Azure bootstrap, TRMNL existing-plugin configuration, and synthetic-plugin configured-value-preservation test described above. Before activation, bootstrap the release OIDC identity and a **dedicated release storage account** inside the approved group, with **both** private containers (`release-control` and `release-artifacts`) and a separate container-scoped Blob Data Contributor grant on each. Set `releaseStorageAccountName` to that account, distinct from the existing runtime `storageAccountName`; deployment scripts reject a shared account. Activation uploads retained artifacts before infrastructure reconciliation, so neither the account, artifact container nor its grant can wait for that reconciliation. Configure a federated credential for audience `api://AzureADTokenExchange` and subject `repo:geevensingh/trmnl-calendar:ref:refs/heads/main`. Grant the identity only the resource-group deployment permissions required to reconcile the already-existing approved group, including its required role-assignment permissions; Bicep maintains its separate ledger-container and release-artifact-container grants. The function deployment-package container is not the retained-release-artifact container. Do not grant subscription-wide Contributor for routine releases.
+
+The host identity keeps its required account-wide Blob Data Owner role only on the runtime account. Neither Function identity is granted data or control-plane access to the release account. During bootstrap, inspect effective/inherited permissions and verify both runtime identities cannot read or mutate either release container; remove conflicting inherited grants under owner authorization before activation. Keep shared-key/public access disabled and do not attach the release identity to the Function. Existing activated installations need an owner-reviewed ledger/artifact migration before changing accounts; never point an active controller at an empty account or reactivate to bypass its history. No live migration or account provisioning was performed during implementation.
+
+Routine releases compare live capacity against the `reviewedFunctionCapacity` value used by the exact commit's Bicep and returned as `reviewedCapacity` by its reconciled deployment stack. This supports reviewed maximum-instance, memory and always-ready changes without a second approval or changing resource-group, runtime, artifact, authentication, and commit checks. The standalone operator command above retains its initial max-one/2 GiB/zero-always-ready defaults unless supplied with a commit-matching `-ReviewedCapacityJson` result from reconciliation.
+
+Before any TRMNL push, the publisher pulls the existing non-secret definition and compares custom-field identifiers and types. Removing, renaming or changing a deployed field type fails with `trmnl_field_migration_required` before mutation. There is no implicit migration or configured-value reset: retain the existing schema until an explicit owner-reviewed value-preserving migration has been implemented. Post-push verification pulls into an empty source directory and compares templates and parsed settings, ignoring mapping-key order but preserving array order.
+
+Ruby settings parsers receive only allowlisted non-secret tool environment settings, not Azure configuration, GitHub tokens, Function keys or the TRMNL publishing key. Only the isolated `trmnlp` calls receive that publishing key.
+
+Retained TRMNL archives are restored using a destination-local temporary input, removed before publication. This avoids GNU tar unquoting Windows directory arguments or treating drive-qualified archive names as remote.
+
+Set these GitHub repository variables:
+
+| Variable | Value |
+|---|---|
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Federated release identity client ID, tenant ID, and approved subscription ID. |
+| `AZURE_RESOURCE_GROUP_NAME` | The owner-approved, pre-existing application resource group. |
+| `AZURE_STORAGE_ACCOUNT`, `AZURE_RELEASE_CONTAINER`, `AZURE_ARTIFACT_CONTAINER` | The **dedicated release** account matching `releaseStorageAccountName`, private `release-control` ledger container, and private `release-artifacts` retained artifact container. Never use the runtime `storageAccountName`. The release identity has separate container-scoped Blob Data Contributor roles. |
+| `AZURE_BOOTSTRAP_VERIFIED` | Set to `true` only after the owner verifies the separate Azure bootstrap and required live evidence. |
+| `TRMNL_PLUGIN_ID` | The existing production plugin ID; never leave this blank or allow `trmnlp` to create a plugin. |
+| `TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID` | The same ID only after the owner has completed and recorded the synthetic-plugin preservation test. This gate does not itself prove preservation. |
+
+Set these GitHub Actions secrets:
+
+| Secret | Value |
+|---|---|
+| `AZURE_PARAMETERS_JSON` | The complete owner-reviewed deployment parameter document based on `infra/parameters.example.json`, including the exact resource group and release identity **service-principal object ID**. Keep the document private; the runner writes it to a mode-restricted temporary file and removes it after use. |
+| `TRMNL_API_KEY` | The TRMNL publishing key. It is passed only to the isolated `trmnlp` process. |
+| `TRMNL_FUNCTION_KEY` | The dedicated function-scoped key for the existing `/api/agenda` trigger, never a host/master key. |
+
+The first manual `activate` operation on `main` publishes and verifies both targets at the selected reviewed main commit before recording target baselines. It refuses to activate unless the evidence variables are set, the plugin IDs match, and the reason is attributed. It does not run the synthetic preservation test or establish missing live evidence on the owner's behalf. Do not set either evidence variable until the corresponding owner verification is complete.
+
+If activation fails, rerun `activate` on `main` with a new attributed reason. Recovery resumes the ledger's original activation commit and retained artifacts, even if `main` has advanced; verified targets are not redeployed. The current-main restriction applies only to a new activation. An interrupted activation is first recorded as uncertain and blocked before a later explicit recovery can resume it. Its original `first_failure` remains in the durable record after successful recovery.
+
+Use **Actions > Coordinated production release > Run workflow** on `main` for `status`, `activate`, `retry`, or `skip`. Supply a concise reason for activation/retry/skip. A retry reuses the original commit and artifacts and preserves durably verified target outcomes, including interruptions immediately after a target-success save. A skip records the actor and reason without advancing either target baseline. `main` is the normal automatic operation. Never manually edit the Blob ledger or delete retained release artifacts to clear a barrier. Keep GitHub deployment permissions enabled for the workflow; do not add CI checks or rerun unrelated CI as part of release recovery.
+
+Status also exposes per-target `pending_reconciliation`. A target is marked before mutation and cleared only after verification. Skipping a failed release preserves this marker: the next qualifying commit must redeploy that target even if its contents match the last successful baseline, because the skipped attempt might have changed what is live.
+
+Lease-renewal failure cancels active local commands and prevents subsequent deployment stages or ledger writes by that controller. Cancellation is not proof that descendants or an already accepted Azure/TRMNL request have stopped. Before every external mutation, the ledger records `recovery_confirmation_required`; an unverified failure or interruption leaves that barrier in place. To retry, skip, or resume activation after a mutation failure, first verify that the previous runner processes (including descendants) have ended and that all Azure deployment-stack/code deployments or TRMNL publishing requests have completed or been stopped. Do not merely break the lease or cancel a GitHub run and assume remote work stopped.
+
+Only after that verification, select **I verified all previous release processes and remote mutations have stopped** in the manual workflow and provide the evidence/context in the attributed reason. The controller records this confirmation with the actor and time before allowing recovery. The equivalent CLI switch is `--previous-mutation-stopped`. Status exposes the barrier; automatic scans cannot clear it. Selection/preparation failures before any mutation can be retried without this confirmation.
 
 ## Redacted HTTP smoke and live limits
 

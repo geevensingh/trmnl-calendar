@@ -239,6 +239,7 @@ export async function activateReleaseBaseline({
         stage: state.activation.stage ?? "unknown",
         code: "interrupted_uncertain"
       };
+      state.activation.first_failure ??= state.activation.failure;
       state.activation.target_results ??= {};
       for (const target of TARGETS) {
         if (state.activation.target_results[target] === "in_progress") {

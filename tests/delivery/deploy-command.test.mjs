@@ -135,6 +135,7 @@ test("what-if sends only a runtime parameter-file reference and emits no recipie
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "SYNTHETIC_PRIVATE_RECIPIENT@example.invalid"
       : name === "agendaOwnerAddress" ? "mailto:SYNTHETIC_OWNER@example.invalid"
+        : name === "releaseStorageAccountName" ? "syntheticreleases"
         : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
           : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
             : "syntheticresource";
@@ -162,6 +163,14 @@ test("what-if sends only a runtime parameter-file reference and emits no recipie
   assert.ok(calls[0].includes(`@${parameterPath}`));
   assert.doesNotMatch(preview.stdout + preview.stderr + JSON.stringify(calls),
     /SYNTHETIC_PRIVATE_RECIPIENT|SYNTHETIC_OWNER/);
+  const releaseAccount = document.parameters.releaseStorageAccountName.value;
+  document.parameters.releaseStorageAccountName.value = document.parameters.storageAccountName.value;
+  await writeFile(parameterPath, JSON.stringify(document));
+  const sharedStorage = run();
+  assert.notEqual(sharedStorage.status, 0);
+  assert.match(sharedStorage.stderr, /separate account/);
+  assert.equal((await readFile(callsPath, "utf8")).trim().split(/\r?\n/).length, 1);
+  document.parameters.releaseStorageAccountName.value = releaseAccount;
   document.parameters.agendaOwnerAddress.value = "https://synthetic.invalid/owner";
   await writeFile(parameterPath, JSON.stringify(document));
   const invalidOwner = run();
@@ -188,6 +197,7 @@ test("release reconciliation uses the supported resource-only deletion action on
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "synthetic@example.invalid"
       : name === "agendaOwnerAddress" ? "mailto:SYNTHETIC_OWNER@example.invalid"
+        : name === "releaseStorageAccountName" ? "syntheticreleases"
         : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
           : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
             : "syntheticresource";
@@ -206,7 +216,8 @@ test("release reconciliation uses the supported resource-only deletion action on
         $parameterFile = $args[[Array]::IndexOf($args, '--parameters') + 1].Substring(1)
         $parameters = Get-Content -LiteralPath $parameterFile -Raw | ConvertFrom-Json
         if ($action -notin @('deleteAll', 'deleteResources', 'detachAll') -or
-            $parameters.parameters.agendaOwnerAddress.value -cne 'mailto:SYNTHETIC_OWNER@example.invalid') {
+            $parameters.parameters.agendaOwnerAddress.value -cne 'mailto:SYNTHETIC_OWNER@example.invalid' -or
+            $parameters.parameters.releaseStorageAccountName.value -cne 'syntheticreleases') {
           $global:LASTEXITCODE = 2
           return
         }
@@ -243,6 +254,17 @@ test("release reconciliation uses the supported resource-only deletion action on
   assert.equal(reconciliation[reconciliation.indexOf("--deny-settings-mode") + 1], "denyDelete");
   assert.doesNotMatch(JSON.stringify(calls), /SYNTHETIC_OWNER/);
 
+  const releaseAccount = document.parameters.releaseStorageAccountName.value;
+  for (const value of [undefined, document.parameters.storageAccountName.value]) {
+    if (value === undefined) delete document.parameters.releaseStorageAccountName;
+    else document.parameters.releaseStorageAccountName = { value };
+    await writeFile(parameterPath, JSON.stringify(document));
+    const refused = run();
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /runtime parameter|separate account/);
+    assert.deepEqual((await readFile(callsPath, "utf8")).trim().split(/\r?\n/).map(JSON.parse), calls);
+  }
+  document.parameters.releaseStorageAccountName = { value: releaseAccount };
   for (const owner of [undefined, true, "https://SYNTHETIC_OWNER@example.invalid"]) {
     if (owner === undefined) delete document.parameters.agendaOwnerAddress;
     else document.parameters.agendaOwnerAddress = { value: owner };
@@ -265,6 +287,7 @@ test("owner identity validation rejects missing and unsafe values before Azure w
   for (const [name, parameter] of Object.entries(document.parameters)) {
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "SYNTHETIC_PRIVATE_RECIPIENT@example.invalid"
+      : name === "releaseStorageAccountName" ? "syntheticreleases"
       : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
         : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
           : "syntheticresource";
@@ -337,6 +360,7 @@ test("code deployment requires a clean reviewed package and the approved on-dema
     if (parameter.value === "") parameter.value = name === "budgetAlertEmail"
       ? "synthetic@example.invalid"
       : name === "agendaOwnerAddress" ? "mailto:synthetic-owner@example.invalid"
+        : name === "releaseStorageAccountName" ? "syntheticreleases"
         : name === "budgetStartDate" ? "2026-10-01T00:00:00Z"
           : name === "releaseControllerPrincipalId" ? "00000000-0000-0000-0000-000000000002"
             : "syntheticresource";

@@ -70,6 +70,53 @@ test("TRMNL publisher pins the existing plugin ID and verifies pulled definition
   assert.equal(result.pluginId, "12345");
 });
 
+test("settings parser receives tool settings but no workflow credentials or Azure configuration", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const instrumentation = await mkdtemp(join(tmpdir(), "trmnl-parser-test-"));
+  t.after(() => rm(instrumentation, { recursive: true, force: true }));
+  const observations = join(instrumentation, "parser-environment.jsonl");
+  const probe = join(instrumentation, "environment-probe.rb");
+  const protectedNames = [
+    "GITHUB_TOKEN", "GH_TOKEN", "TRMNL_API_KEY", "TRMNL_FUNCTION_KEY",
+    "AZURE_CONFIG_DIR", "AZURE_EXTENSION_DIR", "AZURE_PARAMETERS_JSON", "AZURE_CLIENT_SECRET"
+  ];
+  await writeFile(probe, [
+    "require 'json'",
+    `File.open(${JSON.stringify(observations.replaceAll("\\", "/"))}, 'a') do |output|`,
+    `  output.puts(JSON.generate(ENV.to_h.slice(*${JSON.stringify(protectedNames)}, 'PATH')))`,
+    "end"
+  ].join("\n"));
+  const injected = Object.fromEntries(protectedNames.map(name => [name, `synthetic-${name}`]));
+  injected.RUBYOPT = "-renvironment-probe";
+  injected.RUBYLIB = instrumentation;
+  const previous = Object.fromEntries(Object.keys(injected).map(name => [name, process.env[name]]));
+  Object.assign(process.env, injected);
+  t.after(() => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  const result = await publishTrmnl({
+    sourceDirectory, pluginId: "12345", preservationVerifiedPluginId: "12345",
+    runCommand: async (_command, args, { env, cwd }) => {
+      assert.equal(env.TRMNL_API_KEY, injected.TRMNL_API_KEY);
+      for (const name of protectedNames.filter(name => name !== "TRMNL_API_KEY")) {
+        assert.equal(env[name], undefined);
+      }
+      if (args[0] === "pull") await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+    }
+  });
+  assert.equal(result.verified, true);
+  const parsers = (await readFile(observations, "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(parsers.length, 4);
+  for (const parser of parsers) {
+    assert.ok(parser.PATH);
+    for (const name of protectedNames) assert.equal(parser[name], undefined, `${name} reached settings parser`);
+  }
+  for (const [name, value] of Object.entries(injected)) assert.equal(process.env[name], value);
+});
+
 test("TRMNL publisher fails closed for missing or unproven target identity without contacting TRMNL", async t => {
   const sourceDirectory = await pluginSource(t);
   let calls = 0;

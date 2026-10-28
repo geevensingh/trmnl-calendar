@@ -7,6 +7,7 @@
     "functionAppName": { "value": "" },
     "planName": { "value": "" },
     "storageAccountName": { "value": "" },
+    "releaseStorageAccountName": { "value": "" },
     "hostIdentityName": { "value": "" },
     "keyVaultName": { "value": "" },
     "logAnalyticsName": { "value": "" },

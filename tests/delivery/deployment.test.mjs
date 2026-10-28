@@ -80,8 +80,13 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
     assert.equal(app.identity.type, "SystemAssigned, UserAssigned");
     assert.equal(app.properties.functionAppConfig.deployment.storage.authentication.type, "UserAssignedIdentity");
     assert.equal(resource("Microsoft.ManagedIdentity/userAssignedIdentities").length, 1);
-    const [storage] = resource("Microsoft.Storage/storageAccounts");
-    assert.equal(resource("Microsoft.Storage/storageAccounts").length, 1);
+    const accounts = resource("Microsoft.Storage/storageAccounts");
+    const storage = accounts.find(account => account.name === "[parameters('storageAccountName')]");
+    const releaseStorage = accounts.find(account => account.name === "[parameters('releaseStorageAccountName')]");
+    assert.equal(accounts.length, 2);
+    assert.ok(releaseStorage, "release records must not inherit runtime account-wide blob permissions");
+    assert.equal(releaseStorage.properties.allowSharedKeyAccess, false);
+    assert.equal(releaseStorage.properties.allowBlobPublicAccess, false);
     assert.equal(storage.kind, "StorageV2");
     assert.equal(storage.sku.name, "Standard_LRS");
     assert.equal(storage.properties.allowSharedKeyAccess, false);
@@ -134,13 +139,26 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
       role.condition && role.properties.principalId.includes("releaseControllerPrincipalId")));
     assert.ok(controllerRoles.some(role => role.scope.includes("releaseControlContainerName")));
     assert.ok(controllerRoles.some(role => role.scope.includes("releaseArtifactContainerName")));
+    assert.ok(controllerRoles.every(role => role.scope.includes("releaseStorageAccountName")));
+    const runtimeBlobRoles = roles.filter(role =>
+      role.properties.principalId.includes("hostIdentityName") ||
+      role.properties.principalId.includes("Microsoft.Web/sites"));
+    assert.ok(runtimeBlobRoles.every(role => !role.scope.includes("releaseStorageAccountName")));
+    const containers = resource("Microsoft.Storage/storageAccounts/blobServices/containers");
+    for (const name of ["releaseControlContainerName", "releaseArtifactContainerName"]) {
+      assert.match(containers.find(container => container.name.includes(name)).name, /releaseStorageAccountName/);
+    }
+    assert.doesNotMatch(JSON.stringify(settings), /releaseStorageAccountName/);
     assert.equal(resource("Microsoft.Storage/storageAccounts/blobServices/containers").length, 4);
     assert.match(roles.find(role => role.properties.roleDefinitionId.includes("0a9a7e1f")).condition,
       /retainHostDiagnostics/);
-    const [blobService] = resource("Microsoft.Storage/storageAccounts/blobServices");
-    assert.equal(blobService.properties.isVersioningEnabled, false);
-    assert.equal(blobService.properties.deleteRetentionPolicy.enabled, false);
-    assert.equal(blobService.properties.containerDeleteRetentionPolicy.enabled, false);
+    const blobServices = resource("Microsoft.Storage/storageAccounts/blobServices");
+    assert.equal(blobServices.length, 2);
+    for (const blobService of blobServices) {
+      assert.equal(blobService.properties.isVersioningEnabled, false);
+      assert.equal(blobService.properties.deleteRetentionPolicy.enabled, false);
+      assert.equal(blobService.properties.containerDeleteRetentionPolicy.enabled, false);
+    }
     const policy = resource("Microsoft.Storage/storageAccounts/managementPolicies")[0].properties.policy;
     assert.equal(policy.rules.length, 1);
     assert.match(policy.rules[0].definition.filters.prefixMatch[0], /cacheContainerName/);

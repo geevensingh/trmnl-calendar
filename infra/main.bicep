@@ -6,6 +6,7 @@ param resourceGroupName string
 param functionAppName string
 param planName string
 param storageAccountName string
+param releaseStorageAccountName string
 param hostIdentityName string
 param keyVaultName string
 param logAnalyticsName string
@@ -46,6 +47,7 @@ module calendar './resources.bicep' = {
     functionAppName: functionAppName
     planName: planName
     storageAccountName: storageAccountName
+    releaseStorageAccountName: releaseStorageAccountName
     hostIdentityName: hostIdentityName
     keyVaultName: keyVaultName
     logAnalyticsName: logAnalyticsName

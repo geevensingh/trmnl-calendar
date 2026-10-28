@@ -334,6 +334,42 @@ test("activation failure is visible in status without exposing its detailed diag
   assert.doesNotMatch(JSON.stringify(status), /private diagnostic|initial baseline/);
 });
 
+test("activation retains its first interruption after successful explicit recovery", async () => {
+  const ledger = memoryLedger();
+  const abort = new AbortController();
+  const withExclusive = ledger.withExclusive;
+  ledger.withExclusive = operation => withExclusive(() => operation(abort.signal));
+  const options = {
+    ledger, commit: commit("b"), actor: "owner", reason: "Initial activation",
+    azureBootstrapVerified: true, trmnlPreservationVerified: true,
+    services: {
+      async prepare(head, targets) {
+        return releaseArtifact(head, Object.fromEntries(targets.map(target => [target, `${target}/${head}`])));
+      },
+      async deployAndVerifyAzure() {
+        abort.abort(new Error("runner_stopped"));
+        throw abort.signal.reason;
+      }
+    }
+  };
+  options.services.publishAndVerifyTrmnl = async () => ({ verified: true });
+  await assert.rejects(activateReleaseBaseline(options), { message: "runner_stopped" });
+  ledger.withExclusive = withExclusive;
+  assert.equal((await ledger.read()).activation.status, "running");
+  assert.equal((await activateReleaseBaseline(options)).code, "interrupted_uncertain");
+  const failure = { stage: "azure_deploy", code: "interrupted_uncertain" };
+  assert.deepEqual((await ledger.read()).activation.first_failure, failure);
+  options.services.deployAndVerifyAzure = async () => ({ verified: true });
+  options.services.verifyArtifact = async () => true;
+  const recovered = await activateReleaseBaseline({
+    ...options, reason: "Confirmed interrupted mutation stopped", previousMutationStopped: true
+  });
+  assert.equal(recovered.status, "succeeded");
+  const activation = (await ledger.read()).activation;
+  assert.equal(activation.failure, null);
+  assert.deepEqual(activation.first_failure, failure);
+});
+
 test("main admission is FIFO, idempotent, and excludes known non-production commits", async () => {
   const ledger = await activatedLedger();
   const commits = [

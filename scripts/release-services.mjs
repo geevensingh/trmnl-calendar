@@ -344,7 +344,8 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
         return withParametersFile(parametersJson, async (parametersPath, parameters) => {
           if (
             parameters.parameters.resourceGroupName.value !== approvedGroup ||
-            parameters.parameters.storageAccountName?.value !== account ||
+            parameters.parameters.releaseStorageAccountName?.value !== account ||
+            parameters.parameters.storageAccountName?.value === account ||
             parameters.parameters.releaseControlContainerName?.value !== container ||
             parameters.parameters.releaseArtifactContainerName?.value !== artifactContainer
           ) {

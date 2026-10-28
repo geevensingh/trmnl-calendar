@@ -65,6 +65,7 @@ async function canonicalSettings(path, signal) {
       path
     ], {
       signal,
+      env: publisherEnvironment(),
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 1024 * 1024
@@ -117,11 +118,11 @@ function publisherEnvironment(apiKey) {
   const env = {};
   for (const key of [
     "PATH", "HOME", "USERPROFILE", "GEM_HOME", "GEM_PATH",
-    "RUBYOPT", "BUNDLE_GEMFILE", "BUNDLE_PATH"
+    "RUBYOPT", "RUBYLIB", "BUNDLE_GEMFILE", "BUNDLE_PATH", "SystemRoot", "TMP", "TEMP"
   ]) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
-  env.TRMNL_API_KEY = apiKey;
+  if (apiKey !== undefined) env.TRMNL_API_KEY = apiKey;
   return env;
 }
 

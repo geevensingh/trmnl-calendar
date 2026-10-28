@@ -2,6 +2,7 @@ param location string
 param functionAppName string
 param planName string
 param storageAccountName string
+param releaseStorageAccountName string
 param hostIdentityName string
 param keyVaultName string
 param logAnalyticsName string
@@ -86,8 +87,47 @@ resource packages 'Microsoft.Storage/storageAccounts/blobServices/containers@202
   }
 }
 
+resource releaseStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: releaseStorageAccountName
+  location: location
+  kind: 'StorageV2'
+  sku: {
+    name: 'Standard_LRS'
+  }
+  properties: {
+    accessTier: 'Hot'
+    supportsHttpsTrafficOnly: true
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    defaultToOAuthAuthentication: true
+    allowCrossTenantReplication: false
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource releaseBlobs 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: releaseStorage
+  name: 'default'
+  properties: {
+    isVersioningEnabled: false
+    deleteRetentionPolicy: {
+      enabled: false
+    }
+    containerDeleteRetentionPolicy: {
+      enabled: false
+    }
+    changeFeed: {
+      enabled: false
+    }
+    restorePolicy: {
+      enabled: false
+    }
+  }
+}
+
 resource releaseControl 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
-  parent: blobs
+  parent: releaseBlobs
   name: releaseControlContainerName
   properties: {
     publicAccess: 'None'
@@ -95,7 +135,7 @@ resource releaseControl 'Microsoft.Storage/storageAccounts/blobServices/containe
 }
 
 resource releaseArtifacts 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
-  parent: blobs
+  parent: releaseBlobs
   name: releaseArtifactContainerName
   properties: {
     publicAccess: 'None'

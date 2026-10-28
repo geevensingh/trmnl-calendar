@@ -59,7 +59,7 @@ if ($values.resourceGroupName -cne $ApprovedResourceGroupName) {
     throw 'The infrastructure target does not match the owner-approved resource group.'
 }
 $names = @(
-    'location', 'functionAppName', 'planName', 'storageAccountName', 'hostIdentityName',
+    'location', 'functionAppName', 'planName', 'storageAccountName', 'releaseStorageAccountName', 'hostIdentityName',
     'keyVaultName', 'logAnalyticsName', 'applicationInsightsName', 'budgetName',
     'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate', 'sourceSecretName', 'cacheContainerName',
     'deploymentContainerName', 'releaseControlContainerName', 'releaseArtifactContainerName',
@@ -78,7 +78,7 @@ foreach ($name in $names) {
     }
 }
 foreach ($name in @(
-    'location', 'functionAppName', 'planName', 'storageAccountName', 'hostIdentityName',
+    'location', 'functionAppName', 'planName', 'storageAccountName', 'releaseStorageAccountName', 'hostIdentityName',
     'keyVaultName', 'logAnalyticsName', 'applicationInsightsName', 'budgetName',
     'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate', 'sourceSecretName', 'cacheContainerName',
     'deploymentContainerName', 'releaseControlContainerName', 'releaseArtifactContainerName'
@@ -87,6 +87,9 @@ foreach ($name in @(
         [string]::IsNullOrWhiteSpace([string]$scopedParameters.parameters[$name].value)) {
         throw "Missing infrastructure runtime parameter: $name."
     }
+}
+if ($values.releaseStorageAccountName -ieq $values.storageAccountName) {
+    throw 'Release storage must use a separate account from Function runtime storage.'
 }
 Assert-AgendaOwnerAddress $scopedParameters.parameters.agendaOwnerAddress.value
 if ($scopedParameters.parameters.ContainsKey('releaseControllerPrincipalId') -and

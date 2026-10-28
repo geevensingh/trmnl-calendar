@@ -71,7 +71,7 @@ finally {
 $required = @(
     'location', 'resourceGroupName', 'functionAppName', 'planName', 'storageAccountName',
     'hostIdentityName', 'keyVaultName', 'logAnalyticsName', 'applicationInsightsName',
-    'budgetName', 'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate'
+    'budgetName', 'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate', 'releaseStorageAccountName'
 )
 $allowed = $required + @(
     'sourceSecretName', 'cacheContainerName', 'deploymentContainerName', 'retainHostDiagnostics',
@@ -97,6 +97,9 @@ foreach ($name in $required) {
 }
 if ($parameters.location.value -ne 'westus2') {
     throw 'This resource plan is approved only for westus2; a region change requires renewed approval.'
+}
+if ($parameters.releaseStorageAccountName.value -ieq $parameters.storageAccountName.value) {
+    throw 'Release storage must use a separate account from Function runtime storage.'
 }
 Assert-AgendaOwnerAddress $parameters.agendaOwnerAddress.value
 $budgetStart = [DateTimeOffset]::MinValue

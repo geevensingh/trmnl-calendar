@@ -62,9 +62,12 @@ public sealed class AdaptiveDisplayTests
         var weight = view.Device == "og" ? 700 : 600;
         await page.AddStyleTagAsync(new()
         {
-            Content = $".agenda td .title {{ --title-font-weight: {weight}; font-weight: {weight}; font-variation-settings: 'wght' {weight}; }}"
+            Content = $".agenda td .title {{ --title-font-weight: {weight} !important; font-weight: {weight} !important; font-variation-settings: 'wght' {weight} !important; }}"
         });
         await page.EvaluateAsync("() => document.fonts.ready");
+        Assert.All(await titles.EvaluateAllAsync<string[]>(
+            "titles => titles.map(title => getComputedStyle(title).fontWeight)"),
+            actualWeight => Assert.Equal(weight.ToString(), actualWeight));
         regions = await Glyphs();
         await page.ScreenshotAsync(new() { Path = referenceImage });
         using var reference = JsonDocument.Parse(DisplayTests.RunRuby(

@@ -96,6 +96,12 @@ function New-ValidationReport([string]$Root, [string]$Scope) {
             tools = [ordered]@{ powershell = $PSVersionTable.PSVersion.ToString() }
             cache = [ordered]@{
                 dependency_cache_hit = 'unknown (no cache restore evidence supplied)'
+                gems_restore = if ($env:TRMNL_GEMS_CACHE_STATE -in @('exact-hit', 'not-hit', 'not-restored')) {
+                    $env:TRMNL_GEMS_CACHE_STATE
+                } else { 'unknown' }
+                framework_restore = if ($env:TRMNL_FRAMEWORK_CACHE_STATE -in @('exact-hit', 'not-hit', 'not-restored')) {
+                    $env:TRMNL_FRAMEWORK_CACHE_STATE
+                } else { 'unknown' }
                 worktree_bundle_present = Test-Path -LiteralPath (Join-Path $Root 'vendor\bundle')
                 framework_present = Test-Path -LiteralPath (Join-Path $Root '.tools\framework')
                 browser_selection = if ($env:PLAYWRIGHT_BROWSERS_PATH) { 'explicit' } else { 'default shared cache' }

@@ -140,6 +140,8 @@ Each selector matrix reuses one synthetic standard/linked owner pair, verifying 
 
 ### Display setup troubleshooting
 
+CI can restore exact-key native gems and pinned framework/fonts into absent worktree destinations before this same setup runs. A hit never bypasses frozen restoration, native loading, complete assets, SDK restore/build or a real Chromium launch. Existing worktree destinations and shared NuGet/browser selections are not replaced by cache restoration; fork PRs use normal uncached setup. See the [isolated cache checkpoint](docs/ci-validation-design.md#verified-dependency-cache-checkpoint-84) for scope, provenance, measurement and rollback. Local setup behavior is unchanged.
+
 | Failure | Recovery |
 |---|---|
 | Ruby missing, unusable or not major 4 | Set `TRMNL_RUBY` to a working existing Ruby 4 executable, or explicitly install Ruby+Devkit as above. An invalid explicit/local selection never silently falls back. |

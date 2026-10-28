@@ -16,6 +16,7 @@ The owner's private resource plan supplies the subscription, exact resource name
 | Shared storage | One Hot StorageV2 Standard LRS account for host state, deployment packages, and a private source-cache container; no anonymous blobs or shared-key authentication |
 | Host identity | User-assigned identity for host/deployment storage, not the application's cache credential |
 | Source secret | Standard RBAC Key Vault; versionless Key Vault reference in `Agenda__SourceUrl`; the template never accepts the source URL |
+| Participation owner identity | Adapter-only `Agenda__OwnerAddress`, an exact `mailto:` address; no HTTP or plugin input |
 | Telemetry | Workspace-based Application Insights with Entra ingestion authentication; Log Analytics PerGB2018, 30-day retention, 0.1 GB/day backup ingestion cap |
 | Budget | Resource-group monthly $20; actual-spend alerts at **$10/$16/$20** (50/80/100%), forecast warning at 100% |
 
@@ -92,6 +93,25 @@ Comparison is ordinal exact equality. `same_after_trimming`, `same_uri_represent
 
 Each attempt reads at most the production **2 MiB** source limit with strict UTF-8. It uses the production **30-second combined headers/body** deadline and the same actual `Interpret` path, installed Ical.Net and maintained timezone resolver, with a **35-second overall source-check** deadline. It does not create another parser, change recurrence/timezone semantics, accept partial agendas, apply rule fallbacks, or persist a last-good source. `calendar_media_type`/`html_media_type` are booleans only; content type is not substituted for actual production interpretation.
 
+Participation-capability evidence is a fixed, boolean-only `participation_capabilities` object on each successfully interpreted attempt. It contains no identities, event counts, response values, or calendar text:
+
+| Observation | Meaning |
+| --- | --- |
+| `owner_address_configured` | An approved adapter-side identity is present as one valid `mailto:` mailbox, without whitespace/controls, query, fragment, or display name. |
+| `owner_organizer_observed` / `owner_attendee_observed` | An organizer / attendee matches that exact mailbox, case-insensitively. Names, other attendees, source URLs and guessed aliases never establish identity. |
+| `owner_participation_status_observed` | A matching attendee explicitly supplies a `PARTSTAT` parameter, even if its value is unsupported or the owner match is ambiguous. This is **not** the usable-response flag. |
+| `owner_response_usable_observed` | At least one event has exactly one matching owner attendee supplying exactly one supported response: accepted, declined, tentative, or needs-action. A parser's default response is not supplied evidence. |
+| `owner_response_missing_observed` | A matching owner attendee has no supplied `PARTSTAT`. This does not establish an unanswered invitation. |
+| `owner_response_unsupported_observed` | A matching owner attendee supplies response evidence outside that supported single-value set, including delegated or extension values. |
+| `owner_attendee_ambiguous_observed` | An event has multiple matching owner attendees. None of those matches establishes a usable response, even if their response values agree. |
+| `free_availability_observed` / `followed_title_marker_observed` | Explicit `TRANSP:TRANSPARENT` / a `Following: ` title prefix was observed. These are candidate markers, not verification of the publication's owner-specific Free/followed semantics. |
+
+These are independent aggregate observations: usable evidence on one event does not repair ambiguous, missing or unsupported evidence on another. With no valid owner identity, all owner-specific flags are false; with no owner match, no personal response is inferred. Overall event `STATUS`, missing metadata and another attendee's response are never personal response evidence. A false observation means only “not observed in this checked sample,” not that the publication never supplies it.
+
+The operator supplies `Agenda__OwnerAddress` to the protected process through approved adapter configuration; the value is never prompted for, logged, or written into the report. Do not inspect secrets/settings automatically or include the identity in arguments, chat, tickets or screenshots. Failed/unsupported interpretation and acquisition failures have `participation_capabilities: null`, with their explicit phase failure/unperformed codes; partial parser observations are discarded. Authorization/input failures have no attempts. None is a successful capability check.
+
+`measurement_scope.participation_semantics` remains `not_verified`, including on a successful acquisition/interpretation check. Production remains **Unknown-only** pending owner-authorized actual-publication evidence and its acceptance. Downstream classification must not use these synthetic observations, structural support, or `checks_passed` as that acceptance. Record only safe conclusions and limitations on [#60](https://github.com/geevensingh/trmnl-calendar/issues/60); actual-source access is currently unperformed and remains an owner gate. Do not close the ticket or clear its implementation blockers from synthetic evidence alone.
+
 The JSON report separates acquisition (`received`, `redirect_refused`, `http_rejected`, `transport_failed`, `headers_timeout`, `body_timeout`, `source_too_large`, `invalid_utf8`) from actual interpretation (`supported`, production invalid/unsupported codes, or an interpretation timeout). HTTP status, bounded phase durations and aggregate body size are safe metadata. A received HTML page is not a supported calendar. Absent headers, unread bodies, unperformed interpretation and unrequested polling are explicit null/unperformed evidence, never assumed successes.
 
 There is **one attempt by default**, no preliminary warmup and no automatic source retry. `--attempts 2` explicitly requests one additional measurement, retaining both in order; any failed attempt keeps the command unsuccessful. Design-budget assessments always identify **attempt 1**, so a warm second success cannot rescue its failure. A saved report is created exclusively and never overwrites an existing file; use a new report name for every later invocation and preserve the original red evidence.
@@ -125,7 +145,7 @@ dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restor
 
 ## Runtime inputs and read-only preflight
 
-Copy `infra\parameters.example.json` into ignored runtime storage, fill its empty values from the approved private plan, and protect that file. Keep `budgetAlertEmail` a runtime input; it is also a secure ARM parameter. The subscription is a command parameter, never a committed default.
+Copy `infra\parameters.example.json` into ignored runtime storage, fill its empty values from the approved private plan, and protect that file. Keep `budgetAlertEmail` and `agendaOwnerAddress` runtime-only; both are secure ARM parameters at subscription and resource-module boundaries, without defaults or identity outputs. Secure ARM treatment does not encrypt this local parameter file. Missing, invalid or multi-address owner input fails before any Azure call, without printing its value. Valid `mailto:` input is validated using its complete decoded mailbox, not the empty .NET `UriComponents.Path`. Only the parameter-file reference enters Azure CLI arguments; neither owner identity nor recipient values do. The subscription is a command parameter, never a committed default.
 
 ```powershell
 New-Item -ItemType Directory -Force .\artifacts\infra | Out-Null

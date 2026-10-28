@@ -41,9 +41,9 @@ function instantTicks(value) {
 export function validateAgenda(data) {
   if (!fields(data, ["schema_version", "state", "time_zone", "generated_at",
     "source_succeeded_at", "primary", "secondary", "error"]))
-    reject("agenda", "supply exactly the agenda fields.");
-  if (![1, agendaSchemaVersion].includes(data.schema_version))
-    reject("agenda.schema_version", `only schemas 1 and ${agendaSchemaVersion} are supported.`);
+    reject("agenda", "supply exactly the version-2 agenda fields.");
+  if (data.schema_version !== agendaSchemaVersion)
+    reject("agenda.schema_version", `only schema ${agendaSchemaVersion} is supported.`);
   if (!["current", "stale", "error"].includes(data.state))
     reject("agenda.state", "use current, stale, or error.");
   if (data.time_zone !== "America/Los_Angeles")
@@ -73,8 +73,8 @@ export function validateAgenda(data) {
         reject(occurrencePath, "supply a timed or all_day occurrence object.");
       const allDay = occurrence.time_kind === "all_day";
       const timing = allDay ? ["start_date", "end_date_exclusive"] : ["start_at", "end_at"];
-      const optional = !allDay && data.schema_version === 2 ? ["location", "emphasis"] : ["location"];
-      if (!fields(occurrence, ["time_kind", "id", "title", ...timing], optional)
+      const optional = allDay ? ["location"] : ["location", "emphasis"];
+      if (!fields(occurrence, ["time_kind", "id", "title", "participation_expectation", ...timing], optional)
         || !["all_day", "timed"].includes(occurrence.time_kind))
         reject(occurrencePath, "supply the fields for exactly one timed or all_day occurrence.");
       if (!allDay && occurrence.emphasis !== undefined
@@ -84,6 +84,8 @@ export function validateAgenda(data) {
         reject(`${occurrencePath}.id`, "supply a nonempty opaque identifier.");
       if (typeof occurrence.title !== "string")
         reject(`${occurrencePath}.title`, "supply a string.");
+      if (!["definite", "likely", "maybe", "unlikely", "unknown"].includes(occurrence.participation_expectation))
+        reject(`${occurrencePath}.participation_expectation`, "use definite, likely, maybe, unlikely, or unknown.");
       if (occurrence.location !== undefined && occurrence.location !== null && typeof occurrence.location !== "string")
         reject(`${occurrencePath}.location`, "supply a string or null, or omit the field.");
       if (allDay ? !calendarDate(occurrence.start_date) || !calendarDate(occurrence.end_date_exclusive)

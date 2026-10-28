@@ -32,7 +32,7 @@ test("Functions diagnostics allow complete agenda traces without automatic URL c
 test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and separate identities", () => {
     const build = spawnSync("pwsh", [
       "-NoProfile", "-NonInteractive", "-Command",
-      "az bicep build --file .\\infra\\main.bicep --stdout --only-show-errors"
+      "az bicep build --file ./infra/main.bicep --stdout --only-show-errors"
     ], { cwd: root, encoding: "utf8", timeout: 120_000 });
     assert.equal(build.status, 0, build.stderr);
     const main = JSON.parse(build.stdout);
@@ -64,6 +64,7 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
     assert.ok(settings.AzureWebJobsStorage__clientId);
     assert.ok(settings.Agenda__CacheServiceUri);
     assert.ok(settings.Agenda__CacheContainer);
+    assert.match(settings.Agenda__OwnerAddress, /parameters\('agendaOwnerAddress'\)/);
     assert.match(settings.Agenda__SourceUrl, /@Microsoft\.KeyVault\(SecretUri=/);
     assert.doesNotMatch(settings.Agenda__SourceUrl, /\/\)/,
       "Use the documented versionless secret URI, without an empty trailing version segment.");
@@ -73,6 +74,14 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
     assert.equal(settings.WEBSITE_RUN_FROM_PACKAGE, undefined);
     assert.equal(template.parameters.budgetAlertEmail.type.toLowerCase(), "securestring");
     assert.equal(template.parameters.budgetAlertEmail.defaultValue, undefined);
+    assert.equal(template.parameters.agendaOwnerAddress.type.toLowerCase(), "securestring");
+    assert.equal(template.parameters.agendaOwnerAddress.defaultValue, undefined);
+    assert.equal(main.parameters.agendaOwnerAddress.type.toLowerCase(), "securestring");
+    assert.equal(main.parameters.agendaOwnerAddress.defaultValue, undefined);
+    assert.equal(main.resources.find(resource => resource.type === "Microsoft.Resources/deployments")
+      .properties.parameters.agendaOwnerAddress.value, "[parameters('agendaOwnerAddress')]");
+    assert.ok(!JSON.stringify(main.outputs).includes("agendaOwnerAddress"));
+    assert.ok(!JSON.stringify(template.outputs).includes("agendaOwnerAddress"));
     assert.equal(main.parameters.functionAppName.defaultValue, undefined);
     assert.equal(main.parameters.budgetStartDate.defaultValue, undefined,
       "The original budget start date must be a persistent runtime input, not drift on every month's redeploy.");
@@ -110,4 +119,9 @@ test("compiled Azure plan is Linux .NET 10 Flex with one on-demand instance and 
       [item.thresholdType, item.threshold]), [["Actual", 50], ["Actual", 80], ["Actual", 100], ["Forecasted", 100]]);
     assert.ok(Object.values(budget.properties.notifications).every(item =>
       item.enabled && item.contactEmails[0].includes("parameters('budgetAlertEmail')")));
+});
+
+test("the checked-in parameter example has only an empty protected owner-identity slot", async () => {
+  const example = JSON.parse(await readFile(join(root, "infra", "parameters.example.json"), "utf8"));
+  assert.deepEqual(example.parameters.agendaOwnerAddress, { value: "" });
 });

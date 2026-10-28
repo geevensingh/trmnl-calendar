@@ -3,7 +3,7 @@
   "name": "Empty secondary day",
   "description": "A populated primary day and an explicitly empty secondary day.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "current",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-23T18:00:00Z",
@@ -13,7 +13,7 @@
       "label": "Friday, Oct 23",
       "eligible_total": 1,
       "occurrences": [
-        { "time_kind": "timed", "id": "primary-only", "title": "Primary commitment", "location": null, "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" }
+        { "time_kind": "timed", "id": "primary-only", "title": "Primary commitment", "participation_expectation": "definite", "location": null, "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" }
       ]
     },
     "secondary": { "date": "2026-10-26", "label": "Monday, Oct 26", "eligible_total": 0, "occurrences": [] },

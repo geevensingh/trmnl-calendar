@@ -26,11 +26,14 @@ markup =
     puts JSON.generate(YAML.safe_load(File.read(File.join(template_root, "settings.yml"))))
     exit
   when *views
-    abort "Unsupported agenda schema; use 1 (ordinary) or 2." unless [1, 2].include?(variables["schema_version"])
-    if variables["schema_version"] == 1 && %w[primary secondary].any? { |day|
-      variables.fetch(day).fetch("occurrences").any? { |occurrence| occurrence.key?("emphasis") }
-    }
-      abort "Emphasis requires agenda schema 2."
+    abort "Unsupported agenda schema; use 2 with required participation expectations." unless variables["schema_version"] == 2
+    participation_expectations = %w[definite likely maybe unlikely unknown]
+    %w[primary secondary].each do |day|
+      variables.fetch(day).fetch("occurrences").each do |occurrence|
+        unless participation_expectations.include?(occurrence["participation_expectation"])
+          abort "Invalid participation expectation; supply definite, likely, maybe, unlikely, or unknown."
+        end
+      end
     end
     File.read(File.join(template_root, "shared.liquid")) +
       File.read(File.join(template_root, "#{mode}.liquid"))

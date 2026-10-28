@@ -16,6 +16,10 @@ param budgetName string
 @minLength(3)
 param budgetAlertEmail string
 
+@secure()
+@description('Protected exact owner mailto: identity for capability observations; does not establish source semantics or enable classification.')
+param agendaOwnerAddress string
+
 @description('Original budget creation month start in UTC; preserve it on repeat deployments.')
 param budgetStartDate string
 param sourceSecretName string = 'calendar-source-url'
@@ -44,6 +48,7 @@ module calendar './resources.bicep' = {
     applicationInsightsName: applicationInsightsName
     budgetName: budgetName
     budgetAlertEmail: budgetAlertEmail
+    agendaOwnerAddress: agendaOwnerAddress
     budgetStartDate: budgetStartDate
     sourceSecretName: sourceSecretName
     cacheContainerName: cacheContainerName

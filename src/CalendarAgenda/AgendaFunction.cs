@@ -266,7 +266,7 @@ public sealed partial class AgendaFunction
     }
 
     private AgendaResult Interpret(string ics, ExclusionRule[] rules, DateTimeOffset now,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, Action<Calendar>? calendarParsed = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Calendar calendar;
@@ -277,6 +277,7 @@ public sealed partial class AgendaFunction
             if (components.Length != 1 || components[0] is not Calendar parsed)
                 return Fail("source_invalid", "The source must contain exactly one calendar.");
             calendar = parsed;
+            calendarParsed?.Invoke(calendar);
         }
         catch (Exception error) when (error is SerializationException or FormatException or ArgumentException
             or InvalidOperationException or OverflowException or RegexMatchTimeoutException)
@@ -405,11 +406,13 @@ public sealed partial class AgendaFunction
                         : start.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                     var id = Convert.ToHexStringLower(SHA256.HashData(
                         Encoding.UTF8.GetBytes($"{item.Uid}\n{key}")));
+                    // Known labels require accepted owner-authorized source evidence; this tracer stays Unknown-only.
+                    const ParticipationExpectation expectation = ParticipationExpectation.Unknown;
                     AgendaOccurrence occurrence = start.HasTime
                         ? new TimedOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
-                            new DateTimeOffset(start.AsUtc), new DateTimeOffset(end.AsUtc))
+                            new DateTimeOffset(start.AsUtc), new DateTimeOffset(end.AsUtc), expectation)
                         : new AllDayOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
-                            DateOnly.FromDateTime(start.Value), DateOnly.FromDateTime(end.Value));
+                            DateOnly.FromDateTime(start.Value), DateOnly.FromDateTime(end.Value), expectation);
                     return (Occurrence: occurrence,
                         IsActive: item.IsActive && (!masters.TryGetValue(item.Uid!, out var master) || master.IsActive),
                         SourceTitle: item.Summary);
@@ -451,6 +454,32 @@ public sealed partial class AgendaFunction
         public override ICalendarObjectList<ICalendarObject> Children => source.Children;
         public override IEnumerable<IRecurrable> RecurringItems =>
             source.Events.Where(item => item.DtStart?.HasTime == timed);
+    }
+
+    private static string? ConfiguredOwnerAddress(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || !Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || uri.Scheme != Uri.UriSchemeMailto
+            || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            return null;
+        return MailboxAddress(uri);
+    }
+
+    private static bool IsOwnerAddress(Uri? value, string ownerAddress) =>
+        string.Equals(MailboxAddress(value), ownerAddress, StringComparison.OrdinalIgnoreCase);
+
+    private static string? MailboxAddress(Uri? value)
+    {
+        if (value is not { IsAbsoluteUri: true } || value.Scheme != Uri.UriSchemeMailto
+            || value.Query.Length != 0 || value.Fragment.Length != 0)
+            return null;
+        var mailto = value.GetComponents(UriComponents.AbsoluteUri, UriFormat.Unescaped);
+        if (!mailto.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
+            return null;
+        var address = mailto["mailto:".Length..];
+        return string.IsNullOrWhiteSpace(address) || address.Contains(',') || address.Any(char.IsWhiteSpace)
+            ? null : address;
     }
 
     private static async Task<(ExclusionRule[] Rules, AgendaError? Error)> ValidateRequest(HttpRequest request)

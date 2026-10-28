@@ -69,7 +69,7 @@ finally {
 $required = @(
     'location', 'resourceGroupName', 'functionAppName', 'planName', 'storageAccountName',
     'hostIdentityName', 'keyVaultName', 'logAnalyticsName', 'applicationInsightsName',
-    'budgetName', 'budgetAlertEmail', 'budgetStartDate'
+    'budgetName', 'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate'
 )
 $allowed = $required + @(
     'sourceSecretName', 'cacheContainerName', 'deploymentContainerName', 'retainHostDiagnostics'
@@ -87,6 +87,21 @@ foreach ($name in $required) {
 }
 if ($parameters.location.value -ne 'westus2') {
     throw 'This resource plan is approved only for westus2; a region change requires renewed approval.'
+}
+$ownerUri = $null
+$ownerMailbox = $null
+$ownerAddress = $null
+if (![System.Uri]::TryCreate($parameters.agendaOwnerAddress.value, [System.UriKind]::Absolute, [ref]$ownerUri) -or
+    $ownerUri.Scheme -cne 'mailto' -or $ownerUri.Query -or $ownerUri.Fragment -or
+    $parameters.agendaOwnerAddress.value -match '\s|\p{Cc}') {
+    throw 'agendaOwnerAddress must be one exact mailto: address.'
+}
+$ownerAddress = $ownerUri.GetComponents([System.UriComponents]::AbsoluteUri, [System.UriFormat]::Unescaped).
+    Substring('mailto:'.Length)
+if (![System.Net.Mail.MailAddress]::TryCreate($ownerAddress, [ref]$ownerMailbox) -or
+    $ownerMailbox.Address -cne $ownerAddress -or $ownerAddress.Contains(',') -or
+    $ownerAddress -match '\s|\p{Cc}') {
+    throw 'agendaOwnerAddress must be one exact mailto: address.'
 }
 $budgetStart = [DateTimeOffset]::MinValue
 if ($parameters.budgetStartDate.value -notmatch '^\d{4}-\d{2}-01T00:00:00Z$' -or

@@ -143,8 +143,6 @@ async function runCli() {
       actor: process.env.GITHUB_ACTOR ?? "",
       reason: values.reason,
       azureBootstrapVerified: process.env.AZURE_BOOTSTRAP_VERIFIED === "true",
-      trmnlPreservationVerified: Boolean(process.env.TRMNL_PLUGIN_ID) &&
-        process.env.TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID === process.env.TRMNL_PLUGIN_ID,
       trmnlBackupRecoveryAccepted: Boolean(process.env.TRMNL_PLUGIN_ID) &&
         process.env.TRMNL_BACKUP_RECOVERY_ACCEPTED_PLUGIN_ID === process.env.TRMNL_PLUGIN_ID,
       previousMutationStopped,

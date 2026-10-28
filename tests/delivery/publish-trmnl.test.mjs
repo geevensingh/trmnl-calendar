@@ -37,7 +37,6 @@ test("TRMNL publisher pins the existing plugin ID and verifies pulled definition
   const result = await publishTrmnl({
     sourceDirectory,
     pluginId: "12345",
-    preservationVerifiedPluginId: "12345",
     backupRecoveryAcceptedPluginId: "12345",
     apiKey: "synthetic-key",
     runCommand: async (command, args, { env, cwd }) => {
@@ -69,27 +68,7 @@ test("TRMNL publisher pins the existing plugin ID and verifies pulled definition
   assert.equal(result.verified, true);
   assert.match(result.identity, /^sha256:[a-f0-9]{64}$/);
   assert.equal(result.pluginId, "12345");
-  assert.equal(result.preservation_basis, "synthetic_verified");
-});
-
-test("TRMNL publisher accepts plugin-specific backup recovery approval without claiming preservation proof", async t => {
-  const sourceDirectory = await pluginSource(t);
-  const calls = [];
-  const result = await publishTrmnl({
-    sourceDirectory,
-    pluginId: "12345",
-    preservationVerifiedPluginId: "different-plugin",
-    backupRecoveryAcceptedPluginId: "12345",
-    apiKey: "synthetic-key",
-    runCommand: async (_command, args, { cwd }) => {
-      calls.push(args);
-      if (args[0] === "pull") await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
-    }
-  });
-  assert.deepEqual(calls.map(args => args[0]), ["pull", "push", "pull"]);
-  assert.ok(calls.every(args => args.includes("12345")));
-  assert.equal(result.verified, true);
-  assert.equal(result.preservation_basis, "owner_backup_manual_recovery");
+  assert.deepEqual(Object.keys(result).sort(), ["identity", "pluginId", "verified"]);
 });
 
 test("settings parser receives tool settings but no workflow credentials or Azure configuration", async t => {
@@ -120,7 +99,7 @@ test("settings parser receives tool settings but no workflow credentials or Azur
     }
   });
   const result = await publishTrmnl({
-    sourceDirectory, pluginId: "12345", preservationVerifiedPluginId: "12345",
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345",
     runCommand: async (_command, args, { env, cwd }) => {
       assert.equal(env.TRMNL_API_KEY, injected.TRMNL_API_KEY);
       for (const name of protectedNames.filter(name => name !== "TRMNL_API_KEY")) {
@@ -139,32 +118,25 @@ test("settings parser receives tool settings but no workflow credentials or Azur
   for (const [name, value] of Object.entries(injected)) assert.equal(process.env[name], value);
 });
 
-test("TRMNL publisher fails closed for missing or unproven target identity without contacting TRMNL", async t => {
+test("TRMNL publisher requires an exact plugin-specific backup approval before contacting TRMNL", async t => {
   const sourceDirectory = await pluginSource(t);
   let calls = 0;
   const runCommand = async () => { calls += 1; };
   await assert.rejects(publishTrmnl({
     sourceDirectory,
     pluginId: "",
-    preservationVerifiedPluginId: "",
+    backupRecoveryAcceptedPluginId: "",
     apiKey: "synthetic-key",
     runCommand
   }), { message: "trmnl_target_identity_missing" });
-  await assert.rejects(publishTrmnl({
-    sourceDirectory,
-    pluginId: "12345",
-    preservationVerifiedPluginId: "different-plugin",
-    apiKey: "synthetic-key",
-    runCommand
-  }), { message: "trmnl_preservation_gate_missing" });
-  for (const backupRecoveryAcceptedPluginId of ["", "true", "12346"]) {
+  for (const backupRecoveryAcceptedPluginId of [undefined, "", "true", "12346"]) {
     await assert.rejects(publishTrmnl({
       sourceDirectory,
       pluginId: "12345",
       backupRecoveryAcceptedPluginId,
       apiKey: "synthetic-key",
       runCommand
-    }), { message: "trmnl_preservation_gate_missing" });
+    }), { message: "trmnl_backup_approval_missing" });
   }
   assert.equal(calls, 0);
 });
@@ -174,7 +146,7 @@ test("TRMNL publisher rejects content mismatch after the remote pull", async t =
   await assert.rejects(publishTrmnl({
     sourceDirectory,
     pluginId: "12345",
-    preservationVerifiedPluginId: "12345",
+    backupRecoveryAcceptedPluginId: "12345",
     apiKey: "synthetic-key",
     runCommand: async (_command, args, { cwd }) => {
       if (args[0] === "pull") {
@@ -197,7 +169,7 @@ test("sequential TRMNL releases retain the parent credential while isolating chi
     const result = await publishTrmnl({
       sourceDirectory,
       pluginId: "12345",
-      preservationVerifiedPluginId: "12345",
+      backupRecoveryAcceptedPluginId: "12345",
       runCommand: async (_command, args, { env, cwd }) => {
         assert.equal(env.TRMNL_API_KEY, "synthetic-key");
         if (args[0] === "pull") await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
@@ -214,7 +186,7 @@ test("TRMNL verification rejects an archive missing a template instead of using 
   await assert.rejects(publishTrmnl({
     sourceDirectory,
     pluginId: "12345",
-    preservationVerifiedPluginId: "12345",
+    backupRecoveryAcceptedPluginId: "12345",
     apiKey: "synthetic-key",
     runCommand: async (_command, args, { cwd }) => {
       if (args[0] === "pull") {
@@ -233,7 +205,7 @@ test("publisher cancellation reaches the active push and prevents a subsequent p
   await assert.rejects(publishTrmnl({
     sourceDirectory,
     pluginId: "12345",
-    preservationVerifiedPluginId: "12345",
+    backupRecoveryAcceptedPluginId: "12345",
     apiKey: "synthetic-key",
     signal: abort.signal,
     runCommand: async (_command, args, { signal, cwd }) => {
@@ -278,7 +250,7 @@ test("publisher refuses to infer preservation when the deployed field schema is 
   const sourceDirectory = await pluginSource(t);
   const commands = [];
   await assert.rejects(publishTrmnl({
-    sourceDirectory, pluginId: "12345", preservationVerifiedPluginId: "12345", apiKey: "synthetic-key",
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
     runCommand: async (_command, args, { cwd }) => {
       commands.push(args[0]);
       await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
@@ -308,7 +280,7 @@ test("settings comparison ignores mapping-key order recursively but preserves ar
   ].join("\n");
   let reverseArray = false;
   const options = {
-    sourceDirectory, pluginId: "12345", preservationVerifiedPluginId: "12345", apiKey: "synthetic-key",
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
     runCommand: async (_command, args, { cwd }) => {
       if (args[0] === "pull") {
         await cp(sourceDirectory, join(cwd, "src"), { recursive: true });

@@ -77,7 +77,7 @@ test("release runner admits first-parent main commits and drains their FIFO queu
       actor: "owner",
       reason: "test activation",
       azureBootstrapVerified: true,
-      trmnlPreservationVerified: true,
+      trmnlBackupRecoveryAccepted: true,
       services: {
         async prepare(commit, targets) {
           return {
@@ -216,6 +216,6 @@ test("activation recovery resumes the recorded commit and retained artifacts aft
   const state = await ledger.read();
   assert.equal(state.activation.recovery.actor, "owner");
   assert.equal(state.activation.recovery.previous_mutation_stopped, true);
-  assert.equal(state.activation.trmnl_preservation_basis, "owner_backup_manual_recovery");
+  assert.equal(state.activation.trmnl_backup_recovery_accepted, true);
   assert.equal((await listReleaseStatus({ ledger })).activation.failure, null);
 });

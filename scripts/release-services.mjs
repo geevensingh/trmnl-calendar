@@ -411,12 +411,11 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
           const result = await publishTrmnl({
             sourceDirectory: source,
             pluginId: process.env.TRMNL_PLUGIN_ID,
-            preservationVerifiedPluginId: process.env.TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID,
             backupRecoveryAcceptedPluginId: process.env.TRMNL_BACKUP_RECOVERY_ACCEPTED_PLUGIN_ID,
             apiKey: process.env.TRMNL_API_KEY,
             signal
           });
-          return { verified: result.verified, preservation_basis: result.preservation_basis };
+          return { verified: result.verified };
         } finally {
           await rm(directory, { recursive: true, force: true });
         }

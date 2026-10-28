@@ -143,8 +143,8 @@ function validateState(state) {
     !("azure" in state.baselines) ||
     !("trmnl" in state.baselines)
   ) throw new Error("ledger_invalid");
-  if (state.activation?.trmnl_preservation_basis !== undefined &&
-    !["synthetic_verified", "owner_backup_manual_recovery"].includes(state.activation.trmnl_preservation_basis)) {
+  if (state.activation?.trmnl_backup_recovery_accepted !== undefined &&
+    state.activation.trmnl_backup_recovery_accepted !== true) {
     throw new Error("ledger_invalid");
   }
   if (state.checkpoint !== null) assertCommit(state.checkpoint);
@@ -222,18 +222,15 @@ export async function activateReleaseBaseline({
   actor,
   reason,
   azureBootstrapVerified,
-  trmnlPreservationVerified,
   trmnlBackupRecoveryAccepted,
   previousMutationStopped = false,
   services
 }) {
   assertCommit(commit);
   assertAttribution(actor, reason);
-  const preservationBasis = trmnlPreservationVerified === true ? "synthetic_verified"
-    : trmnlBackupRecoveryAccepted === true ? "owner_backup_manual_recovery" : null;
   if (
     azureBootstrapVerified !== true ||
-    !preservationBasis
+    trmnlBackupRecoveryAccepted !== true
   ) throw new Error("activation_evidence_required");
   return ledger.withExclusive(async signal => {
     const state = validateState((await ledger.read()) ?? newState());
@@ -284,7 +281,7 @@ export async function activateReleaseBaseline({
       state.activation.reason = reason.trim();
     }
     const activation = state.activation;
-    activation.trmnl_preservation_basis = preservationBasis;
+    activation.trmnl_backup_recovery_accepted = true;
     const save = async () => {
       signal?.throwIfAborted();
       state.updated_at = new Date().toISOString();
@@ -332,7 +329,7 @@ export async function activateReleaseBaseline({
       await save();
       return {
         active: true, baseline: commit, targets: [...TARGETS], status: "succeeded",
-        trmnl_preservation_basis: preservationBasis
+        trmnl_backup_recovery_accepted: true
       };
     } catch (error) {
       activation.status = "failed";
@@ -590,7 +587,7 @@ export async function listReleaseStatus({ ledger }) {
         commit: state.activation.commit,
         status: state.activation.status,
         stage: state.activation.stage,
-        trmnl_preservation_basis: state.activation.trmnl_preservation_basis ?? null,
+        trmnl_backup_recovery_accepted: state.activation.trmnl_backup_recovery_accepted ?? null,
         target_results: { ...state.activation.target_results },
         recovery_confirmation_required: requiresRecoveryConfirmation(state.activation),
         failure: state.activation.failure ?? null

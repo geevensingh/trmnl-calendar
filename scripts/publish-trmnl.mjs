@@ -130,12 +130,15 @@ export async function publishTrmnl({
   sourceDirectory,
   pluginId,
   preservationVerifiedPluginId,
+  backupRecoveryAcceptedPluginId,
   apiKey = process.env.TRMNL_API_KEY,
   runCommand,
   signal
 }) {
   if (!pluginIdPattern.test(pluginId ?? "")) fail("trmnl_target_identity_missing");
-  if (preservationVerifiedPluginId !== pluginId) fail("trmnl_preservation_gate_missing");
+  const preservationBasis = preservationVerifiedPluginId === pluginId ? "synthetic_verified"
+    : backupRecoveryAcceptedPluginId === pluginId ? "owner_backup_manual_recovery" : null;
+  if (!preservationBasis) fail("trmnl_preservation_gate_missing");
   if (typeof apiKey !== "string" || !apiKey || apiKey.length > 512 ||
     /[\s\x00-\x1f\x7f]/.test(apiKey)) fail("trmnl_authentication_missing");
 
@@ -195,7 +198,8 @@ export async function publishTrmnl({
     return {
       verified: true,
       identity: `sha256:${deployedHash}`,
-      pluginId
+      pluginId,
+      preservation_basis: preservationBasis
     };
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });

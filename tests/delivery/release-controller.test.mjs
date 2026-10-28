@@ -256,21 +256,46 @@ for (const stage of ["selection", "prepare"]) {
   });
 }
 
-test("activation refuses missing bootstrap or synthetic preservation evidence before deploying", async () => {
+test("activation requires Azure bootstrap and either preservation proof or explicit backup recovery acceptance", async () => {
+  for (const approval of [
+    { azureBootstrapVerified: false, trmnlPreservationVerified: true },
+    { azureBootstrapVerified: true, trmnlPreservationVerified: false },
+    { azureBootstrapVerified: false, trmnlBackupRecoveryAccepted: true },
+    { azureBootstrapVerified: true, trmnlBackupRecoveryAccepted: "true" }
+  ]) {
+    const ledger = memoryLedger();
+    await assert.rejects(activateReleaseBaseline({
+      ledger, commit: commit("a"), actor: "owner", reason: "initial release",
+      ...approval, services: {}
+    }), { message: "activation_evidence_required" });
+    assert.equal(await ledger.read(), null);
+  }
+});
+
+test("backup-approved activation records its attributed basis without marking preservation as verified", async () => {
   const ledger = memoryLedger();
-  await assert.rejects(
-    activateReleaseBaseline({
-      ledger,
-      commit: commit("a"),
-      actor: "owner",
-      reason: "initial release",
-      azureBootstrapVerified: false,
-      trmnlPreservationVerified: true,
-      services: {}
-    }),
-    { message: "activation_evidence_required" }
-  );
-  assert.equal(await ledger.read(), null);
+  const stages = [];
+  const result = await activateReleaseBaseline({
+    ledger, commit: commit("b"), actor: "owner", reason: "Private backup saved; accept manual recovery",
+    azureBootstrapVerified: true,
+    trmnlBackupRecoveryAccepted: true,
+    services: {
+      async prepare(head, targets) {
+        return releaseArtifact(head, Object.fromEntries(targets.map(target => [target, `${target}/${head}`])));
+      },
+      async deployAndVerifyAzure() { stages.push("azure"); return { verified: true }; },
+      async publishAndVerifyTrmnl() { stages.push("trmnl"); return { verified: true }; }
+    }
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.trmnl_preservation_basis, "owner_backup_manual_recovery");
+  assert.deepEqual(stages, ["azure", "trmnl"]);
+  const activation = (await ledger.read()).activation;
+  assert.equal(activation.actor, "owner");
+  assert.equal(activation.reason, "Private backup saved; accept manual recovery");
+  assert.equal(activation.trmnl_preservation_basis, "owner_backup_manual_recovery");
+  assert.equal((await listReleaseStatus({ ledger })).activation.trmnl_preservation_basis,
+    "owner_backup_manual_recovery");
 });
 
 test("initial activation deploys both targets in order and only then sets the baseline", async () => {
@@ -294,15 +319,28 @@ test("initial activation deploys both targets in order and only then sets the ba
   };
   const result = await activateReleaseBaseline({
     ledger, commit: commit("b"), actor: "owner", reason: "initial baseline",
-    azureBootstrapVerified: true, trmnlPreservationVerified: true, services
+    azureBootstrapVerified: true, trmnlPreservationVerified: true, trmnlBackupRecoveryAccepted: true, services
   });
   assert.deepEqual(result, {
-    active: true, baseline: commit("b"), targets: ["azure", "trmnl"], status: "succeeded"
+    active: true, baseline: commit("b"), targets: ["azure", "trmnl"], status: "succeeded",
+    trmnl_preservation_basis: "synthetic_verified"
   });
   assert.deepEqual(stages, ["azure", "trmnl"]);
   assert.deepEqual((await listReleaseStatus({ ledger })).baselines, {
     azure: commit("b"), trmnl: commit("b")
   });
+});
+
+test("legacy activation status does not invent preservation evidence and rejects an unknown basis", async () => {
+  const ledger = await activatedLedger();
+  const state = await ledger.read();
+  assert.equal(state.activation.trmnl_preservation_basis, "synthetic_verified");
+  delete state.activation.trmnl_preservation_basis;
+  await ledger.replace(state);
+  assert.equal((await listReleaseStatus({ ledger })).activation.trmnl_preservation_basis, null);
+  state.activation.trmnl_preservation_basis = "unrecognized_approval";
+  await ledger.replace(state);
+  await assert.rejects(listReleaseStatus({ ledger }), { message: "ledger_invalid" });
 });
 
 test("activation failure is visible in status without exposing its detailed diagnostics", async () => {

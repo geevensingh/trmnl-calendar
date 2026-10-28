@@ -191,7 +191,7 @@ test("activation recovery resumes the recorded commit and retained artifacts aft
   };
   const options = {
     ledger, services, cwd, through: baseline, actor: "owner", reason: "initial activation",
-    azureBootstrapVerified: true, trmnlPreservationVerified: true
+    azureBootstrapVerified: true, trmnlBackupRecoveryAccepted: true
   };
   assert.equal((await activateFromMain(options)).blocked, true);
   await writeFile(join(cwd, "README.md"), "main advanced");
@@ -216,5 +216,6 @@ test("activation recovery resumes the recorded commit and retained artifacts aft
   const state = await ledger.read();
   assert.equal(state.activation.recovery.actor, "owner");
   assert.equal(state.activation.recovery.previous_mutation_stopped, true);
+  assert.equal(state.activation.trmnl_preservation_basis, "owner_backup_manual_recovery");
   assert.equal((await listReleaseStatus({ ledger })).activation.failure, null);
 });

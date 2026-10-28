@@ -38,6 +38,7 @@ test("TRMNL publisher pins the existing plugin ID and verifies pulled definition
     sourceDirectory,
     pluginId: "12345",
     preservationVerifiedPluginId: "12345",
+    backupRecoveryAcceptedPluginId: "12345",
     apiKey: "synthetic-key",
     runCommand: async (command, args, { env, cwd }) => {
       commands.push({ command, args, env: { ...env }, cwd });
@@ -68,6 +69,27 @@ test("TRMNL publisher pins the existing plugin ID and verifies pulled definition
   assert.equal(result.verified, true);
   assert.match(result.identity, /^sha256:[a-f0-9]{64}$/);
   assert.equal(result.pluginId, "12345");
+  assert.equal(result.preservation_basis, "synthetic_verified");
+});
+
+test("TRMNL publisher accepts plugin-specific backup recovery approval without claiming preservation proof", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const calls = [];
+  const result = await publishTrmnl({
+    sourceDirectory,
+    pluginId: "12345",
+    preservationVerifiedPluginId: "different-plugin",
+    backupRecoveryAcceptedPluginId: "12345",
+    apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      calls.push(args);
+      if (args[0] === "pull") await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+    }
+  });
+  assert.deepEqual(calls.map(args => args[0]), ["pull", "push", "pull"]);
+  assert.ok(calls.every(args => args.includes("12345")));
+  assert.equal(result.verified, true);
+  assert.equal(result.preservation_basis, "owner_backup_manual_recovery");
 });
 
 test("settings parser receives tool settings but no workflow credentials or Azure configuration", async t => {
@@ -135,6 +157,15 @@ test("TRMNL publisher fails closed for missing or unproven target identity witho
     apiKey: "synthetic-key",
     runCommand
   }), { message: "trmnl_preservation_gate_missing" });
+  for (const backupRecoveryAcceptedPluginId of ["", "true", "12346"]) {
+    await assert.rejects(publishTrmnl({
+      sourceDirectory,
+      pluginId: "12345",
+      backupRecoveryAcceptedPluginId,
+      apiKey: "synthetic-key",
+      runCommand
+    }), { message: "trmnl_preservation_gate_missing" });
+  }
   assert.equal(calls, 0);
 });
 
@@ -232,7 +263,7 @@ for (const change of ["rename", "remove"]) {
       : settings.replace('  - keyname: rules_json\n    field_type: code\n    default: "[]"\n', ""));
     const commands = [];
     await assert.rejects(publishTrmnl({
-      sourceDirectory, pluginId: "12345", preservationVerifiedPluginId: "12345", apiKey: "synthetic-key",
+      sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
       runCommand: async (_command, args, { cwd }) => {
         commands.push(args[0]);
         assert.equal(args[0], "pull");

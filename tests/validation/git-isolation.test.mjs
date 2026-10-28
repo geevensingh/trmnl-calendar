@@ -292,6 +292,27 @@ test("review snapshot fixture preserves synthetic owners under combined inherite
   }
 });
 
+test("release Git fixtures preserve standard and linked owners under inherited selectors", async t => {
+  for (const index of [0, 1]) {
+    await t.test(index === 1 ? "linked owner" : "standard owner", async t => {
+      const fixture = await owner(t);
+      const injection = {
+        ...injections(fixture, fixture.contexts[index]).at(-1)[1],
+        GIT_TEMPLATE_DIR: join(fixture.checkout, ".git"),
+        GIT_TRACE: join(fixture.checkout, "trace.log")
+      };
+      const result = spawnSync(process.execPath, [
+        "--test",
+        join(root, "tests", "delivery", "git-release-history.test.mjs"),
+        join(root, "tests", "delivery", "release-runner.test.mjs")
+      ], { cwd: root, env: { ...cleanEnvironment(), ...injection }, encoding: "utf8", timeout: 30_000 });
+      await fixture.unchanged("release Git fixtures");
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(result.stdout, /\bpass 5\b/, "All five release history/runner fixture tests must execute.");
+    });
+  }
+});
+
 test("Workbench Git fixture preserves standard and linked owners under exported hook context and selectors", async t => {
   const fixture = await owner(t);
   for (const index of [0, 1]) {

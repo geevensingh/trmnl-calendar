@@ -6,10 +6,12 @@ param(
     [string]$ParametersFile,
     [string]$PackageFile,
     [string]$ReviewedIntegrationCommit,
+    [string]$ReviewedCapacityJson,
     [switch]$ApprovedResourcePlan
 )
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
 $root = Split-Path $PSScriptRoot -Parent
 $template = Join-Path $root 'infra\main.bicep'
@@ -69,10 +71,11 @@ finally {
 $required = @(
     'location', 'resourceGroupName', 'functionAppName', 'planName', 'storageAccountName',
     'hostIdentityName', 'keyVaultName', 'logAnalyticsName', 'applicationInsightsName',
-    'budgetName', 'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate'
+    'budgetName', 'budgetAlertEmail', 'agendaOwnerAddress', 'budgetStartDate', 'releaseStorageAccountName'
 )
 $allowed = $required + @(
-    'sourceSecretName', 'cacheContainerName', 'deploymentContainerName', 'retainHostDiagnostics'
+    'sourceSecretName', 'cacheContainerName', 'deploymentContainerName', 'retainHostDiagnostics',
+    'releaseControlContainerName', 'releaseArtifactContainerName', 'releaseControllerPrincipalId'
 )
 foreach ($name in $parameters.Keys) {
     if ($name -notin $allowed) {
@@ -84,25 +87,21 @@ foreach ($name in $required) {
         $parameters[$name].value -isnot [string] -or [string]::IsNullOrWhiteSpace($parameters[$name].value)) {
         throw "Missing runtime parameter: $name."
     }
+    if ($parameters.ContainsKey('releaseControllerPrincipalId') -and
+        $parameters.releaseControllerPrincipalId.value -ne '') {
+        $controllerPrincipalId = [guid]::Empty
+        if (![guid]::TryParse($parameters.releaseControllerPrincipalId.value, [ref]$controllerPrincipalId)) {
+            throw 'releaseControllerPrincipalId must be the owner-verified OIDC service-principal object ID.'
+        }
+    }
 }
 if ($parameters.location.value -ne 'westus2') {
     throw 'This resource plan is approved only for westus2; a region change requires renewed approval.'
 }
-$ownerUri = $null
-$ownerMailbox = $null
-$ownerAddress = $null
-if (![System.Uri]::TryCreate($parameters.agendaOwnerAddress.value, [System.UriKind]::Absolute, [ref]$ownerUri) -or
-    $ownerUri.Scheme -cne 'mailto' -or $ownerUri.Query -or $ownerUri.Fragment -or
-    $parameters.agendaOwnerAddress.value -match '\s|\p{Cc}') {
-    throw 'agendaOwnerAddress must be one exact mailto: address.'
+if ($parameters.releaseStorageAccountName.value -ieq $parameters.storageAccountName.value) {
+    throw 'Release storage must use a separate account from Function runtime storage.'
 }
-$ownerAddress = $ownerUri.GetComponents([System.UriComponents]::AbsoluteUri, [System.UriFormat]::Unescaped).
-    Substring('mailto:'.Length)
-if (![System.Net.Mail.MailAddress]::TryCreate($ownerAddress, [ref]$ownerMailbox) -or
-    $ownerMailbox.Address -cne $ownerAddress -or $ownerAddress.Contains(',') -or
-    $ownerAddress -match '\s|\p{Cc}') {
-    throw 'agendaOwnerAddress must be one exact mailto: address.'
-}
+Assert-AgendaOwnerAddress $parameters.agendaOwnerAddress.value
 $budgetStart = [DateTimeOffset]::MinValue
 if ($parameters.budgetStartDate.value -notmatch '^\d{4}-\d{2}-01T00:00:00Z$' -or
     ![DateTimeOffset]::TryParse($parameters.budgetStartDate.value, [Globalization.CultureInfo]::InvariantCulture,
@@ -116,6 +115,14 @@ if (![System.Net.Mail.MailAddress]::TryCreate($parameters.budgetAlertEmail.value
 }
 
 if ($Mode -eq 'DeployCode') {
+    if ([string]::IsNullOrWhiteSpace($env:TRMNL_FUNCTION_KEY)) {
+        throw 'A function-scoped TRMNL_FUNCTION_KEY is required for post-deployment verification.'
+    }
+    $functionKey = $env:TRMNL_FUNCTION_KEY
+    Remove-Item Env:TRMNL_FUNCTION_KEY -ErrorAction SilentlyContinue
+    if (!(Get-Command node -ErrorAction SilentlyContinue)) {
+        throw 'Node.js is required to run the existing redacted deployed-service smoke check.'
+    }
     if (!$PackageFile -or $ReviewedIntegrationCommit -notmatch '^[a-f0-9]{40}$') {
         throw 'Supply -PackageFile and the full -ReviewedIntegrationCommit after reviewing the integration branch.'
     }
@@ -138,19 +145,59 @@ if ($Mode -eq 'DeployCode') {
         (Get-Item -LiteralPath $archive).Length -gt 100 * 1024 * 1024) {
         throw 'The deployment archive hash or size does not match the reviewed package.'
     }
+    $expectedScale = @{ maximumInstanceCount = 1; instanceMemoryMB = 2048; alwaysReady = @() }
+    if ($ReviewedCapacityJson) {
+        try {
+            $reviewedCapacity = $ReviewedCapacityJson | ConvertFrom-Json -AsHashtable
+        }
+        catch {
+            throw 'The reviewed capacity plan is invalid.'
+        }
+        if ($reviewedCapacity -isnot [System.Collections.IDictionary] -or
+            !$reviewedCapacity.Contains('commit') -or !$reviewedCapacity.Contains('scaleAndConcurrency') -or
+            $reviewedCapacity.commit -cne $ReviewedIntegrationCommit -or
+            $reviewedCapacity.scaleAndConcurrency -isnot [System.Collections.IDictionary]) {
+            throw 'The capacity plan must come from reconciliation of the reviewed integration commit.'
+        }
+        $expectedScale = $reviewedCapacity.scaleAndConcurrency
+    }
+    if (!$expectedScale.Contains('maximumInstanceCount') -or !$expectedScale.Contains('instanceMemoryMB') -or
+        !$expectedScale.Contains('alwaysReady') -or
+        ($expectedScale.maximumInstanceCount -isnot [long] -and $expectedScale.maximumInstanceCount -isnot [int]) -or
+        $expectedScale.maximumInstanceCount -lt 1 -or
+        ($expectedScale.instanceMemoryMB -isnot [long] -and $expectedScale.instanceMemoryMB -isnot [int]) -or
+        $expectedScale.instanceMemoryMB -lt 1 -or $expectedScale.alwaysReady -isnot [array]) {
+        throw 'The reviewed capacity plan is invalid.'
+    }
+    foreach ($entry in $expectedScale.alwaysReady) {
+        if ($entry -isnot [System.Collections.IDictionary] -or !$entry.Contains('name') -or
+            !$entry.Contains('instanceCount') -or $entry.name -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($entry.name) -or
+            ($entry.instanceCount -isnot [long] -and $entry.instanceCount -isnot [int]) -or $entry.instanceCount -lt 0) {
+            throw 'The reviewed always-ready capacity plan is invalid.'
+        }
+    }
     $siteUrl = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$($parameters.resourceGroupName.value)/providers/Microsoft.Web/sites/$($parameters.functionAppName.value)?api-version=2024-04-01"
     $site = Invoke-Azure -Stage 'Code-deployment target verification' -Json -Arguments @(
         'rest', '--method', 'get', '--url', $siteUrl, '--output', 'json'
     )
     $config = $site.properties.functionAppConfig
     $scale = $config.scaleAndConcurrency
+    $expectedWarm = @($expectedScale.alwaysReady | Where-Object { $_.instanceCount -ne 0 })
+    $actualWarm = @($scale['alwaysReady'] | Where-Object { $_.instanceCount -ne 0 })
+    $warmMatches = $expectedWarm.Count -eq $actualWarm.Count
+    foreach ($entry in $expectedWarm) {
+        if (@($actualWarm | Where-Object {
+            $_.name -ceq $entry.name -and $_.instanceCount -eq $entry.instanceCount
+        }).Count -ne 1) { $warmMatches = $false }
+    }
     $approvedPlanId = "/subscriptions/$SubscriptionId/resourceGroups/$($parameters.resourceGroupName.value)/providers/Microsoft.Web/serverfarms/$($parameters.planName.value)"
     if ($site.kind -notmatch 'functionapp' -or $site.kind -notmatch 'linux' -or !$site.properties.httpsOnly -or
         $site.properties.serverFarmId -ine $approvedPlanId -or
         $config.runtime.name -ne 'dotnet-isolated' -or $config.runtime.version -ne '10.0' -or
-        $scale.maximumInstanceCount -ne 1 -or $scale.instanceMemoryMB -ne 2048 -or
-        @($scale['alwaysReady'] | Where-Object { $_.instanceCount -ne 0 }).Count -ne 0) {
-        throw 'The live target differs from the approved HTTPS Linux .NET 10, 2 GiB/max-one, zero-always-ready plan.'
+        $scale.maximumInstanceCount -ne $expectedScale.maximumInstanceCount -or
+        $scale.instanceMemoryMB -ne $expectedScale.instanceMemoryMB -or !$warmMatches) {
+        throw 'The live target differs from the reviewed HTTPS Linux .NET 10 capacity plan.'
     }
     $plan = Invoke-Azure -Stage 'Flex plan verification' -Json -Arguments @(
         'rest', '--method', 'get', '--url', "https://management.azure.com$approvedPlanId`?api-version=2024-04-01",
@@ -164,7 +211,73 @@ if ($Mode -eq 'DeployCode') {
         '--resource-group', $parameters.resourceGroupName.value, '--name', $parameters.functionAppName.value,
         '--src', $archive, '--build-remote', 'false', '--timeout', '600', '--output', 'none'
     )
-    Write-Output 'Azure accepted the reviewed package. Retention, authentication, cache, source and TRMNL/device evidence still require the live checks.'
+    $expectedFunctions = @('Agenda', 'RefreshSource')
+    $functions = @()
+    $bindingsVerified = $false
+    for ($attempt = 0; $attempt -lt 24; $attempt++) {
+        $functions = @(Invoke-Azure -Stage 'Deployed function indexing verification' -Json -Arguments @(
+            'functionapp', 'function', 'list', '--subscription', $SubscriptionId,
+            '--resource-group', $parameters.resourceGroupName.value,
+            '--name', $parameters.functionAppName.value, '--output', 'json'
+        ))
+        $names = @($functions | ForEach-Object { ([string]$_.name).Split('/')[-1] } | Sort-Object)
+        if ($names.Count -eq 2 -and
+            @($expectedFunctions | Where-Object { $_ -cnotin $names }).Count -eq 0) {
+            $agenda = @($functions | Where-Object { ([string]$_.name).Split('/')[-1] -ceq 'Agenda' })
+            $refresh = @($functions | Where-Object { ([string]$_.name).Split('/')[-1] -ceq 'RefreshSource' })
+            $agendaBindings = @($agenda[0].config.bindings)
+            $refreshBindings = @($refresh[0].config.bindings)
+            $httpTrigger = @($agendaBindings | Where-Object type -CEQ 'httpTrigger')
+            $httpOutput = @($agendaBindings | Where-Object type -CEQ 'http')
+            $timerTrigger = @($refreshBindings | Where-Object type -CEQ 'timerTrigger')
+            $methods = @(if ($httpTrigger.Count -eq 1) {
+                $httpTrigger[0].methods | ForEach-Object { [string]$_ } | Sort-Object
+            })
+            if ($httpTrigger.Count -eq 1 -and $httpOutput.Count -eq 1 -and
+                $agendaBindings.Count -eq 2 -and
+                $httpTrigger[0].authLevel -IEQ 'function' -and
+                $httpTrigger[0].route -CEQ 'agenda' -and
+                $methods.Count -eq 1 -and $methods[0] -CEQ 'post' -and
+                $timerTrigger.Count -eq 1 -and $refreshBindings.Count -eq 1 -and
+                $timerTrigger[0].schedule -CEQ '0 */5 * * * *' -and
+                $timerTrigger[0].useMonitor -eq $true -and
+                $timerTrigger[0].runOnStartup -eq $false) {
+                $bindingsVerified = $true
+                break
+            }
+        }
+        Start-Sleep -Seconds 5
+    }
+    if (!$bindingsVerified) {
+        throw 'Deployed Azure function indexing or expected authenticated HTTP/timer bindings could not be verified.'
+    }
+    $hostName = [string]$site.properties.defaultHostName
+    if ($hostName -notmatch '^[A-Za-z0-9.-]+$') {
+        throw 'The deployed Azure HTTPS host could not be safely identified for the redacted smoke check.'
+    }
+    $env:TRMNL_FUNCTION_KEY = $functionKey
+    try {
+        $smokeOutput = & node (Join-Path $root 'scripts\smoke-delivery.mjs') `
+            --endpoint "https://$hostName/api/agenda" --expected-state current 2>$null
+    }
+    finally {
+        Remove-Item Env:TRMNL_FUNCTION_KEY -ErrorAction SilentlyContinue
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Azure deployed-service smoke verification failed; raw response and diagnostics were withheld.'
+    }
+    try {
+        $smoke = ($smokeOutput -join "`n") | ConvertFrom-Json
+    }
+    catch {
+        throw 'Azure deployed-service smoke verification returned unusable evidence.'
+    }
+    if ($smoke.checks_passed -ne $true -or $smoke.activation_complete -ne $false -or
+        $smoke.evidence_scope -ne 'deployed_http_only' -or $smoke.poll.state -ne 'current' -or
+        $smoke.poll.error_code -ne $null) {
+        throw 'Azure deployed-service smoke verification did not establish the expected current agenda and authentication checks.'
+    }
+    Write-Output 'Azure package deployment, expected function bindings and redacted current-agenda/authentication smoke checks passed. TRMNL publication and physical-device refresh remain separate.'
     return
 }
 

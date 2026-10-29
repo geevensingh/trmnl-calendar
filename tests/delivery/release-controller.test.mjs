@@ -57,7 +57,7 @@ async function activatedLedger() {
     actor: "owner",
     reason: "Authorized initial baseline",
     azureBootstrapVerified: true,
-    trmnlPreservationVerified: true,
+    trmnlBackupRecoveryAccepted: true,
     services: {
       async prepare(head, targets) {
         return releaseArtifact(head, Object.fromEntries(targets.map(target =>
@@ -256,21 +256,20 @@ for (const stage of ["selection", "prepare"]) {
   });
 }
 
-test("activation refuses missing bootstrap or synthetic preservation evidence before deploying", async () => {
-  const ledger = memoryLedger();
-  await assert.rejects(
-    activateReleaseBaseline({
-      ledger,
-      commit: commit("a"),
-      actor: "owner",
-      reason: "initial release",
-      azureBootstrapVerified: false,
-      trmnlPreservationVerified: true,
-      services: {}
-    }),
-    { message: "activation_evidence_required" }
-  );
-  assert.equal(await ledger.read(), null);
+test("activation requires Azure bootstrap and explicit backup recovery acceptance", async () => {
+  for (const approval of [
+    { azureBootstrapVerified: true },
+    { azureBootstrapVerified: true, trmnlBackupRecoveryAccepted: false },
+    { azureBootstrapVerified: false, trmnlBackupRecoveryAccepted: true },
+    { azureBootstrapVerified: true, trmnlBackupRecoveryAccepted: "true" }
+  ]) {
+    const ledger = memoryLedger();
+    await assert.rejects(activateReleaseBaseline({
+      ledger, commit: commit("a"), actor: "owner", reason: "initial release",
+      ...approval, services: {}
+    }), { message: "activation_evidence_required" });
+    assert.equal(await ledger.read(), null);
+  }
 });
 
 test("initial activation deploys both targets in order and only then sets the baseline", async () => {
@@ -293,16 +292,37 @@ test("initial activation deploys both targets in order and only then sets the ba
     }
   };
   const result = await activateReleaseBaseline({
-    ledger, commit: commit("b"), actor: "owner", reason: "initial baseline",
-    azureBootstrapVerified: true, trmnlPreservationVerified: true, services
+    ledger, commit: commit("b"), actor: "owner", reason: "Private backup saved; accept manual recovery",
+    azureBootstrapVerified: true, trmnlBackupRecoveryAccepted: true, services
   });
   assert.deepEqual(result, {
-    active: true, baseline: commit("b"), targets: ["azure", "trmnl"], status: "succeeded"
+    active: true, baseline: commit("b"), targets: ["azure", "trmnl"], status: "succeeded",
+    trmnl_backup_recovery_accepted: true
   });
   assert.deepEqual(stages, ["azure", "trmnl"]);
-  assert.deepEqual((await listReleaseStatus({ ledger })).baselines, {
+  const activation = (await ledger.read()).activation;
+  assert.equal(activation.actor, "owner");
+  assert.equal(activation.reason, "Private backup saved; accept manual recovery");
+  assert.equal(activation.trmnl_backup_recovery_accepted, true);
+  const status = await listReleaseStatus({ ledger });
+  assert.equal(status.activation.trmnl_backup_recovery_accepted, true);
+  assert.deepEqual(status.baselines, {
     azure: commit("b"), trmnl: commit("b")
   });
+});
+
+test("legacy activation status does not invent backup approval and rejects invalid acceptance", async () => {
+  const ledger = await activatedLedger();
+  const state = await ledger.read();
+  assert.equal(state.activation.trmnl_backup_recovery_accepted, true);
+  delete state.activation.trmnl_backup_recovery_accepted;
+  await ledger.replace(state);
+  assert.equal((await listReleaseStatus({ ledger })).activation.trmnl_backup_recovery_accepted, null);
+  for (const invalid of ["true", false]) {
+    state.activation.trmnl_backup_recovery_accepted = invalid;
+    await ledger.replace(state);
+    await assert.rejects(listReleaseStatus({ ledger }), { message: "ledger_invalid" });
+  }
 });
 
 test("activation failure is visible in status without exposing its detailed diagnostics", async () => {
@@ -313,7 +333,7 @@ test("activation failure is visible in status without exposing its detailed diag
     actor: "owner",
     reason: "initial baseline",
     azureBootstrapVerified: true,
-    trmnlPreservationVerified: true,
+    trmnlBackupRecoveryAccepted: true,
     services: {
       async prepare(head, targets) {
         return releaseArtifact(head, Object.fromEntries(targets.map(target =>
@@ -341,7 +361,7 @@ test("activation retains its first interruption after successful explicit recove
   ledger.withExclusive = operation => withExclusive(() => operation(abort.signal));
   const options = {
     ledger, commit: commit("b"), actor: "owner", reason: "Initial activation",
-    azureBootstrapVerified: true, trmnlPreservationVerified: true,
+    azureBootstrapVerified: true, trmnlBackupRecoveryAccepted: true,
     services: {
       async prepare(head, targets) {
         return releaseArtifact(head, Object.fromEntries(targets.map(target => [target, `${target}/${head}`])));

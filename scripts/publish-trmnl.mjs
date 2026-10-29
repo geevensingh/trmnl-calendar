@@ -129,13 +129,13 @@ function publisherEnvironment(apiKey) {
 export async function publishTrmnl({
   sourceDirectory,
   pluginId,
-  preservationVerifiedPluginId,
+  backupRecoveryAcceptedPluginId,
   apiKey = process.env.TRMNL_API_KEY,
   runCommand,
   signal
 }) {
   if (!pluginIdPattern.test(pluginId ?? "")) fail("trmnl_target_identity_missing");
-  if (preservationVerifiedPluginId !== pluginId) fail("trmnl_preservation_gate_missing");
+  if (backupRecoveryAcceptedPluginId !== pluginId) fail("trmnl_backup_approval_missing");
   if (typeof apiKey !== "string" || !apiKey || apiKey.length > 512 ||
     /[\s\x00-\x1f\x7f]/.test(apiKey)) fail("trmnl_authentication_missing");
 

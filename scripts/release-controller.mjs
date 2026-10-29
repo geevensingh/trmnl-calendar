@@ -143,6 +143,10 @@ function validateState(state) {
     !("azure" in state.baselines) ||
     !("trmnl" in state.baselines)
   ) throw new Error("ledger_invalid");
+  if (state.activation?.trmnl_backup_recovery_accepted !== undefined &&
+    state.activation.trmnl_backup_recovery_accepted !== true) {
+    throw new Error("ledger_invalid");
+  }
   if (state.checkpoint !== null) assertCommit(state.checkpoint);
   for (const target of TARGETS) {
     if (state.baselines[target] !== null) assertCommit(state.baselines[target]);
@@ -218,7 +222,7 @@ export async function activateReleaseBaseline({
   actor,
   reason,
   azureBootstrapVerified,
-  trmnlPreservationVerified,
+  trmnlBackupRecoveryAccepted,
   previousMutationStopped = false,
   services
 }) {
@@ -226,7 +230,7 @@ export async function activateReleaseBaseline({
   assertAttribution(actor, reason);
   if (
     azureBootstrapVerified !== true ||
-    trmnlPreservationVerified !== true
+    trmnlBackupRecoveryAccepted !== true
   ) throw new Error("activation_evidence_required");
   return ledger.withExclusive(async signal => {
     const state = validateState((await ledger.read()) ?? newState());
@@ -277,6 +281,7 @@ export async function activateReleaseBaseline({
       state.activation.reason = reason.trim();
     }
     const activation = state.activation;
+    activation.trmnl_backup_recovery_accepted = true;
     const save = async () => {
       signal?.throwIfAborted();
       state.updated_at = new Date().toISOString();
@@ -322,7 +327,10 @@ export async function activateReleaseBaseline({
       state.checkpoint = commit;
       state.baselines = { azure: commit, trmnl: commit };
       await save();
-      return { active: true, baseline: commit, targets: [...TARGETS], status: "succeeded" };
+      return {
+        active: true, baseline: commit, targets: [...TARGETS], status: "succeeded",
+        trmnl_backup_recovery_accepted: true
+      };
     } catch (error) {
       activation.status = "failed";
       activation.failure = {
@@ -579,6 +587,7 @@ export async function listReleaseStatus({ ledger }) {
         commit: state.activation.commit,
         status: state.activation.status,
         stage: state.activation.stage,
+        trmnl_backup_recovery_accepted: state.activation.trmnl_backup_recovery_accepted ?? null,
         target_results: { ...state.activation.target_results },
         recovery_confirmation_required: requiresRecoveryConfirmation(state.activation),
         failure: state.activation.failure ?? null

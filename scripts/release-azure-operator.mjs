@@ -138,12 +138,15 @@ export async function operateReleaseAzure({ env = process.env, runCommand = exec
     "read_failed_operations");
     if (!Array.isArray(operations)) fail("operator_azure_response_invalid", "read_failed_operations");
     for (const item of operations) {
-      if (item.state !== "Failed" || item.type !== "Microsoft.Authorization/roleAssignments" ||
+      if (item.type !== "Microsoft.Authorization/roleAssignments" ||
         typeof item.id !== "string") continue;
       const index = scopes.findIndex(scope => same(item.id.slice(0, item.id.lastIndexOf("/providers/")), scope));
       const id = item.id.split("/").at(-1);
       if (index >= 0 && guidPattern.test(id)) {
-        requested.push({ container: containers[index], id, code: azureCodes.includes(item.code) ? item.code : "unclassified" });
+        requested.push({
+          container: containers[index], id, state: stateOf(item.state),
+          code: item.state === "Succeeded" ? null : azureCodes.includes(item.code) ? item.code : "unclassified"
+        });
       }
     }
   }
@@ -169,6 +172,21 @@ export async function operateReleaseAzure({ env = process.env, runCommand = exec
       same(item.name, pairs[index].next) ||
       same(item.properties?.roleDefinitionId?.split("/").at(-1), blobContributor));
     return relevant.length === 1 && isExact(relevant[0], index, id);
+  };
+  const observeAfterMutation = async index => {
+    let failure;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return { items: await readAssignments(index) };
+      } catch (error) {
+        failure = error;
+      }
+    }
+    return { failure };
+  };
+  const uncertain = (observed, stage) => {
+    throw new OperatorFailure("operator_repair_state_uncertain",
+      observed.failure?.stage ?? stage, observed.failure?.azure_code);
   };
   const grants = await Promise.all(containers.map((_name, index) => readAssignments(index)));
   if (!repairing) {
@@ -217,23 +235,28 @@ export async function operateReleaseAzure({ env = process.env, runCommand = exec
         `${scopes[index]}/providers/Microsoft.Authorization/roleAssignments/${pair.old}`], `delete_${containers[index]}_bootstrap_grant`);
       await create(pair.next);
     } catch (error) {
-      const observed = await readAssignments(index);
-      if (!onlyGrant(observed, index, pair.next)) {
-        if (!onlyGrant(observed, index, pair.old)) {
+      const observed = await observeAfterMutation(index);
+      if (observed.failure || !onlyGrant(observed.items, index, pair.next)) {
+        if (observed.failure || !onlyGrant(observed.items, index, pair.old)) {
           try {
             await create(pair.old);
           } catch {
-            // A failed response can still have created the grant; verify before reporting its state.
+            // Either approved ID may already exist; resolve the result through readback.
           }
         }
-        if (!onlyGrant(await readAssignments(index), index, pair.old)) {
-          fail("operator_repair_state_uncertain", `restore_${containers[index]}_grant`);
+        const restored = await observeAfterMutation(index);
+        if (restored.failure) uncertain(restored, `restore_${containers[index]}_grant`);
+        if (onlyGrant(restored.items, index, pair.old)) {
+          throw new OperatorFailure("operator_original_grant_restored", error.stage, error.azure_code);
         }
-        throw new OperatorFailure("operator_original_grant_restored", error.stage, error.azure_code);
+        if (!onlyGrant(restored.items, index, pair.next)) {
+          uncertain(restored, `restore_${containers[index]}_grant`);
+        }
       }
     }
-    if (!onlyGrant(await readAssignments(index), index, pair.next)) {
-      fail("operator_repair_state_uncertain", `verify_${containers[index]}_grant`);
+    const verified = await observeAfterMutation(index);
+    if (verified.failure || !onlyGrant(verified.items, index, pair.next)) {
+      uncertain(verified, `verify_${containers[index]}_grant`);
     }
     results.push({ container: containers[index], status: "replaced" });
   }

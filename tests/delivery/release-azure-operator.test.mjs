@@ -69,7 +69,9 @@ function fixture() {
   const state = {
     stackState: "Failed", deploymentState: "Failed", stacks: true,
     mutationFailure: null, rollbackFailure: false, appliedButFailed: false,
-    wrongAccount: false, grantReadFailure: false, paginated: false
+    wrongAccount: false, grantReadFailure: false, paginated: false,
+    postMutationReadFailures: 0, persistentPostMutationReadFailure: false,
+    controlOperationState: "Failed"
   };
   const runCommand = async (command, args, options) => {
     assert.equal(command, "az");
@@ -89,9 +91,9 @@ function fixture() {
       } }];
     } else if (args[0] === "deployment" && args[1] === "operation") {
       result = newIds.map((id, index) => ({
-        state: "Failed", type: "Microsoft.Authorization/roleAssignments",
+        state: index === 0 ? state.controlOperationState : "Failed", type: "Microsoft.Authorization/roleAssignments",
         id: `${scopes[index]}/providers/Microsoft.Authorization/roleAssignments/${id}`,
-        code: "RoleAssignmentExists"
+        code: index === 0 && state.controlOperationState === "Succeeded" ? null : "RoleAssignmentExists"
       }));
       result.push({
         state: "Failed", type: "Microsoft.Consumption/budgets",
@@ -99,6 +101,11 @@ function fixture() {
       });
     } else if (args[0] === "rest") {
       if (state.grantReadFailure) throw { stderr: "AuthorizationFailed private diagnostic", code: 1 };
+      if (calls.some(call => call[0] === "role") &&
+        (state.persistentPostMutationReadFailure || state.postMutationReadFailures > 0)) {
+        state.postMutationReadFailures -= 1;
+        throw { stderr: "AuthorizationFailed private post-mutation diagnostic", code: 1 };
+      }
       const url = args[args.indexOf("--url") + 1];
       const scope = scopes.find(value => url.startsWith(`https://management.azure.com${value}/`));
       assert.ok(scope, "Assignment read escaped the two release containers");
@@ -120,6 +127,10 @@ function fixture() {
       assert.equal(args[args.indexOf("--assignee-principal-type") + 1], "ServicePrincipal");
       if (state.rollbackFailure && oldIds.includes(id)) throw { stderr: "private-rollback-error", code: 1 };
       if (state.mutationFailure === "create" && newIds.includes(id) && !state.appliedButFailed) {
+        throw { stderr: "RoleAssignmentExists private diagnostic", code: 1 };
+      }
+      if ([...grants.values()].some(grant => grant.name !== id &&
+        (grant.scope ?? grant.properties.scope) === scope)) {
         throw { stderr: "RoleAssignmentExists private diagnostic", code: 1 };
       }
       result = assignment(id, scope);
@@ -148,7 +159,7 @@ test("Azure operator inspection is read-only and reports only redacted release e
     id, release_identity: true, blob_contributor: true, has_condition: false
   }]));
   assert.deepEqual(report.requested_assignments, newIds.map((id, index) => ({
-    container: containers[index], id, code: "RoleAssignmentExists"
+    container: containers[index], id, state: "failed", code: "RoleAssignmentExists"
   })));
   assert.equal(mutations(f).length, 0);
   const output = JSON.stringify(report);
@@ -258,6 +269,17 @@ test("Azure operator rechecks stopped work between containers and resumes a part
   assert.equal(mutations(f).length, 4);
 });
 
+test("Azure operator accepts a succeeded requested assignment when resuming a failed deployment's partial repair", async () => {
+  const f = fixture();
+  f.env.OPERATOR_OPERATION = "repair-bootstrap-roles";
+  f.grants.delete(oldIds[0]);
+  f.grants.set(newIds[0], assignment(newIds[0], scopes[0]));
+  f.state.controlOperationState = "Succeeded";
+  const result = await operateReleaseAzure(f);
+  assert.deepEqual(result.containers.map(item => item.status), ["already_aligned", "replaced"]);
+  assert.equal(mutations(f).length, 2);
+});
+
 for (const failure of ["create", "delete"]) {
   test(`Azure operator restores and verifies the old grant after a ${failure} failure`, async () => {
     const f = fixture();
@@ -281,6 +303,43 @@ test("Azure operator reconciles a successful create whose response was lost", as
   assert.equal((await operateReleaseAzure(f)).status, "repaired");
   assert.deepEqual([...f.grants.keys()], newIds);
   assert.equal(mutations(f).length, 4);
+});
+
+test("Azure operator attempts and verifies restoration when reconciliation reads fail after mutation", async () => {
+  const f = fixture();
+  f.env.OPERATOR_OPERATION = "repair-bootstrap-roles";
+  f.state.mutationFailure = "create";
+  f.state.postMutationReadFailures = 2;
+  await assert.rejects(operateReleaseAzure(f), { code: "operator_original_grant_restored" });
+  assert.deepEqual([...f.grants.keys()].sort(), [...oldIds].sort());
+  assert.ok(mutations(f).some(args => args[2] === "create" && args.includes(oldIds[0])));
+  assert.equal(mutations(f).filter(args => args.includes(scopes[1])).length, 0);
+});
+
+for (const mutationFailed of [false, true]) {
+  test(`Azure operator reports uncertainty when ${mutationFailed ? "restoration" : "successful replacement"} cannot be read back`, async () => {
+    const f = fixture();
+    f.env.OPERATOR_OPERATION = "repair-bootstrap-roles";
+    f.state.persistentPostMutationReadFailure = true;
+    if (mutationFailed) f.state.mutationFailure = "create";
+    await assert.rejects(operateReleaseAzure(f), {
+      code: "operator_repair_state_uncertain",
+      stage: "read_release_control_assignments",
+      azure_code: "AuthorizationFailed"
+    });
+    assert.equal(mutations(f).filter(args => args.includes(scopes[1])).length, 0);
+    if (mutationFailed) assert.ok(f.grants.has(oldIds[0]), "The original grant was not restored");
+  });
+}
+
+test("Azure operator reconciles a lost create response plus transient read failures without claiming rollback", async () => {
+  const f = fixture();
+  f.env.OPERATOR_OPERATION = "repair-bootstrap-roles";
+  f.state.mutationFailure = "create";
+  f.state.appliedButFailed = true;
+  f.state.postMutationReadFailures = 2;
+  assert.equal((await operateReleaseAzure(f)).status, "repaired");
+  assert.deepEqual([...f.grants.keys()], newIds);
 });
 
 test("Azure operator reports failed restoration explicitly and never proceeds to the second grant", async () => {

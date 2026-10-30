@@ -8,7 +8,7 @@ import {
   AzureBlobArtifacts
 } from "./azure-blob-ledger.mjs";
 import { artifactIdentity } from "./release-controller.mjs";
-import { publishTrmnl } from "./publish-trmnl.mjs";
+import { inspectTrmnl, publishTrmnl } from "./publish-trmnl.mjs";
 
 const execFileAsync = promisify(execFile);
 const maximumArtifactBytes = 100 * 1024 * 1024;
@@ -396,6 +396,15 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
           }, signal);
         });
       }, signal);
+    },
+
+    async inspectTrmnl(commit, { signal } = {}) {
+      return withCommitCheckout(repository, commit, checkout => inspectTrmnl({
+        sourceDirectory: join(checkout, "display", "src"),
+        pluginId: process.env.TRMNL_PLUGIN_ID,
+        apiKey: process.env.TRMNL_API_KEY,
+        signal
+      }), signal);
     },
 
     async publishAndVerifyTrmnl(commit, artifact, { signal } = {}) {

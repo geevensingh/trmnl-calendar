@@ -109,6 +109,14 @@ export async function activateFromMain({ ledger, services, cwd, through, ...opti
   return activateReleaseBaseline({ ...options, ledger, services, commit });
 }
 
+export async function inspectTrmnlFromMain({ ledger, services, cwd, through }) {
+  const status = await listReleaseStatus({ ledger });
+  const blocked = status.queue.find(release => ["failed", "running"].includes(release.status));
+  const commit = status.active ? blocked?.commit ?? through : status.activation?.commit ?? through;
+  if (!(await isGitAncestor(cwd, commit, through))) throw new Error("inspection_commit_not_on_main");
+  return { commit, ...await services.inspectTrmnl(commit) };
+}
+
 async function runCli() {
   const { values } = parseArgs({
     options: {
@@ -120,7 +128,7 @@ async function runCli() {
     }
   });
   const operation = values.operation;
-  if (!["main", "status", "activate", "retry", "skip"].includes(operation)) {
+  if (!["main", "status", "inspect-trmnl", "activate", "retry", "skip"].includes(operation)) {
     throw new Error("release_operation_invalid");
   }
   if (process.env.GITHUB_REF !== "refs/heads/main") throw new Error("main_only_release_operation");
@@ -134,6 +142,9 @@ async function runCli() {
   if (operation === "status") return listReleaseStatus({ ledger });
 
   const services = createReleaseServices({ repository: cwd });
+  if (operation === "inspect-trmnl") {
+    return inspectTrmnlFromMain({ ledger, services, cwd, through });
+  }
   const previousMutationStopped = values["previous-mutation-stopped"];
   if (operation === "activate") {
     return activateFromMain({

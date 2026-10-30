@@ -142,6 +142,7 @@ test("release services refuse cancelled work before launching tools or contactin
     () => services.changedPaths(commit, commit, { signal }),
     () => services.prepare(commit, ["azure", "trmnl"], { signal }),
     () => services.deployAndVerifyAzure(commit, {}, { signal }),
+    () => services.inspectTrmnl(commit, { signal }),
     () => services.publishAndVerifyTrmnl(commit, {}, { signal })
   ]) {
     await assert.rejects(operation, error => error === reason);

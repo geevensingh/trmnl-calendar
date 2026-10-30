@@ -284,11 +284,11 @@ Set these GitHub Actions secrets:
 
 The first manual `activate` operation on `main` publishes and verifies both targets at the selected reviewed main commit before recording target baselines. It requires verified Azure bootstrap, matching plugin-specific backup approval, and an attributed reason. It does not create the private backups or establish missing live evidence on the owner's behalf. Activation records `trmnl_backup_recovery_accepted: true` alongside the actor/reason; status exposes that acceptance without private configuration. Legacy activation records without recorded acceptance report null, not inferred approval.
 
-If activation fails, rerun `activate` on `main` with a new attributed reason. Recovery resumes the ledger's original activation commit and retained artifacts, even if `main` has advanced; verified targets are not redeployed. The current-main restriction applies only to a new activation. An interrupted activation is first recorded as uncertain and blocked before a later explicit recovery can resume it. Its original `first_failure` remains in the durable record after successful recovery.
+If activation fails, rerun `activate` on `main` with a new attributed reason. Recovery resumes the ledger's original activation commit and retained artifacts, even if `main` has advanced; verified targets are not redeployed. The current-main restriction applies only to a new activation. An interrupted activation is first recorded as uncertain and blocked before a later explicit recovery can resume it. Its original `first_failure` remains in the durable record after successful recovery. An invalid retained TRMNL description instead needs the explicit [description-repair operation](#correcting-a-failed-initial-trmnl-description) below; changing source alone cannot fix that archive.
 
 Use **Actions > Coordinated production release > Run workflow** on `main` for `status`, `activate`, `retry`, or `skip`. Supply a concise reason for activation/retry/skip. A retry reuses the original commit and artifacts and preserves durably verified target outcomes, including interruptions immediately after a target-success save. A skip records the actor and reason without advancing either target baseline. `main` is the normal automatic operation. Never manually edit the Blob ledger or delete retained release artifacts to clear a barrier. Keep GitHub deployment permissions enabled for the workflow; do not add CI checks or rerun unrelated CI as part of release recovery.
 
-For a TRMNL failure, run `inspect-trmnl` on the same manual workflow before retrying publication. It pulls the existing production plugin once, compares its non-secret definition/templates with the blocked activation/release commit (or the dispatch commit when nothing is blocked), and reports only boolean readability, field-schema compatibility and content equality. It never pushes, creates a deployment record, writes the ledger, clears a recovery barrier, or implies that configured values were preserved. Inspection needs the existing publishing key but not backup approval because it makes no plugin changes.
+For a TRMNL failure, run `inspect-trmnl` on the same manual workflow before retrying publication. It pulls the existing production plugin once, compares its non-secret definition/templates with the blocked activation/release commit (or the dispatch commit when nothing is blocked), and reports only boolean readability, field-schema compatibility and content equality. A pinned activation repair, including an older queued release whose TRMNL target it covers, compares against the corrected source instead. It never pushes, creates a deployment record, writes the ledger, clears a recovery barrier, or implies that configured values were preserved. Inspection needs the existing publishing key but not backup approval because it makes no plugin changes.
 
 Publisher failures identify `source_settings`, `preflight_pull`, `preflight_settings`, `push`, `verify_pull`, or `verify_settings` rather than collapsing every tool error into `trmnl_publish_or_verify_failed`. Archive API failures include only an allowlisted HTTP status, such as `trmnl_preflight_pull_http_403`; absent tools, cancellation, timeouts and output limits have fixed codes. Tool output is captured in bounded memory only, never printed or retained as an artifact. Private settings, archive contents, credentials and response bodies stay out of logs. A push or post-push failure still requires stopped-mutation verification before recovery; a diagnostic code is not proof of rollback.
 
@@ -299,6 +299,71 @@ Status also exposes per-target `pending_reconciliation`. A target is marked befo
 Lease-renewal failure cancels active local commands and prevents subsequent deployment stages or ledger writes by that controller. Cancellation is not proof that descendants or an already accepted Azure/TRMNL request have stopped. Before every external mutation, the ledger records `recovery_confirmation_required`; an unverified failure or interruption leaves that barrier in place. To retry, skip, or resume activation after a mutation failure, first verify that the previous runner processes (including descendants) have ended and that all Azure deployment-stack/code deployments or TRMNL publishing requests have completed or been stopped. Do not merely break the lease or cancel a GitHub run and assume remote work stopped.
 
 Only after that verification, select **I verified all previous release processes and remote mutations have stopped** in the manual workflow and provide the evidence/context in the attributed reason. The controller records this confirmation with the actor and time before allowing recovery. The equivalent CLI switch is `--previous-mutation-stopped`. Status exposes the barrier; automatic scans cannot clear it. Selection/preparation failures before any mutation can be retried without this confirmation.
+
+### Correcting a failed initial TRMNL description
+
+`repair-activation-trmnl` is a narrow exception for an **inactive initial activation**
+whose Azure target is already verified and whose TRMNL push failed with HTTP 422.
+It is not a queue retry, rollback, general artifact replacement, or a new Azure
+deployment. Ordinary `activate` and queue retries still use their original
+archives; once repair is pinned, only the explicit repair operation can resume it.
+
+The confirmed production failure for [#41](https://github.com/geevensingh/trmnl-calendar/issues/41#issuecomment-6533367465)
+identified `description` / `too_long`. The source description is now
+`Private calendar agenda.` No numerical service limit is assumed or enforced;
+successful local checks do not prove the service will accept a future upload.
+
+After human review/merge and required CI, use **Coordinated production release**
+on `main` with:
+
+| Input | Required evidence |
+|---|---|
+| `operation` | `repair-activation-trmnl` |
+| `activation_commit` | Full original failed activation SHA, matching the ledger. For #41 this is `8c3e5702f7b657f363c82acd124dd973cb7545bb`. |
+| `corrected_commit` | Full reviewed, human-landed current-main SHA on the **first** repair. Reuse this exact SHA on subsequent repair attempts, even if main advances. |
+| `reason` | Attributed non-secret correction rationale and evidence that earlier processes/remote mutations stopped. |
+| `previous_mutation_stopped` | `true`, only after the stopped-mutation checks above. This is required on every repair invocation. |
+
+Azure bootstrap evidence and the existing plugin-specific private-backup/manual
+recovery approval remain required. Do not supply private values in the reason.
+This operation does not establish configured-value preservation or remove the
+accepted settings-reset/manual-recovery risk.
+
+The corrected source must be on the original activation's first-parent main
+history. Its settings, compared with the **retained original archive**, may change
+only the single top-level description, which must be nonblank and shorter.
+Changes to the shared agenda contract documents/parser are rejected. The archive
+contains the corrected commit's complete `display/src`, including any intervening
+reviewed template/style changes; review their compatibility with the still-old
+Azure target before landing. Field-schema preflight and post-push definition/
+template verification remain mandatory.
+
+Under the existing lease and conditional ledger writes, repair verifies the
+original artifacts and retains them unchanged. It creates a separate immutable,
+digest-addressed **TRMNL-only** archive bound to the corrected source SHA, persists
+that identity before publishing, and records each repair's actor, reason,
+stopped-mutation confirmation and outcome. Original `first_failure` and the
+pre-repair failure remain available. Status shows both source/artifact identities
+and safe attempt outcomes, not freeform reasons or archive contents. Mismatched
+activation/source/artifact identities, missing evidence, initialized queues and
+unverified Azure targets fail closed.
+
+An interruption is first recorded as `interrupted_uncertain` and blocks the
+invocation. Inspect status and re-establish stopped-mutation evidence before
+resuming the **same operation and SHAs**. Once persisted, the corrected artifact
+is reused, never silently rebuilt from newer main; durably verified Azure/TRMNL
+outcomes are not repeated. A preparation interrupted before its artifact identity
+was persisted may prepare that same pinned source again.
+
+Successful repair sets Azure's baseline to the original activation and TRMNL's to
+the corrected source. The admission checkpoint stays at the **original activation**:
+it does not declare the newer whole commit deployed. Subsequent normal `main`
+scans retain every qualifying successor in FIFO order and reconcile outstanding
+Azure changes. Older TRMNL targets already represented by the repaired archive
+are recorded as `covered_targets` with its source and artifact identity, not as
+independently verified uploads; they must not republish the invalid older
+description. Releases after the corrected source use normal target selection.
+Repair does not automatically drain this Azure backlog.
 
 ### Azure release operator
 

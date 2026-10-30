@@ -94,16 +94,16 @@ function archiveValidation(response) {
   const fields = ["name", "description", "strategy", "polling_url", "polling_verb", "polling_headers",
     "polling_body", "refresh_interval", "framework_version", "no_screen_padding", "dark_mode", "custom_fields", "base"];
   const reasons = [
-    ["required", /can't be blank|cannot be blank|is required/i],
-    ["too_long", /too long|cannot exceed|maximum length/i],
-    ["unsupported", /not included in the list|not supported|unsupported/i],
-    ["duplicate", /already been taken|already exists/i],
-    ["out_of_range", /must be (?:greater|less) than|out of range/i],
-    ["invalid", /is invalid|invalid format/i]
+    ["required", /^(?:can't be blank|cannot be blank|is required)\b/i],
+    ["too_long", /^(?:(?:is )?too long|cannot exceed|maximum length)\b/i],
+    ["unsupported", /^(?:(?:is )?not included in the list|(?:is )?not supported|unsupported)\b/i],
+    ["duplicate", /^(?:(?:has )?already been taken|already exists)\b/i],
+    ["out_of_range", /^(?:must be (?:greater|less) than|(?:is )?out of range)\b/i],
+    ["invalid", /^(?:is invalid|invalid format)\b/i]
   ];
   const record = (value, field) => {
     if (typeof value !== "string") return;
-    let message = value.slice(0, 512).replace(/^Validation failed:\s*/i, "");
+    let message = value.slice(0, 512).trimStart().replace(/^Validation failed:\s*/i, "");
     if (!field) {
       for (const candidate of fields) {
         const match = message.match(new RegExp(`^${candidate.replaceAll("_", "[ _]")}\\b[: ]*([\\s\\S]*)$`, "i"));
@@ -115,6 +115,9 @@ function archiveValidation(response) {
       }
     }
     if (!fields.includes(field)) return;
+    message = message.trimStart();
+    // Text after a colon can echo private values, not additional validation errors.
+    if (/[,\r\n;]/.test(message.split(":", 1)[0])) return;
     const reason = reasons.find(([_code, pattern]) => pattern.test(message))?.[0] ?? "unclassified";
     issues.set(`${field}:${reason}`, { field, reason });
   };

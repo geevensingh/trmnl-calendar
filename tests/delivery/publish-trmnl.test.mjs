@@ -224,6 +224,24 @@ for (const [label, body, issues] of [
   ] }, [
     { field: "name", reason: "duplicate" }, { field: "refresh_interval", reason: "out_of_range" }
   ]],
+  ["echoed reason words", { errors: {
+    polling_url: ["is invalid: https://private.invalid/unsupported"]
+  } }, [{ field: "polling_url", reason: "invalid" }]],
+  ["unknown validation prefix", { errors: {
+    description: ["synthetic-private-value is required: unsupported"]
+  } }, [{ field: "description", reason: "unclassified" }]],
+  ["normalized validation prefix", { errors: {
+    polling_url: [" \tIs invalid: https://private.invalid/unsupported"]
+  } }, [{ field: "polling_url", reason: "invalid" }]],
+  ["combined validation message", {
+    message: "Validation failed: Description is too long, Name can't be blank"
+  }, []],
+  ["combined field-map message", { errors: {
+    description: ["is too long, Name can't be blank"]
+  } }, []],
+  ["echoed combined message", { errors: {
+    description: ["is too long: synthetic-private-value, Name can't be blank"]
+  } }, [{ field: "description", reason: "too_long" }]],
   ["unrecognized response", { error: "synthetic-private-key", private_field: "https://private.invalid" }, []]
 ]) {
   test(`TRMNL upload validation classifies ${label} without disclosing response values`, async t => {
@@ -255,7 +273,12 @@ test("TRMNL upload validation never prints malformed or oversized response bodie
   const sourceDirectory = await pluginSource(t);
   const diagnostics = [];
   t.mock.method(console, "error", message => diagnostics.push(JSON.parse(message)));
-  for (const body of ["not-json synthetic-private-key", `{"errors":${" ".repeat(65_536)}}`]) {
+  const oversized = JSON.stringify({
+    errors: { description: ["is too long"] }, private_value: " ".repeat(65_536)
+  });
+  assert.ok(oversized.length > 65_536);
+  assert.deepEqual(JSON.parse(oversized).errors, { description: ["is too long"] });
+  for (const body of ["not-json synthetic-private-key", oversized]) {
     await assert.rejects(publishTrmnl({
       sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
       runCommand: async (_command, args, { cwd }) => {

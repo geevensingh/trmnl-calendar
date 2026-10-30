@@ -354,6 +354,10 @@ resuming the **same operation and SHAs**. Once persisted, the corrected artifact
 is reused, never silently rebuilt from newer main; durably verified Azure/TRMNL
 outcomes are not repeated. A preparation interrupted before its artifact identity
 was persisted may prepare that same pinned source again.
+If the final initialization write fails, the failure record keeps activation
+inactive with checkpoint/baselines unset and retains all durably verified target
+outcomes. Resuming the same operation completes initialization without repeating
+those target mutations.
 
 Successful repair sets Azure's baseline to the original activation and TRMNL's to
 the corrected source. The admission checkpoint stays at the **original activation**:

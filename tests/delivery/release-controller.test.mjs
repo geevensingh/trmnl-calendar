@@ -326,6 +326,45 @@ test("repair cannot publish when its mutation barrier fails the leased condition
   assert.equal(calls.at(-1), "release");
 });
 
+for (const mode of ["repair", "activation"]) {
+  test(`${mode} final-save failure stays readable and resumes without repeating verified targets`, async () => {
+    const options = await failedTrmnlActivation();
+    const { ledger, services } = options;
+    const original = await ledger.read();
+    const operation = mode === "repair" ? controller.repairActivationTrmnl : activateReleaseBaseline;
+    const write = ledger.write;
+    let failCompletion = true;
+    ledger.write = async state => {
+      if (failCompletion && state.active && state.activation.status === "succeeded") {
+        failCompletion = false;
+        throw Object.assign(new Error(), { code: "synthetic_completion_write_failed" });
+      }
+      await write(state);
+    };
+    services.deployAndVerifyAzure = async () => assert.fail("Azure was already verified");
+    const failed = await operation(options);
+    assert.equal(failed.code, "synthetic_completion_write_failed");
+    const status = await listReleaseStatus({ ledger });
+    assert.equal(status.active, false);
+    assert.equal(status.checkpoint, null);
+    assert.deepEqual(status.baselines, { azure: null, trmnl: null });
+    assert.deepEqual(status.activation.target_results, { azure: "verified", trmnl: "verified" });
+    assert.deepEqual(status.pending_reconciliation, { azure: false, trmnl: false });
+    assert.equal(status.activation.recovery_confirmation_required, false);
+    assert.deepEqual(status.activation.first_failure, original.activation.first_failure);
+    services.publishAndVerifyTrmnl = async () => assert.fail("TRMNL was durably verified before completion failed");
+    services.prepareTrmnlActivationRepair = async () => assert.fail("Reuse the persisted corrected archive");
+    assert.equal((await operation(options)).status, "succeeded");
+    const recovered = await listReleaseStatus({ ledger });
+    assert.equal(recovered.active, true);
+    assert.equal(recovered.checkpoint, options.commit);
+    assert.deepEqual(recovered.baselines, {
+      azure: options.commit, trmnl: mode === "repair" ? options.correctedCommit : options.commit
+    });
+    assert.deepEqual((await ledger.read()).activation.artifact, original.activation.artifact);
+  });
+}
+
 test("classification selects only affected production targets and defaults unknown paths to both", () => {
   assert.deepEqual(classifyPaths(["src/CalendarAgenda/AgendaFunction.cs"]), ["azure"]);
   assert.deepEqual(classifyPaths(["display/src/views/standard.liquid"]), ["trmnl"]);

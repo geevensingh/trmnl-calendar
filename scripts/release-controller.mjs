@@ -436,6 +436,9 @@ async function activateBaseline({
         trmnl_backup_recovery_accepted: true
       };
     } catch (error) {
+      state.active = false;
+      state.checkpoint = null;
+      state.baselines = { azure: null, trmnl: null };
       activation.status = "failed";
       activation.failure = {
         stage: activation.stage,

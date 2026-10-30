@@ -1,9 +1,11 @@
 # Automated Azure and TRMNL delivery design
 
-**Status: owner-confirmed design, 2026-10-25; not implemented or activated.**
-This document records the decisions from the CD design interview. It does not
-establish that a queue, deployment identity, workflow, or plugin publishing target
-exists. No production changes are authorized by this documentation-only task.
+**Status: owner-confirmed design, 2026-10-25.**
+At design confirmation, the release system was not implemented or activated.
+Implementation has since advanced on `main`; consult the delivery runbook for
+implementation and operator procedures. This document records the decisions from
+the CD design interview, not proof of configured access or live activation.
+No production changes are authorized by this documentation-only task.
 
 The [architectural decision](adr/0002-coordinate-main-triggered-production-releases.md)
 records the rationale. The [Git delivery contract](agents/delivery.md) still makes

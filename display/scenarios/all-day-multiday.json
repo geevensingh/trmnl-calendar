@@ -3,7 +3,7 @@
   "name": "All-day and multiday ranges",
   "description": "A spanning occurrence appears on both selected dates; another ends before the secondary day.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "current",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-23T18:00:00Z",
@@ -13,8 +13,8 @@
       "label": "Friday, Oct 23",
       "eligible_total": 2,
       "occurrences": [
-        { "time_kind": "all_day", "id": "weekend-preparation", "title": "Weekend preparation", "location": null, "start_date": "2026-10-23", "end_date_exclusive": "2026-10-26" },
-        { "time_kind": "all_day", "id": "spanning-workshop", "title": "Multiday workshop", "location": "Studio A", "start_date": "2026-10-23", "end_date_exclusive": "2026-10-27" }
+        { "time_kind": "all_day", "id": "weekend-preparation", "title": "Weekend preparation", "participation_expectation": "definite", "location": null, "start_date": "2026-10-23", "end_date_exclusive": "2026-10-26" },
+        { "time_kind": "all_day", "id": "spanning-workshop", "title": "Multiday workshop", "participation_expectation": "maybe", "location": "Studio A", "start_date": "2026-10-23", "end_date_exclusive": "2026-10-27" }
       ]
     },
     "secondary": {
@@ -22,7 +22,7 @@
       "label": "Monday, Oct 26",
       "eligible_total": 1,
       "occurrences": [
-        { "time_kind": "all_day", "id": "spanning-workshop", "title": "Multiday workshop", "location": "Studio A", "start_date": "2026-10-23", "end_date_exclusive": "2026-10-27" }
+        { "time_kind": "all_day", "id": "spanning-workshop", "title": "Multiday workshop", "participation_expectation": "maybe", "location": "Studio A", "start_date": "2026-10-23", "end_date_exclusive": "2026-10-27" }
       ]
     },
     "error": null

@@ -46,6 +46,7 @@ internal static class SourcePreflightCommand
             var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Agenda:SourceUrl"] = input.Source,
+                ["Agenda:OwnerAddress"] = Environment.GetEnvironmentVariable("Agenda__OwnerAddress"),
                 ["AZURE_FUNCTIONS_ENVIRONMENT"] = synthetic ? "Development" : "Production"
             }).Build();
             var services = new ServiceCollection();
@@ -257,7 +258,8 @@ internal static class SourcePreflightCommand
         string ManagedIdentityAccess = "not_performed",
         string RefreshPersistence = "not_performed",
         string NativeTrmnlPolling = "not_performed",
-        string PhysicalDeviceDelivery = "not_performed");
+        string PhysicalDeviceDelivery = "not_performed",
+        string ParticipationSemantics = "not_verified");
 
     private sealed class CommandOptions
     {

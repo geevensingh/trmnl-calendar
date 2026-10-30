@@ -7,13 +7,21 @@
     "functionAppName": { "value": "" },
     "planName": { "value": "" },
     "storageAccountName": { "value": "" },
+    "releaseStorageAccountName": { "value": "" },
     "hostIdentityName": { "value": "" },
     "keyVaultName": { "value": "" },
     "logAnalyticsName": { "value": "" },
     "applicationInsightsName": { "value": "" },
     "budgetName": { "value": "" },
     "budgetAlertEmail": { "value": "" },
+    "agendaOwnerAddress": { "value": "" },
     "budgetStartDate": { "value": "" },
+    "sourceSecretName": { "value": "calendar-source-url" },
+    "cacheContainerName": { "value": "source-cache" },
+    "deploymentContainerName": { "value": "app-packages" },
+    "releaseControlContainerName": { "value": "release-control" },
+    "releaseArtifactContainerName": { "value": "release-artifacts" },
+    "releaseControllerPrincipalId": { "value": "" },
     "retainHostDiagnostics": { "value": true }
   }
 }

@@ -59,6 +59,7 @@ public sealed partial class AgendaFunction
     }
 
     private const string TimeZoneId = "America/Los_Angeles";
+    private static readonly TimeSpan UpcomingWindow = TimeSpan.FromMinutes(15);
     private static readonly TimeZoneInfo AgendaTimeZone = TimeZoneInfo.FindSystemTimeZoneById(TimeZoneId);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -265,7 +266,7 @@ public sealed partial class AgendaFunction
     }
 
     private AgendaResult Interpret(string ics, ExclusionRule[] rules, DateTimeOffset now,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, Action<Calendar>? calendarParsed = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Calendar calendar;
@@ -276,6 +277,7 @@ public sealed partial class AgendaFunction
             if (components.Length != 1 || components[0] is not Calendar parsed)
                 return Fail("source_invalid", "The source must contain exactly one calendar.");
             calendar = parsed;
+            calendarParsed?.Invoke(calendar);
         }
         catch (Exception error) when (error is SerializationException or FormatException or ArgumentException
             or InvalidOperationException or OverflowException or RegexMatchTimeoutException)
@@ -404,11 +406,13 @@ public sealed partial class AgendaFunction
                         : start.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                     var id = Convert.ToHexStringLower(SHA256.HashData(
                         Encoding.UTF8.GetBytes($"{item.Uid}\n{key}")));
+                    // Known labels require accepted owner-authorized source evidence; this tracer stays Unknown-only.
+                    const ParticipationExpectation expectation = ParticipationExpectation.Unknown;
                     AgendaOccurrence occurrence = start.HasTime
                         ? new TimedOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
-                            new DateTimeOffset(start.AsUtc), new DateTimeOffset(end.AsUtc))
+                            new DateTimeOffset(start.AsUtc), new DateTimeOffset(end.AsUtc), expectation)
                         : new AllDayOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
-                            DateOnly.FromDateTime(start.Value), DateOnly.FromDateTime(end.Value));
+                            DateOnly.FromDateTime(start.Value), DateOnly.FromDateTime(end.Value), expectation);
                     return (Occurrence: occurrence,
                         IsActive: item.IsActive && (!masters.TryGetValue(item.Uid!, out var master) || master.IsActive),
                         SourceTitle: item.Summary);
@@ -437,7 +441,8 @@ public sealed partial class AgendaFunction
         {
             return Fail("source_invalid", "The calendar source could not be interpreted.");
         }
-        var result = new AgendaResult(1, AgendaState.Current, TimeZoneId, now, now,
+        occurrences = ApplyEmphasis(occurrences, now);
+        var result = new AgendaResult(2, AgendaState.Current, TimeZoneId, now, now,
             SelectDay(primary, occurrences), SelectDay(secondary, occurrences), null);
         cancellationToken.ThrowIfCancellationRequested();
         return result;
@@ -449,6 +454,32 @@ public sealed partial class AgendaFunction
         public override ICalendarObjectList<ICalendarObject> Children => source.Children;
         public override IEnumerable<IRecurrable> RecurringItems =>
             source.Events.Where(item => item.DtStart?.HasTime == timed);
+    }
+
+    private static string? ConfiguredOwnerAddress(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || !Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || uri.Scheme != Uri.UriSchemeMailto
+            || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            return null;
+        return MailboxAddress(uri);
+    }
+
+    private static bool IsOwnerAddress(Uri? value, string ownerAddress) =>
+        string.Equals(MailboxAddress(value), ownerAddress, StringComparison.OrdinalIgnoreCase);
+
+    private static string? MailboxAddress(Uri? value)
+    {
+        if (value is not { IsAbsoluteUri: true } || value.Scheme != Uri.UriSchemeMailto
+            || value.Query.Length != 0 || value.Fragment.Length != 0)
+            return null;
+        var mailto = value.GetComponents(UriComponents.AbsoluteUri, UriFormat.Unescaped);
+        if (!mailto.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
+            return null;
+        var address = mailto["mailto:".Length..];
+        return string.IsNullOrWhiteSpace(address) || address.Contains(',') || address.Any(char.IsWhiteSpace)
+            ? null : address;
     }
 
     private static async Task<(ExclusionRule[] Rules, AgendaError? Error)> ValidateRequest(HttpRequest request)
@@ -548,19 +579,19 @@ public sealed partial class AgendaFunction
         var now = clock.GetUtcNow();
         var primary = NextWorkingDay(DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, AgendaTimeZone).DateTime));
         var secondary = NextWorkingDay(primary.AddDays(1));
-        return new AgendaResult(1, AgendaState.Error, TimeZoneId, now, sourceSucceededAt,
+        return new AgendaResult(2, AgendaState.Error, TimeZoneId, now, sourceSucceededAt,
             SelectDay(primary, []) with { EligibleTotal = null },
             SelectDay(secondary, []) with { EligibleTotal = null }, new AgendaError(code, message));
     }
 
     private ContentResult Respond(AgendaResult result)
     {
+        result = BoundResult(result);
         var json = JsonSerializer.Serialize(result, JsonOptions);
-        if (result.State != AgendaState.Error && Encoding.UTF8.GetByteCount(json) > 95_000)
-            return Respond(Fail("agenda_too_large", "The complete agenda exceeds the polling response budget.",
-                result.SourceSucceededAt));
         if (result.Error is not null)
             logger.LogWarning("Agenda failed with code {ErrorCode}.", result.Error.Code);
+        if (result.State != AgendaState.Error && logger.IsEnabled(LogLevel.Information))
+            LogAgenda(result);
         return new ContentResult
         {
             StatusCode = StatusCodes.Status200OK,
@@ -569,11 +600,130 @@ public sealed partial class AgendaFunction
         };
     }
 
+    private AgendaResult BoundResult(AgendaResult result)
+    {
+        const int limit = 95_000;
+        var envelope = result with
+        {
+            Primary = result.Primary with { Occurrences = [] },
+            Secondary = result.Secondary with { Occurrences = [] }
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(envelope, JsonOptions).Length;
+        if (bytes > limit)
+            return Fail("agenda_too_large", "The agenda metadata exceeds the polling response budget.",
+                result.SourceSucceededAt);
+        var days = new[] { result.Primary, result.Secondary };
+        var admitted = new[] { new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal) };
+        var candidates = days.SelectMany((day, index) =>
+                day.Occurrences.Select(occurrence => (Occurrence: occurrence, Day: index)))
+            .OrderByDescending(item => item.Occurrence is TimedOccurrence { Emphasis: not null });
+        foreach (var (occurrence, day) in candidates)
+        {
+            var size = JsonSerializer.SerializeToUtf8Bytes(occurrence, JsonOptions).Length
+                + (admitted[day].Count > 0 ? 1 : 0);
+            if (size > limit - bytes)
+                break;
+            bytes += size;
+            admitted[day].Add(occurrence.Id);
+        }
+        return result with
+        {
+            Primary = result.Primary with
+            {
+                Occurrences = result.Primary.Occurrences.Where(item => admitted[0].Contains(item.Id)).ToArray()
+            },
+            Secondary = result.Secondary with
+            {
+                Occurrences = result.Secondary.Occurrences.Where(item => admitted[1].Contains(item.Id)).ToArray()
+            }
+        };
+    }
+
+    private void LogAgenda(AgendaResult result)
+    {
+        var pollId = Guid.NewGuid().ToString("N");
+        // The isolated host forwards formatted messages, not all structured logger properties.
+        logger.LogInformation("Agenda poll {DiagnosticJson}", JsonSerializer.Serialize(new
+        {
+            PollId = pollId,
+            result.State,
+            GeneratedAt = result.GeneratedAt.ToString("O", CultureInfo.InvariantCulture),
+            SourceSucceededAt = result.SourceSucceededAt?.ToString("O", CultureInfo.InvariantCulture),
+            PrimaryDate = result.Primary.Date,
+            PrimaryEligibleTotal = result.Primary.EligibleTotal,
+            SecondaryDate = result.Secondary.Date,
+            SecondaryEligibleTotal = result.Secondary.EligibleTotal
+        }, JsonOptions));
+        foreach (var day in new[] { result.Primary, result.Secondary })
+            foreach (var occurrence in day.Occurrences)
+            {
+                var (kind, start, end) = occurrence switch
+                {
+                    TimedOccurrence timed => ("timed",
+                        timed.StartAt.ToString("O", CultureInfo.InvariantCulture),
+                        timed.EndAt.ToString("O", CultureInfo.InvariantCulture)),
+                    AllDayOccurrence allDay => ("all_day",
+                        allDay.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                        allDay.EndDateExclusive.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
+                    _ => throw new InvalidOperationException("Unknown occurrence kind.")
+                };
+                var title = LimitDiagnosticText(occurrence.Title);
+                var location = LimitDiagnosticText(occurrence.Location);
+                logger.LogInformation("Agenda occurrence {DiagnosticJson}", JsonSerializer.Serialize(new
+                {
+                    PollId = pollId,
+                    OccurrenceId = occurrence.Id,
+                    day.Date,
+                    TimeKind = kind,
+                    Start = start,
+                    EndExclusive = end,
+                    Title = title,
+                    Location = location,
+                    TitleTruncated = title != occurrence.Title,
+                    LocationTruncated = location != occurrence.Location
+                }, JsonOptions));
+            }
+    }
+
+    private static string? LimitDiagnosticText(string? value)
+    {
+        const int limit = 1024;
+        if (value is null || value.Length <= limit)
+            return value;
+        return value[..(char.IsHighSurrogate(value[limit - 1]) ? limit - 1 : limit)];
+    }
+
     private static DateOnly NextWorkingDay(DateOnly date)
     {
         while (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
             date = date.AddDays(1);
         return date;
+    }
+
+    private static AgendaOccurrence[] ApplyEmphasis(AgendaOccurrence[] occurrences, DateTimeOffset now)
+    {
+        var timed = occurrences.OfType<TimedOccurrence>().ToArray();
+        var inProgress = timed.Where(item => item.StartAt <= now && now < item.EndAt)
+            .Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var upcoming = new HashSet<string>(StringComparer.Ordinal);
+        if (inProgress.Count == 0)
+        {
+            var future = timed.Where(item => item.StartAt > now).ToArray();
+            if (future.Length > 0)
+            {
+                var nextStart = future.Min(item => item.StartAt);
+                if (nextStart - now <= UpcomingWindow)
+                    upcoming.UnionWith(future.Where(item => item.StartAt == nextStart).Select(item => item.Id));
+            }
+        }
+
+        return occurrences.Select(item => item is TimedOccurrence timedItem
+            ? timedItem with
+            {
+                Emphasis = inProgress.Contains(timedItem.Id) ? AgendaEmphasis.InProgress
+                    : upcoming.Contains(timedItem.Id) ? AgendaEmphasis.Upcoming : null
+            }
+            : item).ToArray();
     }
 
     private static IEnumerable<CalDateTime> SourceDates(CalendarEvent item) =>

@@ -2,6 +2,7 @@ param location string
 param functionAppName string
 param planName string
 param storageAccountName string
+param releaseStorageAccountName string
 param hostIdentityName string
 param keyVaultName string
 param logAnalyticsName string
@@ -11,11 +12,25 @@ param budgetName string
 @secure()
 param budgetAlertEmail string
 
+@secure()
+@description('Adapter-only owner mailto: identity for the authorized source preflight; never an HTTP or plugin input.')
+param agendaOwnerAddress string
+
 param budgetStartDate string
 param sourceSecretName string
 param cacheContainerName string
 param deploymentContainerName string
+param releaseControlContainerName string = 'release-control'
+param releaseArtifactContainerName string = 'release-artifacts'
+@description('Object ID of the OIDC release controller service principal; empty until owner bootstrap.')
+param releaseControllerPrincipalId string = ''
 param retainHostDiagnostics bool
+
+var reviewedFunctionCapacity = {
+  maximumInstanceCount: 1
+  instanceMemoryMB: 2048
+  alwaysReady: []
+}
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
@@ -67,6 +82,61 @@ resource cacheContainer 'Microsoft.Storage/storageAccounts/blobServices/containe
 resource packages 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: blobs
   name: deploymentContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource releaseStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: releaseStorageAccountName
+  location: location
+  kind: 'StorageV2'
+  sku: {
+    name: 'Standard_LRS'
+  }
+  properties: {
+    accessTier: 'Hot'
+    supportsHttpsTrafficOnly: true
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    defaultToOAuthAuthentication: true
+    allowCrossTenantReplication: false
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource releaseBlobs 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: releaseStorage
+  name: 'default'
+  properties: {
+    isVersioningEnabled: false
+    deleteRetentionPolicy: {
+      enabled: false
+    }
+    containerDeleteRetentionPolicy: {
+      enabled: false
+    }
+    changeFeed: {
+      enabled: false
+    }
+    restorePolicy: {
+      enabled: false
+    }
+  }
+}
+
+resource releaseControl 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: releaseBlobs
+  name: releaseControlContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource releaseArtifacts 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: releaseBlobs
+  name: releaseArtifactContainerName
   properties: {
     publicAccess: 'None'
   }
@@ -204,11 +274,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         name: 'dotnet-isolated'
         version: '10.0'
       }
-      scaleAndConcurrency: {
-        maximumInstanceCount: 1
-        instanceMemoryMB: 2048
-        alwaysReady: []
-      }
+      scaleAndConcurrency: reviewedFunctionCapacity
       deployment: {
         storage: {
           type: 'blobContainer'
@@ -239,6 +305,7 @@ resource settings 'Microsoft.Web/sites/config@2024-04-01' = {
     APPLICATIONINSIGHTS_CONNECTION_STRING: insights.properties.ConnectionString
     APPLICATIONINSIGHTS_AUTHENTICATION_STRING: 'Authorization=AAD'
     Agenda__SourceUrl: '@Microsoft.KeyVault(SecretUri=${vault.properties.vaultUri}secrets/${sourceSecretName})'
+    Agenda__OwnerAddress: agendaOwnerAddress
     Agenda__CacheServiceUri: storage.properties.primaryEndpoints.blob
     Agenda__CacheContainer: cacheContainerName
   }
@@ -265,6 +332,26 @@ resource cacheAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: cacheContainer
   properties: {
     principalId: app.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+  }
+}
+
+resource releaseControllerAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(releaseControllerPrincipalId)) {
+  name: guid(releaseControl.id, releaseControllerPrincipalId, 'release-controller-data-contributor')
+  scope: releaseControl
+  properties: {
+    principalId: releaseControllerPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+  }
+}
+
+resource releaseArtifactAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(releaseControllerPrincipalId)) {
+  name: guid(releaseArtifacts.id, releaseControllerPrincipalId, 'release-controller-artifact-contributor')
+  scope: releaseArtifacts
+  properties: {
+    principalId: releaseControllerPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
   }
@@ -335,4 +422,7 @@ resource budget 'Microsoft.Consumption/budgets@2024-08-01' = {
 output agendaEndpoint string = 'https://${app.properties.defaultHostName}/api/agenda'
 output cacheContainerResourceId string = cacheContainer.id
 output deploymentContainerResourceId string = packages.id
+output releaseControlContainerResourceId string = releaseControl.id
+output releaseArtifactContainerResourceId string = releaseArtifacts.id
 output functionPrincipalId string = app.identity.principalId
+output reviewedCapacity object = reviewedFunctionCapacity

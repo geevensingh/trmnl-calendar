@@ -67,9 +67,11 @@ async function baselineInputs(workspace, revision) {
   const schemas = [...contract.matchAll(/^# Agenda HTTP and display contract, version (\d+)\s*$/gm)];
   const pins = [...renderer.matchAll(/\/(css|js)\/(\d+\.\d+\.\d+)\/plugins\.(?:css|js)/g)];
   if (schemas.length !== 1 || Number(schemas[0][1]) !== agendaSchemaVersion
+    || !contract.includes("required `participation_expectation`")
+    || !templates[0].includes("occurrence.participation_expectation")
     || !["css", "js"].every(kind => pins.some(pin => pin[1] === kind))
     || pins.some(pin => pin[2] !== frameworkVersion))
-    throw new WorkbenchError(`Incompatible baseline ${commit}: require agenda schema ${agendaSchemaVersion} and explicit TRMNL CSS/JavaScript ${frameworkVersion} pins.`);
+    throw new WorkbenchError(`Incompatible baseline ${commit}: require agenda schema ${agendaSchemaVersion} with required participation_expectation, participation-aware templates, and explicit TRMNL CSS/JavaScript ${frameworkVersion} pins.`);
   return { commit, templates };
 }
 

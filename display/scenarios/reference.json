@@ -3,7 +3,7 @@
   "name": "Reference: Friday and Monday",
   "description": "The original display fixture, including a bounded secondary array with a complete total.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "current",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-23T18:00:00Z",
@@ -13,7 +13,7 @@
       "label": "Friday, Oct 23",
       "eligible_total": 1,
       "occurrences": [
-        { "time_kind": "timed", "id": "synthetic-occurrence", "title": "Synthetic planning", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" }
+        { "time_kind": "timed", "id": "synthetic-occurrence", "title": "Synthetic planning", "participation_expectation": "likely", "location": "Studio A", "start_at": "2026-10-23T18:00:00Z", "end_at": "2026-10-23T19:00:00Z" }
       ]
     },
     "secondary": {

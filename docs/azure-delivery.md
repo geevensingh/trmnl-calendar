@@ -5,10 +5,11 @@ This is the repeatable procedure for [ticket #8](https://github.com/geevensingh/
 Git landing, publication, completion reporting, and ticket closure follow the [delivery contract](agents/delivery.md). The live activation evidence below is an additional gate, not proof of landing on the target branch.
 
 The owner-confirmed [automated Azure/TRMNL delivery design](automated-delivery.md)
-defines a future main-triggered release system, including reviewed infrastructure
-changes within `rg-trmnl-calendar`. It is not implemented or activated; this
-runbook remains the current operator procedure. Its fixed resource plan is the
-starting configuration, not the future CD system's permanent authorization limit.
+records the main-triggered release contract, including reviewed infrastructure
+changes within `rg-trmnl-calendar`. The design record does not establish live
+activation; this runbook documents the implementation and operator procedures.
+Its fixed resource plan is the starting configuration, not the CD system's
+permanent authorization limit.
 
 ## Approved scope and permissions
 
@@ -20,20 +21,24 @@ The owner's private resource plan supplies the subscription, exact resource name
 | --- | --- |
 | Functions plan/app | Linux Flex Consumption `FC1`, .NET **10.0 isolated**, 2048 MB, maximum **one** on-demand instance, no always-ready instances, default HTTP concurrency, HTTPS/TLS 1.2+ |
 | Shared storage | One Hot StorageV2 Standard LRS account for host state, deployment packages, and a private source-cache container; no anonymous blobs or shared-key authentication |
+| Release storage | A separate Hot StorageV2 Standard LRS account for the private release ledger and retained artifacts; no Function runtime grants |
 | Host identity | User-assigned identity for host/deployment storage, not the application's cache credential |
 | Source secret | Standard RBAC Key Vault; versionless Key Vault reference in `Agenda__SourceUrl`; the template never accepts the source URL |
+| Participation owner identity | Adapter-only `Agenda__OwnerAddress`, an exact `mailto:` address; no HTTP or plugin input |
 | Telemetry | Workspace-based Application Insights with Entra ingestion authentication; Log Analytics PerGB2018, 30-day retention, 0.1 GB/day backup ingestion cap |
 | Budget | Resource-group monthly $20; actual-spend alerts at **$10/$16/$20** (50/80/100%), forecast warning at 100% |
 
-No API Management, VNet/private endpoint, premium plan, extra storage account, queue role, or paid warming is created. Basic SCM/FTP publishing credentials are disabled; supported Azure CLI deployment uses the operator's Entra authorization.
+No API Management, VNet/private endpoint, premium plan, queue role, or paid warming is created. The release account is separate because the host's required account-wide data role must not extend to release records. Its storage and transaction charges are additional; budget alerts are not a spending cap. Basic SCM/FTP publishing credentials are disabled; supported Azure CLI deployment uses the operator's Entra authorization.
 
 | Principal | Approved role and scope |
 | --- | --- |
 | Host user-assigned identity | **Storage Blob Data Owner**, shared storage account: the documented host minimum, intrinsically broader than the app cache |
 | Host identity, only when retaining startup diagnostics | **Storage Table Data Contributor**, same account; controlled by `retainHostDiagnostics` |
 | Function system-assigned identity | **Storage Blob Data Contributor**, cache **container only** |
+| Release controller identity | **Storage Blob Data Contributor**, separately scoped to each release container in the dedicated release account |
 | Function system-assigned identity | **Key Vault Secrets User**, dedicated vault |
 | Function system-assigned identity | **Monitoring Metrics Publisher**, Application Insights component |
+| Separately owner-approved diagnostic operator | **Storage Blob Data Reader**, private cache **container only**; not provisioned automatically |
 
 The parameter example explicitly retains host startup diagnostics and their Table role; setting that option to false forgoes that diagnostic storage. The application cache always uses an explicit **system-assigned** `ManagedIdentityCredential`, independent of the host's user-assigned client ID. No runtime identity receives control-plane Owner/Contributor.
 
@@ -97,6 +102,25 @@ Comparison is ordinal exact equality. `same_after_trimming`, `same_uri_represent
 
 Each attempt reads at most the production **2 MiB** source limit with strict UTF-8. It uses the production **30-second combined headers/body** deadline and the same actual `Interpret` path, installed Ical.Net and maintained timezone resolver, with a **35-second overall source-check** deadline. It does not create another parser, change recurrence/timezone semantics, accept partial agendas, apply rule fallbacks, or persist a last-good source. `calendar_media_type`/`html_media_type` are booleans only; content type is not substituted for actual production interpretation.
 
+Participation-capability evidence is a fixed, boolean-only `participation_capabilities` object on each successfully interpreted attempt. It contains no identities, event counts, response values, or calendar text:
+
+| Observation | Meaning |
+| --- | --- |
+| `owner_address_configured` | An approved adapter-side identity is present as one valid `mailto:` mailbox, without whitespace/controls, query, fragment, or display name. |
+| `owner_organizer_observed` / `owner_attendee_observed` | An organizer / attendee matches that exact mailbox, case-insensitively. Names, other attendees, source URLs and guessed aliases never establish identity. |
+| `owner_participation_status_observed` | A matching attendee explicitly supplies a `PARTSTAT` parameter, even if its value is unsupported or the owner match is ambiguous. This is **not** the usable-response flag. |
+| `owner_response_usable_observed` | At least one event has exactly one matching owner attendee supplying exactly one supported response: accepted, declined, tentative, or needs-action. A parser's default response is not supplied evidence. |
+| `owner_response_missing_observed` | A matching owner attendee has no supplied `PARTSTAT`. This does not establish an unanswered invitation. |
+| `owner_response_unsupported_observed` | A matching owner attendee supplies response evidence outside that supported single-value set, including delegated or extension values. |
+| `owner_attendee_ambiguous_observed` | An event has multiple matching owner attendees. None of those matches establishes a usable response, even if their response values agree. |
+| `free_availability_observed` / `followed_title_marker_observed` | Explicit `TRANSP:TRANSPARENT` / a `Following: ` title prefix was observed. These are candidate markers, not verification of the publication's owner-specific Free/followed semantics. |
+
+These are independent aggregate observations: usable evidence on one event does not repair ambiguous, missing or unsupported evidence on another. With no valid owner identity, all owner-specific flags are false; with no owner match, no personal response is inferred. Overall event `STATUS`, missing metadata and another attendee's response are never personal response evidence. A false observation means only “not observed in this checked sample,” not that the publication never supplies it.
+
+The operator supplies `Agenda__OwnerAddress` to the protected process through approved adapter configuration; the value is never prompted for, logged, or written into the report. Do not inspect secrets/settings automatically or include the identity in arguments, chat, tickets or screenshots. Failed/unsupported interpretation and acquisition failures have `participation_capabilities: null`, with their explicit phase failure/unperformed codes; partial parser observations are discarded. Authorization/input failures have no attempts. None is a successful capability check.
+
+`measurement_scope.participation_semantics` remains `not_verified`, including on a successful acquisition/interpretation check. Production remains **Unknown-only** pending owner-authorized actual-publication evidence and its acceptance. Downstream classification must not use these synthetic observations, structural support, or `checks_passed` as that acceptance. Record only safe conclusions and limitations on [#60](https://github.com/geevensingh/trmnl-calendar/issues/60); actual-source access is currently unperformed and remains an owner gate. Do not close the ticket or clear its implementation blockers from synthetic evidence alone.
+
 The JSON report separates acquisition (`received`, `redirect_refused`, `http_rejected`, `transport_failed`, `headers_timeout`, `body_timeout`, `source_too_large`, `invalid_utf8`) from actual interpretation (`supported`, production invalid/unsupported codes, or an interpretation timeout). HTTP status, bounded phase durations and aggregate body size are safe metadata. A received HTML page is not a supported calendar. Absent headers, unread bodies, unperformed interpretation and unrequested polling are explicit null/unperformed evidence, never assumed successes.
 
 There is **one attempt by default**, no preliminary warmup and no automatic source retry. `--attempts 2` explicitly requests one additional measurement, retaining both in order; any failed attempt keeps the command unsuccessful. Design-budget assessments always identify **attempt 1**, so a warm second success cannot rescue its failure. A saved report is created exclusively and never overwrites an existing file; use a new report name for every later invocation and preserve the original red evidence.
@@ -130,7 +154,7 @@ dotnet test .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --no-restor
 
 ## Runtime inputs and read-only preflight
 
-Copy `infra\parameters.example.json` into ignored runtime storage, fill its empty values from the approved private plan, and protect that file. Keep `budgetAlertEmail` a runtime input; it is also a secure ARM parameter. The subscription is a command parameter, never a committed default.
+Copy `infra\parameters.example.json` into ignored runtime storage, fill its empty values from the approved private plan, and protect that file. Keep `budgetAlertEmail` and `agendaOwnerAddress` runtime-only; both are secure ARM parameters at subscription and resource-module boundaries, without defaults or identity outputs. Secure ARM treatment does not encrypt this local parameter file. Missing, invalid or multi-address owner input fails before any Azure call, without printing its value. Valid `mailto:` input is validated using its complete decoded mailbox, not the empty .NET `UriComponents.Path`. Only the parameter-file reference enters Azure CLI arguments; neither owner identity nor recipient values do. The subscription is a command parameter, never a committed default.
 
 ```powershell
 New-Item -ItemType Directory -Force .\artifacts\infra | Out-Null
@@ -217,6 +241,67 @@ Keep the editor text a **string**, including malformed JSON. Do not interpolate 
 
 In the actual native editor, verify quotes/newlines survive, malformed/unsupported rules produce a visible `configuration_invalid` state, `[]` deliberately clears exclusions, and subsequent valid edits affect subsequent polls without deployment. Restore intended exclusions afterward. Select OG/X and the required full, half-horizontal and half-vertical arrangements, including intended mashup placement. Confirm private device rendering and the source timestamp without saving private screenshots or bodies. A website preview is not device delivery.
 
+## Coordinated Azure/TRMNL releases
+
+`.github/workflows/coordinated-release.yml` is a separate production release controller, not a CI workflow. It scans first-parent `main` history on pushes and every 15 minutes, admits qualifying commits in order, and drains the durable queue under an Azure Blob lease. The scheduled scan recovers missed push events. Azure deploys and passes its redacted live smoke before TRMNL is updated; deployment records are created per target. Retries use the original immutable artifacts, failed releases block successors, and a skip requires an attributed manual operation. The controller never creates or deletes the resource group.
+
+Unfamiliar paths, including unfamiliar files under `scripts/`, conservatively select both targets. Only explicitly known Azure deployment inputs are Azure-only; known local-only inputs do not select a production target.
+
+Before enabling this workflow, the owner must complete and record the initial Azure bootstrap, TRMNL existing-plugin configuration, and private backups with explicit manual-recovery approval below. Before activation, bootstrap the release OIDC identity and a **dedicated release storage account** inside the approved group, with **both** private containers (`release-control` and `release-artifacts`) and a separate container-scoped Blob Data Contributor grant on each. Set `releaseStorageAccountName` to that account, distinct from the existing runtime `storageAccountName`; deployment scripts reject a shared account. Activation uploads retained artifacts before infrastructure reconciliation, so neither the account, artifact container nor its grant can wait for that reconciliation. Configure federation with issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`, and the exact subject emitted in the workflow's Azure login diagnostics. This repository's observed `main` subject includes numeric owner/repository IDs: `repo:geevensingh@11344767/trmnl-calendar@1424811469:ref:refs/heads/main`; do not assume the shorter legacy subject matches. Grant the identity only the resource-group deployment permissions required to reconcile the already-existing approved group, including its required role-assignment permissions; Bicep maintains its separate ledger-container and release-artifact-container grants. The function deployment-package container is not the retained-release-artifact container. Do not grant subscription-wide Contributor for routine releases.
+
+The owner has accepted retaining resource-group-scoped Contributor for this setup. That role can delete the resource group: the controller's refusal to create/delete the group is an application boundary, not an effective RBAC denial. Keep the separately constrained role-assignment delegation and container-only data grants; this exception does not authorize subscription-wide permissions or grant either runtime identity release-storage access.
+
+The host identity keeps its required account-wide Blob Data Owner role only on the runtime account. Neither Function identity is granted data or control-plane access to the release account. During bootstrap, inspect effective/inherited permissions and verify both runtime identities cannot read or mutate either release container; remove conflicting inherited grants under owner authorization before activation. Keep shared-key/public access disabled and do not attach the release identity to the Function. Existing activated installations need an owner-reviewed ledger/artifact migration before changing accounts; never point an active controller at an empty account or reactivate to bypass its history. No live migration or account provisioning was performed during implementation.
+
+Routine releases compare live capacity against the `reviewedFunctionCapacity` value used by the exact commit's Bicep and returned as `reviewedCapacity` by its reconciled deployment stack. This supports reviewed maximum-instance, memory and always-ready changes without a second approval or changing resource-group, runtime, artifact, authentication, and commit checks. The standalone operator command above retains its initial max-one/2 GiB/zero-always-ready defaults unless supplied with a commit-matching `-ReviewedCapacityJson` result from reconciliation.
+
+Before any TRMNL push, the publisher pulls the existing non-secret definition and compares custom-field identifiers and types. Removing, renaming or changing a deployed field type fails with `trmnl_field_migration_required` before mutation. There is no implicit migration or configured-value reset: retain the existing schema until an explicit owner-reviewed value-preserving migration has been implemented. Post-push verification pulls into an empty source directory and compares templates and parsed settings, ignoring mapping-key order but preserving array order.
+
+Before approving TRMNL publication, export the existing production plugin and accept manual recovery if publication resets its settings. Keep the export private and separately save the currently configured endpoint, function key, and exact exclusion-rule text: do not assume the export includes password-style values. This is a recovery plan, not proof of preservation or an automatic rollback. Only after saving those backups, set `TRMNL_BACKUP_RECOVERY_ACCEPTED_PLUGIN_ID` to the same existing production plugin ID and describe the acceptance in the attributed activation reason. Both activation and routine publication require this plugin-specific approval. Definition/template verification does not verify configured-value preservation.
+
+Ruby settings parsers receive only allowlisted non-secret tool environment settings, not Azure configuration, GitHub tokens, Function keys or the TRMNL publishing key. Only the isolated `trmnlp` calls receive that publishing key.
+
+Retained TRMNL archives are restored using a destination-local temporary input, removed before publication. This avoids GNU tar unquoting Windows directory arguments or treating drive-qualified archive names as remote.
+
+Set these GitHub repository variables:
+
+| Variable | Value |
+|---|---|
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Federated release identity client ID, tenant ID, and approved subscription ID. |
+| `AZURE_RESOURCE_GROUP_NAME` | The owner-approved, pre-existing application resource group. |
+| `AZURE_STORAGE_ACCOUNT`, `AZURE_RELEASE_CONTAINER`, `AZURE_ARTIFACT_CONTAINER` | The **dedicated release** account matching `releaseStorageAccountName`, private `release-control` ledger container, and private `release-artifacts` retained artifact container. Never use the runtime `storageAccountName`. The release identity has separate container-scoped Blob Data Contributor roles. |
+| `AZURE_BOOTSTRAP_VERIFIED` | Set to `true` only after the owner verifies the separate Azure bootstrap and required live evidence. |
+| `TRMNL_PLUGIN_ID` | The existing production plugin ID; never leave this blank or allow `trmnlp` to create a plugin. |
+| `TRMNL_BACKUP_RECOVERY_ACCEPTED_PLUGIN_ID` | The same existing plugin ID only after the owner privately saves the export and configured values and accepts manual recovery. This is not a verified-preservation claim. |
+
+Set these GitHub Actions secrets:
+
+| Secret | Value |
+|---|---|
+| `AZURE_PARAMETERS_JSON` | The complete owner-reviewed deployment parameter document based on `infra/parameters.example.json`, including the exact resource group and release identity **service-principal object ID**. Keep the document private; the runner writes it to a mode-restricted temporary file and removes it after use. |
+| `TRMNL_API_KEY` | The TRMNL publishing key. It is passed only to the isolated `trmnlp` process. |
+| `TRMNL_FUNCTION_KEY` | The dedicated function-scoped key for the existing `/api/agenda` trigger, never a host/master key. |
+
+The first manual `activate` operation on `main` publishes and verifies both targets at the selected reviewed main commit before recording target baselines. It requires verified Azure bootstrap, matching plugin-specific backup approval, and an attributed reason. It does not create the private backups or establish missing live evidence on the owner's behalf. Activation records `trmnl_backup_recovery_accepted: true` alongside the actor/reason; status exposes that acceptance without private configuration. Legacy activation records without recorded acceptance report null, not inferred approval.
+
+If activation fails, rerun `activate` on `main` with a new attributed reason. Recovery resumes the ledger's original activation commit and retained artifacts, even if `main` has advanced; verified targets are not redeployed. The current-main restriction applies only to a new activation. An interrupted activation is first recorded as uncertain and blocked before a later explicit recovery can resume it. Its original `first_failure` remains in the durable record after successful recovery.
+
+Use **Actions > Coordinated production release > Run workflow** on `main` for `status`, `activate`, `retry`, or `skip`. Supply a concise reason for activation/retry/skip. A retry reuses the original commit and artifacts and preserves durably verified target outcomes, including interruptions immediately after a target-success save. A skip records the actor and reason without advancing either target baseline. `main` is the normal automatic operation. Never manually edit the Blob ledger or delete retained release artifacts to clear a barrier. Keep GitHub deployment permissions enabled for the workflow; do not add CI checks or rerun unrelated CI as part of release recovery.
+
+Status also exposes per-target `pending_reconciliation`. A target is marked before mutation and cleared only after verification. Skipping a failed release preserves this marker: the next qualifying commit must redeploy that target even if its contents match the last successful baseline, because the skipped attempt might have changed what is live.
+
+Lease-renewal failure cancels active local commands and prevents subsequent deployment stages or ledger writes by that controller. Cancellation is not proof that descendants or an already accepted Azure/TRMNL request have stopped. Before every external mutation, the ledger records `recovery_confirmation_required`; an unverified failure or interruption leaves that barrier in place. To retry, skip, or resume activation after a mutation failure, first verify that the previous runner processes (including descendants) have ended and that all Azure deployment-stack/code deployments or TRMNL publishing requests have completed or been stopped. Do not merely break the lease or cancel a GitHub run and assume remote work stopped.
+
+Only after that verification, select **I verified all previous release processes and remote mutations have stopped** in the manual workflow and provide the evidence/context in the attributed reason. The controller records this confirmation with the actor and time before allowing recovery. The equivalent CLI switch is `--previous-mutation-stopped`. Status exposes the barrier; automatic scans cannot clear it. Selection/preparation failures before any mutation can be retried without this confirmation.
+
+### Azure release operator
+
+When direct Azure access is unavailable, use **Actions > Azure release operator** on `main`, or `gh workflow run release-azure-operator.yml --ref main -f operation=inspect`. This manual-only workflow uses the existing release OIDC identity and the same concurrency group as production releases. It needs no new identity, secret, or permission grant. Inspection makes no Azure writes and reports the deployment-stack state, whether group deployments have stopped, a boolean budget-email check, and the two release containers' relevant assignment IDs. It never prints parameters, email addresses, principal IDs, keys, or raw Azure diagnostics. A failed command reports its stage and an allowlisted Azure error code instead of an unhelpful generic error.
+
+Portal-created bootstrap grants can have different IDs from the exact assignment resources requested by Bicep, causing `RoleAssignmentExists` even when the principal/role/scope are correct. After inspecting current state and obtaining explicit owner approval, `repair-bootstrap-roles` accepts the old and requested GUIDs for **each** release container, an attributed `reason`, and `previous_mutation_stopped=true`. These inputs identify the two approved replacements; they do not permit arbitrary scopes, roles, or principals. Both grants must pass preflight before any write, and requested IDs must match the latest failed deployment's role-assignment operations, including individually succeeded operations after partial repair. The script checks subscription and protected target bindings, exact container scopes, release principal, Blob Data Contributor role, unconditional grants, and stopped deployments. A missing stack is reported as absent rather than treated as a failed `show` command; unknown or running work blocks repair.
+
+Repair replaces only those two assignment IDs at unchanged permission scopes. An already-aligned grant is left alone. There is a brief per-container access gap; a failed delete/create is reconciled against actual grants, and the original assignment is restored when necessary. Post-mutation reads get one bounded retry; if reconciliation stays unavailable, the original exact grant is still attempted before verifying which approved ID exists. Restoration is read back, not presumed; any unverified post-mutation result reports `operator_repair_state_uncertain` and blocks the next container. Recheck with `inspect` after a repair. Neither operation deploys application code, publishes TRMNL, modifies storage contents or the release ledger, clears a failure barrier, or authorizes activation recovery. Keep the private backups and original activation/artifacts; recovery remains the separate attributed `activate` operation described above.
+
 ## Redacted HTTP smoke and live limits
 
 Read the nonsecret endpoint output into memory after infrastructure deployment:
@@ -246,7 +331,7 @@ finally {
 
 The **first** request is the authorized measured poll, before missing/wrong-key probes can warm the host. Missing and wrong keys must yield 401/403; the supplied header must yield a valid authorized result. A successful header cannot itself prove the key's scope: the owner must verify it was created under **Agenda**, not host keys.
 
-The CLI measures the **whole parsed/re-serialized native single-URL polling object in UTF-8**, not event counts, selected fields, `Content-Length`, or a webhook envelope. Exactly **100,000 bytes fails**, 99,999 passes; the adapter's existing 95,000-byte bound leaves margin. An oversize agenda stays a renderable error with unknown counts and a known source timestamp, never silently truncated commitments.
+The CLI measures the **whole parsed/re-serialized native single-URL polling object in UTF-8**, not event counts, selected fields, `Content-Length`, or a webhook envelope. Exactly **100,000 bytes fails**, 99,999 passes; the adapter's 95,000-byte bound leaves margin. The adapter reserves metadata and emphasized occurrences before ordinary rows, retaining complete eligible totals and chronological output so omission counts remain truthful. It never shortens titles to fit; only an unrepresentable required metadata envelope returns `agenda_too_large`. Current consumers accept ordinary schema 1 and schema 2 (including emphasis); old strict schema-1 readers must be upgraded with the schema-2 producer.
 
 Every HTTP/body attempt has a **10-second** deadline. Only one transport retry is allowed; both attempts remain in evidence. If the first attempt exceeds the budget and the retry succeeds, the smoke still **fails**. A 200 calendar error is not retried as a transport failure or called fresh. For a specific error/stale check, explicitly provide `--expected-state` and `--expected-code`. `--rules-file` reads bounded UTF-8 editor text without printing it and transports it as `rules_json`; use an ignored synthetic file for configuration-failure checks.
 
@@ -274,6 +359,42 @@ Actual private-feed publication/compatibility is a separate owner gate. A techni
 
 The source cache overwrites bounded `last-good-source.json` (2 MiB source, 13 MiB escaped envelope) and one `source-refresh-status.json` (4 KiB of safe outcome/pending metadata only). Versioning, blob/container soft delete, change feed and restore history remain disabled. The existing lifecycle rule targets **only raw source** after more than one day without modification; the single overwritten status object contains no calendar content and cannot grow as history. Lifecycle deletion is asynchronous, not an exact privacy timer; serving eligibility stays strictly less than one hour. No active code or unrelated host state is deleted.
 
+### Operator cache read access
+
+An owner may authorize the signed-in operator to read the private source cache for diagnosis, including through a Copilot session. This is an explicit exception to keeping meeting titles/locations out of agent context, not permission to expose credentials, retrieve the Key Vault source secret, save raw calendar bodies, use private preview tooling, or publish calendar data in GitHub artifacts. The grant belongs to the Azure principal, not exclusively to Copilot; other processes authenticated as that user also gain this read access. Existing control-plane Contributor/Owner does not by itself establish Blob data-plane permission.
+
+After explicit approval of the principal, role, and container scope, use the approved resource-plan values for `$subscriptionId`, `$approvedResourceGroup`, `$approvedStorageAccount`, and `$approvedCacheContainer` (normally `source-cache`). Do not substitute account/resource-group/subscription-wide scope:
+
+```powershell
+$operatorObjectId = az ad signed-in-user show --query id --output tsv --only-show-errors
+if ($LASTEXITCODE -ne 0 -or !$operatorObjectId) { throw 'The signed-in operator could not be identified.' }
+$storageAccountId = az storage account show --subscription $subscriptionId `
+  --resource-group $approvedResourceGroup --name $approvedStorageAccount `
+  --query id --output tsv --only-show-errors
+if ($LASTEXITCODE -ne 0 -or !$storageAccountId) { throw 'The approved storage account could not be identified.' }
+$cacheScope = "$storageAccountId/blobServices/default/containers/$approvedCacheContainer"
+az role assignment create --subscription $subscriptionId `
+  --assignee-object-id $operatorObjectId --assignee-principal-type User `
+  --role 2a2b9908-6ea1-4ae2-8e65-a410df84e7d1 --scope $cacheScope `
+  --query '{principalType:principalType,roleDefinitionId:roleDefinitionId,scope:scope}' `
+  --output json --only-show-errors
+if ($LASTEXITCODE -ne 0) { throw 'The approved cache-reader assignment failed.' }
+```
+
+The role is **Storage Blob Data Reader**, with no calendar writes, account keys, container creation, or access to other containers. Allow RBAC propagation, then verify using metadata without displaying/saving source contents:
+
+```powershell
+az storage blob show --subscription $subscriptionId --account-name $approvedStorageAccount `
+  --container-name $approvedCacheContainer --name last-good-source.json --auth-mode login `
+  --query '{lastModified:properties.lastModified,sizeBytes:properties.contentLength}' `
+  --output json --only-show-errors
+if ($LASTEXITCODE -ne 0) { throw 'Cache read access is not yet verified.' }
+```
+
+Do not follow account-key fallback suggestions on a denied read. A different signed-in principal needs its own owner-approved grant. The existing application managed identities and roles are unchanged.
+
+### Package retention
+
 After each successful code deployment, retain the **active package and one previous successful package**, not simply the two newest uploads. Keep their matching reviewed archives/manifests privately for recovery. Under an exclusive deployment window, use Azure's **Flex Consumption Deployment** diagnostic tool (Function app > Diagnose and solve problems) to identify actual active/previous package names and success status. Never infer the active pointer from blob age or last upload.
 
 ```powershell
@@ -294,7 +415,15 @@ Use the runtime container name instead if deliberately configured differently. F
 
 Pruning defaults to read-only, verifies that Azure actually configures this deployment container, protects exact active/previous names regardless of age, deletes only other recognized ZIPs with ETag preconditions and Entra login, then verifies retention. It never enumerates/deletes another container or non-package host state. Unrecognized layouts, missing names/concurrency tokens, access failures or concurrent changes fail closed. If the operator lacks authorized data-plane access or cannot identify the real active package, stop further releases until retention is resolved; no broad lifecycle deletion or account-key fallback is acceptable.
 
-`host.json` permits fixed Agenda warning codes, fixed RefreshSource outcome/failure codes and host aggregate metrics. The refresh's information-level `Agenda refresh finished with code source_checked.` means supported source processing finished, not that an obsolete attempt replaced newer state; `refresh_superseded` means older-dated work was rejected before acquisition. Matching completed persisted outcome plus HTTP are authoritative. It disables automatic **dependency URL** capture, HTTP extended collection, raw invocation/default categories, live metrics, performance counters, snapshots and file logging, and samples toward one telemetry item/second. Production HttpClient loggers and cache SDK URL/content/tracing diagnostics remain disabled. No worker Application Insights SDK/auto-instrumentation is added.
+### Calendar-aware Azure telemetry
+
+Meeting titles and locations are authorized in private, RBAC-controlled Azure logs and owner-approved Copilot investigations. Reading these fields in Copilot brings them into the conversation, so storage inside the Azure subscription is not a promise that queried data never leaves Azure. Keep source URLs, keys, raw ICS, raw source IDs, rule text, excluded/ended meetings, descriptions, attendees, request/response bodies, and upstream exception text out of telemetry and GitHub artifacts. Private calendar content remains prohibited in local preview/screenshot tooling.
+
+`host.json` permits information-level Agenda poll/occurrence records, fixed Agenda warning codes, fixed RefreshSource outcome/failure codes, and host aggregate metrics. The refresh's `Agenda refresh finished with code source_checked.` means supported source processing finished, not that an obsolete attempt replaced newer state; `refresh_superseded` means older-dated work was rejected before acquisition. Matching completed persisted outcome plus HTTP are authoritative. Automatic **dependency URL** capture, HTTP extended collection, raw invocation/default categories, live metrics, performance counters, snapshots, and file logging remain disabled. Adaptive sampling retains its one-item/second target for other telemetry but explicitly excludes **Trace**, so meeting records emitted together are not sampled away. Production HttpClient loggers and cache SDK URL/content/tracing diagnostics remain disabled. No worker Application Insights SDK/auto-instrumentation is added.
+
+Each current/stale poll logs `Agenda poll ` plus a JSON summary and `Agenda occurrence ` plus JSON for each returned day/occurrence after response bounding. A fresh opaque `poll_id` correlates them. The [exact diagnostic fields](agenda-contract.md#private-diagnostics) include original source freshness, timing, opaque occurrence IDs, title, nullable location, and explicit truncation flags. Titles/locations are capped at 1,024 UTF-16 code units without splitting a surrogate pair; diagnostic truncation does not shorten HTTP fields. JSON escaping keeps records single-line and below 14 KiB per occurrence even at maximum escaping. Summary eligible totals remain complete; occurrences omitted by the response budget have no meeting records. Errors log only fixed codes. Responses with no supplied occurrences log a summary only, including bounded agendas with nonzero eligible totals.
+
+These are **eligible agenda** diagnostics, not rendered-device capture: locations may still be omitted by adaptive fitting, and an offline device may retain an older image. A selected poll's eligible totals and record counts distinguish a missing location in the API data from presentation fitting. Use the visible source timestamp, approximate observation time/timezone, and device/layout to select the relevant poll.
 
 Verify actual Entra-authenticated ingestion with a deliberate synthetic invalid-rule poll: the fixed `configuration_invalid` warning must arrive. Check source, compatibility and storage categories using controlled failures, never raw exception text. In the workspace, inspect only aggregate counts first:
 
@@ -314,7 +443,40 @@ AppTraces
 | summarize Checks=count() by Message
 ```
 
-Unexpected automatic capture is a stop condition, not permission to dump URLs or raw exceptions into artifacts. Verify 30-day workspace retention and the 0.1 GB/day cap in Azure, and review ingestion volume. Filtering/sampling is the primary control; caps can overshoot, suppress useful diagnostics when reached, and are **not** hard spending limits. Leave host-managed diagnostic tables/state to the host's own rotation, not generic cleanup.
+The host can omit structured logger properties, so query the JSON in **Message**, not assumed custom dimensions. First select a recent poll:
+
+```kusto
+AppTraces
+| where TimeGenerated >= ago(1d)
+| where Message startswith "Agenda poll "
+| extend Poll = parse_json(substring(Message, strlen("Agenda poll ")))
+| project TimeGenerated, PollId=tostring(Poll.poll_id), State=tostring(Poll.state),
+    GeneratedAt=todatetime(Poll.generated_at), SourceSucceededAt=todatetime(Poll.source_succeeded_at),
+    PrimaryDate=tostring(Poll.primary_date), PrimaryTotal=toint(Poll.primary_eligible_total),
+    SecondaryDate=tostring(Poll.secondary_date), SecondaryTotal=toint(Poll.secondary_eligible_total)
+| order by TimeGenerated desc
+| take 20
+```
+
+Then inspect only that poll's meeting fields:
+
+```kusto
+AppTraces
+| where TimeGenerated >= ago(1d)
+| where Message startswith "Agenda occurrence "
+| extend Meeting = parse_json(substring(Message, strlen("Agenda occurrence ")))
+| where tostring(Meeting.poll_id) == "<selected-poll-id>"
+| project Date=tostring(Meeting.date), OccurrenceId=tostring(Meeting.occurrence_id),
+    TimeKind=tostring(Meeting.time_kind), Start=tostring(Meeting.start),
+    EndExclusive=tostring(Meeting.end_exclusive), Title=tostring(Meeting.title),
+    Location=tostring(Meeting.location), HasLocation=isnotempty(tostring(Meeting.location)),
+    TitleTruncated=tobool(Meeting.title_truncated), LocationTruncated=tobool(Meeting.location_truncated)
+| order by Date asc, Start asc, OccurrenceId asc
+```
+
+Unexpected automatic capture is a stop condition, not permission to dump URLs or raw exceptions into artifacts. Verify 30-day workspace retention and the 0.1 GB/day cap in Azure, and review ingestion volume after enabling meeting traces. Allowed categories, bounded records, and retention are the primary controls for unsampled traces; ingestion caps can overshoot, suppress useful diagnostics when reached, and are **not** hard spending limits. Count per-day records against the selected poll's eligible totals before treating a missing record as evidence that a meeting was absent. Live ingestion is best-effort; do not infer a healthy/empty agenda from missing telemetry. Leave host-managed diagnostic tables/state to the host's own rotation, not generic cleanup.
+
+The reader grant can take effect independently, but calendar-aware logging requires a reviewed code deployment. Verify a natural current/stale poll emits a parseable summary and matching occurrence counts in Azure, including one nullable location, without unexpected automatic categories. Local handler/host-configuration checks do not prove deployed ingestion; keep this gate pending until the approved code is landed and deployed.
 
 ## Rotation, recovery and freshness
 
@@ -344,7 +506,7 @@ Record only redacted facts, metrics and owner confirmations in the ticket:
 | Actual scheduled host timer, existing UAI coordination, system-identity raw/outcome publication, LA cadence and delayed refresh | **Pending scheduled-revision deployment/verification**; local handler/indexing tests are not live timer evidence |
 | Real source response and actual native combined polling data strictly below 100,000 serialized UTF-8 bytes | **Not measured live**; local boundary checks do not substitute |
 | Cold-sensitive, warm and source-failure latency, including the one retry's separate outcome | **Historical first actual-source poll red: 8,646 ms/source_unavailable**; cache-only scheduled revision not yet measured live |
-| Entra telemetry ingestion and absence of automatic URL/private-field capture | **Not verified live** |
+| Entra telemetry ingestion, correlated title/location records, and absence of automatic URL/credential/body capture | **Calendar-aware logging requires reviewed deployment and live verification** |
 | Owner's physical OG/X, required placements, visible source timestamp and subsequent refresh/settings change | **Not observed**; no private screenshots |
 | Actual operating cost/ingestion and budget notification configuration | **Not observed**; estimates are not bills |
 

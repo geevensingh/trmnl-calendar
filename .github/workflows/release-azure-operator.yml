@@ -1,0 +1,79 @@
+name: Azure release operator
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect release infrastructure or repair the two approved bootstrap role IDs
+        type: choice
+        required: true
+        default: inspect
+        options: [inspect, repair-bootstrap-roles]
+      reason:
+        description: Required attribution for role repair; never include private values
+        type: string
+      previous_mutation_stopped:
+        description: I verified previous release processes and remote mutations have stopped
+        type: boolean
+        default: false
+      old_control_assignment_id:
+        description: Approved existing release-control assignment GUID (repair only)
+        type: string
+      new_control_assignment_id:
+        description: Failed deployment's requested release-control assignment GUID (repair only)
+        type: string
+      old_artifact_assignment_id:
+        description: Approved existing release-artifacts assignment GUID (repair only)
+        type: string
+      new_artifact_assignment_id:
+        description: Failed deployment's requested release-artifacts assignment GUID (repair only)
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: coordinated-production-release
+  cancel-in-progress: false
+
+jobs:
+  operator:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the main dispatch commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Sign in as the existing release identity
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run the scoped Azure operator
+        run: node scripts/release-azure-operator.mjs
+        env:
+          OPERATOR_OPERATION: ${{ inputs.operation }}
+          OPERATOR_REASON: ${{ inputs.reason }}
+          PREVIOUS_MUTATION_STOPPED: ${{ inputs.previous_mutation_stopped }}
+          OPERATOR_OLD_CONTROL_ASSIGNMENT_ID: ${{ inputs.old_control_assignment_id }}
+          OPERATOR_NEW_CONTROL_ASSIGNMENT_ID: ${{ inputs.new_control_assignment_id }}
+          OPERATOR_OLD_ARTIFACT_ASSIGNMENT_ID: ${{ inputs.old_artifact_assignment_id }}
+          OPERATOR_NEW_ARTIFACT_ASSIGNMENT_ID: ${{ inputs.new_artifact_assignment_id }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RESOURCE_GROUP_NAME: ${{ vars.AZURE_RESOURCE_GROUP_NAME }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_RELEASE_CONTAINER: ${{ vars.AZURE_RELEASE_CONTAINER }}
+          AZURE_ARTIFACT_CONTAINER: ${{ vars.AZURE_ARTIFACT_CONTAINER }}
+          AZURE_PARAMETERS_JSON: ${{ secrets.AZURE_PARAMETERS_JSON }}

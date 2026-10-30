@@ -34,6 +34,12 @@ Full includes complete read-only formatting, Fast build/syntax checks, the **unf
 
 The job has only `contents: read` token permission, does not persist checkout credentials, references no repository/production secrets and needs no Azure login, private calendar or TRMNL account. Inputs are synthetic, storage/HTTP substitutes are local and Git fixtures use disposable repositories/bare remotes. It performs no deployment or live Azure mutations. Live Azure/private-source/device acceptance and the [delivery contract](agents/delivery.md) remain independent gates.
 
+## Separate post-merge receipt validation
+
+The [automatic/manual receipt workflows](delivery-receipts.md) are separate post-human-merge paths, not the required PR check. They run genuine shared Full afresh on each immutable landing in an isolated Windows job with read-only contents permission; trusted orchestration resolves acceptance, checks Actions run/attempt and per-landing job provenance and publishes the durable PR comment in a different job. The required workflow above, literal **Full validation** check identity, triggers, synthetic evaluation and failure propagation remain unchanged.
+
+Main-push admission accounts for the complete event-bound range, paginates PR evidence and independently invokes the receipt path for every identified landing using a non-fail-fast matrix. Unlike superseding PR validation, post-merge receipt runs have no cancellation group: an older reachable landing is supported and a newer landing does not cancel its Full. Exceptions and partial receipt failures make final batch accounting fail without hiding other landings. Expect another roughly 40-45-minute Full per landing, not a smaller reused check. Ticket-gate evaluation and concurrent/interrupted reconciliation remain separate slices; same-PR collections must finish sequentially. Actual hosted push/dispatch admission, independent exact-landing Full, permissions and comment creation/update require separate acceptance after human/default-branch bootstrap; fixture success is not hosted evidence.
+
 ## Explicit hook migration
 
 Automatic repository-managed `pre-commit`, `pre-merge-commit` and `pre-push` installation is retired. `scripts\git-hooks.ps1 -Action Install` fails with manual-validation and migration guidance without writing hooks/configuration. The command remains as a **Status/Remove migration interface** so deleting tracked tooling cannot strand old installed hooks.

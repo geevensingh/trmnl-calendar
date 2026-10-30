@@ -1,0 +1,188 @@
+name: Post-merge delivery receipt
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      landing_commit:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Human-merged PR number in this repository targeting main
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  prepare:
+    name: Resolve the human landing
+    if: github.ref == 'refs/heads/main' && github.repository == 'geevensingh/trmnl-calendar'
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      landing: ${{ steps.plan.outputs.landing }}
+      tree: ${{ steps.plan.outputs.tree }}
+      validate: ${{ steps.plan.outputs.validate }}
+    steps:
+      - name: Check out trusted orchestration
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Resolve immutable landing evidence
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          RECEIPT_REPOSITORY: ${{ github.repository }}
+          RECEIPT_RUN: ${{ github.run_id }}
+          RECEIPT_ATTEMPT: ${{ github.run_attempt }}
+          ORCHESTRATION_COMMIT: ${{ github.sha }}
+          ADMITTED_LANDING: ${{ inputs.landing_commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PR_NUMBER -notmatch '^[1-9][0-9]*$') { throw 'A numeric PR number is required.' }
+          git fetch --no-tags --no-write-fetch-head origin "refs/pull/$env:PR_NUMBER/head"
+          if ($LASTEXITCODE -ne 0) { throw 'Final PR head objects are unavailable.' }
+          $pin = @()
+          if ($env:ADMITTED_LANDING) { $pin = @('--landing-commit', $env:ADMITTED_LANDING) }
+          $json = node ./scripts/delivery-receipt.mjs prepare --repository "$env:RECEIPT_REPOSITORY" --pr "$env:PR_NUMBER" --run-id "$env:RECEIPT_RUN" --attempt "$env:RECEIPT_ATTEMPT" --orchestration-commit "$env:ORCHESTRATION_COMMIT" @pin
+          if ($LASTEXITCODE -ne 0) { throw 'Landing preparation failed; no receipt has been persisted.' }
+          $plan = $json | ConvertFrom-Json
+          "plan=$json" >> $env:GITHUB_OUTPUT
+          "landing=$($plan.provenance.landing_commit)" >> $env:GITHUB_OUTPUT
+          "tree=$($plan.provenance.landing_tree)" >> $env:GITHUB_OUTPUT
+          "validate=$($plan.blockers.Count -eq 0 -and $null -ne $plan.provenance.acceptance)" >> $env:GITHUB_OUTPUT
+
+  validation:
+    name: Exact landing Full
+    needs: prepare
+    if: needs.prepare.outputs.validate == 'True'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      AZURE_BICEP_CHECK_VERSION: 'false'
+    steps:
+      - name: Check out the exact landing
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.landing }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the exact checkout
+        env:
+          EXPECTED_COMMIT: ${{ needs.prepare.outputs.landing }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = git --no-replace-objects rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:EXPECTED_COMMIT) { throw 'Landing checkout identity mismatch.' }
+          $tree = git --no-replace-objects rev-parse 'HEAD^{tree}'
+          if ($LASTEXITCODE -ne 0 -or $tree -cne $env:EXPECTED_TREE) { throw 'Landing tree identity mismatch.' }
+          $index = git -c core.fsmonitor=false write-tree
+          if ($LASTEXITCODE -ne 0 -or $index -cne $tree) { throw 'Landing index identity mismatch.' }
+          $status = git --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all
+          if ($LASTEXITCODE -ne 0 -or $status) { throw 'A clean landing checkout is required.' }
+          @{ run_on_commit = $actual; evaluated_tree = $tree } | ConvertTo-Json -Compress
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Set up the selected .NET SDK and host runtime
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          dotnet-version: 8.0.x
+      - name: Set up Ruby with Devkit and locked Bundler
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler: Gemfile.lock
+          bundler-cache: false
+      - name: Provision local Functions and Bicep tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm install --global azure-functions-core-tools@4
+          if ($LASTEXITCODE -ne 0) { throw 'Functions Core Tools v4 installation failed.' }
+          func --version
+          if ($LASTEXITCODE -ne 0) { throw 'Functions Core Tools could not start.' }
+          az version
+          if ($LASTEXITCODE -ne 0) { throw 'Azure CLI is required on the Windows runner.' }
+          az bicep install
+          if ($LASTEXITCODE -ne 0) { throw 'Local Bicep compiler installation failed.' }
+          az bicep version
+          if ($LASTEXITCODE -ne 0) { throw 'Local Bicep compiler is unavailable.' }
+      - name: Restore locked display dependencies and pinned Chromium
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File ./scripts/setup-display.ps1
+      - name: Run the shared Full validation
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File ./scripts/validate.ps1 -Scope Full
+
+  publish:
+    name: Persist the delivery assessment
+    needs: [prepare, validation]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      issues: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out trusted orchestration, never the selected landing
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Independently verify and persist the receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          RECEIPT_REPOSITORY: ${{ github.repository }}
+          RECEIPT_RUN: ${{ github.run_id }}
+          RECEIPT_ATTEMPT: ${{ github.run_attempt }}
+          ORCHESTRATION_COMMIT: ${{ github.sha }}
+          PREPARED_PLAN: ${{ needs.prepare.outputs.plan }}
+          ADMITTED_LANDING: ${{ inputs.landing_commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PR_NUMBER -notmatch '^[1-9][0-9]*$') { throw 'A numeric PR number is required.' }
+          git fetch --no-tags --no-write-fetch-head origin "refs/pull/$env:PR_NUMBER/head" main
+          if ($LASTEXITCODE -ne 0) { throw 'Landing/publication objects are unavailable; collection remains pending.' }
+          $planFile = Join-Path $env:RUNNER_TEMP 'delivery-prepared-plan.json'
+          $env:PREPARED_PLAN | Set-Content -LiteralPath $planFile -Encoding utf8
+          $pin = @()
+          if ($env:ADMITTED_LANDING) { $pin = @('--landing-commit', $env:ADMITTED_LANDING) }
+          node ./scripts/delivery-receipt.mjs publish --repository "$env:RECEIPT_REPOSITORY" --pr "$env:PR_NUMBER" --run-id "$env:RECEIPT_RUN" --attempt "$env:RECEIPT_ATTEMPT" --orchestration-commit "$env:ORCHESTRATION_COMMIT" --plan "$planFile" @pin
+          if ($LASTEXITCODE -ne 0) { throw 'Receipt collection/publication failed; do not claim delivery.' }

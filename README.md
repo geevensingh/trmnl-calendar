@@ -186,9 +186,11 @@ Synthetic `SourcePreflightTests` cross the agreed operator-command and existing 
 
 ## Delivery completion
 
-The [Git delivery contract](docs/agents/delivery.md) governs implementation acceptance, landing on `main`, publication to GitHub, and ticket closure. It includes the executable read-only `scripts\check-completion.mjs` proof and the evidence to record before reporting delivery. Accepted integration work can unblock implementation dependencies without closing its delivery ticket; successful tests or Azure deployment do not establish Git delivery.
+The [delivery contract](docs/agents/delivery.md) governs implementation acceptance, human landing on `main`, publication and ticket closure. Repository-change delivery requires default authorized human-merge acceptance, fresh Full on the **exact landing commit**, timestamped live-main reachability and a durable receipt. Accepted integration work can unblock implementation dependencies without closing its delivery ticket; tests or deployment alone do not establish delivery.
 
-After human landing, use [post-merge bookkeeping](docs/agents/post-merge.md) to route already-approved fast-forward synchronization to a permitted existing checkout, accept the actual merge/squash content with truthful review provenance, and durably record the final proof. The workflow grants no synchronization permission and preserves host workspace restrictions.
+After human landing, inspect [automatic push receipt collection or dispatch one PR manually](docs/delivery-receipts.md) using [post-merge bookkeeping](docs/agents/post-merge.md). The workflows need human landing/default-branch bootstrap before hosted behavior can be accepted. Every event-bound landing gets independent read-only exact-landing Full and trusted comment publication; newer landings do not cancel earlier work. Budget another Full per landing. Exceptions and partial batches remain incomplete. Explicit ticket declarations/pointers and interrupted/concurrent recovery are separate slices. `scripts/check-publication.mjs` implements the live remote proof; unchanged `check-completion.mjs` remains the legacy/local-target check.
+
+Workstation synchronization is independent of repository delivery. Its existing approval, host-access, clean-checkout and fast-forward-only safeguards still apply; receipt collection grants no synchronization or repair permission.
 
 ## Adaptive production views
 

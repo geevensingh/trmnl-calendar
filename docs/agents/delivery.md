@@ -16,7 +16,7 @@ The default endpoint for substantive implementation is a pushed feature branch a
 
 Agents prepare new changes for a human to land. Landing on `main`, the default branch, or another protected/shared integration target by local merge, direct commit or push, PR merge, API call, merge queue, or auto-merge remains human-only. Do not configure or delegate another agent or automation to bypass this boundary. Updating the session-owned feature branch from its base for conflict resolution is allowed; landing it into the target is not.
 
-After a human merges, follow [post-human-merge bookkeeping](post-merge.md) for an **already approved** local fast-forward synchronization, acceptance of the actual resulting commit, and final proof. Synchronization of already-published history is separate from landing new changes. That procedure executes permission recorded in the user's authoritative guidance or explicit approval; it grants none itself. Reuse applicable recorded approval, while checking checkout capability separately and preserving host workspace restrictions.
+After a human merges, follow [post-human-merge bookkeeping](post-merge.md) to collect the actual landing's durable receipt. Workstation synchronization is independent, not a repository-delivery gate. It still requires applicable recorded approval, a permitted host/checkout, and the clean fast-forward-only safeguards in that procedure; human landing grants no workstation permission.
 
 These are standing instructions, not technical enforcement or changes to tool approvals, credentials, hooks, or GitHub protections.
 
@@ -26,48 +26,49 @@ Record the contract in the issue or session before implementation starts. Use th
 
 | Field | Agreement to record |
 | --- | --- |
-| Target | The local integration target, normally `main`. This is the human landing target, not permission for an agent to update it. |
-| Publication | Normally **remote**, to `origin` branch `main`, after human landing. Verify the configured names. Pushing the feature branch is a separate backup/handoff, not fulfillment of this publication contract. A local-only delivery contract must be explicitly requested; call it locally landed, not published. |
-| Verification | The exact existing validation commands/selectors, required outcomes, review, and any scope-specific evidence. Use the [existing local checks](../azure-delivery.md#local-checks-and-package); no new validation entrypoint or live calendar is needed for this workflow. |
+| Target | The human landing target, normally `main`, not permission for an agent to update it. |
+| Publication | Normally live `origin/main`, with the accepted landing reachable from the observed full tip. Verify configured names. A feature-branch push is backup/handoff, not publication under this contract. Explicit local-only agreements remain limited local handoffs. |
+| Verification | Required implementation checks/review and extra gates, plus fresh `scripts/validate.ps1 -Scope Full` on the exact human landing. Use the [existing local checks](../azure-delivery.md#local-checks-and-package); a pre-merge result or matching tree cannot replace post-merge Full. |
 | Git writes | The standing feature-branch grant above and any narrower task-specific limits. Record separately authorized exceptions outside that grant; landing remains human-only. |
 
 After review, record the full accepted implementation commit ID and bind verification evidence to that content. If review precedes committing, identify the resulting commit of the unchanged reviewed content. A moving branch name is not a reviewed commit identity.
 
-After the PR handoff, identify human landing and any remaining evidence as pending, and keep the delivery ticket open. The feature-branch grant does not authorize writes to the integration target; neither deployment permission nor a green test suite changes that boundary. Once human landing is confirmed, use the [post-merge procedure](post-merge.md), not another request for approval already recorded for the same bounded synchronization.
+After the PR handoff, identify human landing and remaining evidence as pending, and keep the delivery ticket open. Once human landing is confirmed, use the [post-merge procedure](post-merge.md); a workstation's availability or synchronization is not a prerequisite.
 
 ## Delivery states
 
 | State | Git evidence |
 | --- | --- |
-| **Integrated** | The reviewed implementation commit exists, but is not reachable from the agreed local target. It may satisfy an implementation dependency. |
-| **Landed locally** | The reviewed commit is reachable from the local target branch. It need not be the target's tip: an ordinary merge is supported. |
-| **Published** | The reviewed commit is locally landed and the **live** agreed remote branch tip equals the local target tip. A local tracking reference is not remote proof. |
+| **Integrated** | The reviewed implementation exists and may satisfy an implementation dependency; human landing remains pending. |
+| **Human-landed** | Authoritative merged-PR and Git-object evidence identifies the actual accepted landing, including a squash's new identity. |
+| **Published** | The accepted landing is reachable from the full **live** agreed remote branch tip at the recorded observation time. It need not remain the tip. |
 
-These describe Git position, not the whole completion contract. Dirty work or missing verification can still prevent completion. A local check cannot discharge a remote-publication contract. Normal repository delivery requires publication; an explicitly agreed local-only handoff is a different, limited outcome.
+These describe evidence, not the whole completion contract. Repository-change delivery additionally requires fresh exact-landing Full and a persisted receipt. Ticket-scoped delivery additionally requires every explicitly declared gate. An existing workstation checkout, its cleanliness and tip equality are not part of repository delivery.
 
-The publication check deliberately requires equal target tips. A remote that is behind, ahead, or divergent fails, even if it might contain the reviewed commit. Use the [post-merge path](post-merge.md) for an already-approved clean fast-forward synchronization; reconciliation outside that bounded path remains human work. Then rerun the proof without weakening the contract.
+An authorized human's merge of the exact final PR revision is default acceptance, not an invented separate review approval. Retain actual review records. Ambiguous provenance, unexpected merge content, automation actors or missing evidence leave acceptance pending. Ordinary merges and squash results are compared using their real parents and merged tree; original-head ancestry is not required for a squash.
 
 ## Executable, read-only proof
 
-Requires Git and Node.js, with no npm dependencies, Azure access, or private calendar. From the working repository, use the **recorded full reviewed commit ID**, not an unreviewed `HEAD`:
+The repository-publication proof requires Git and Node.js, complete relevant objects, and a configured remote. Use the full **actual landing** identity, not the original head or a moving ref:
 
 ```powershell
-$reviewedCommit = '<full accepted implementation commit ID>'
-node .\scripts\check-completion.mjs `
-  --reviewed-commit $reviewedCommit --target-branch main `
-  --publication remote --remote origin --remote-branch main
-if ($LASTEXITCODE -ne 0) { throw 'Git delivery proof failed; work is not delivered.' }
+$landingCommit = '<full accepted landing commit ID>'
+node .\scripts\check-publication.mjs `
+  --landing-commit $landingCommit --remote origin --remote-branch main
+if ($LASTEXITCODE -ne 0) { throw 'Live publication is pending.' }
 ```
 
-Use the agreed branch/remote names when different. `--target-branch` defaults to `main`, but `--publication` is required. Remote mode requires both remote options; it accepts a configured remote **name**, never a URL. For an intermediate local proof or an explicitly agreed local-only handoff, use `--publication local` and omit both remote options.
+The remote name and branch default to `origin` and `main`; use the agreed names when different. The command observes the advertised branch with `git ls-remote`, requires that exact observed tip's object, and proves landing ancestry from it. Cached refs, unavailable objects and unreachable landings fail explicitly. Restore missing history only in a permitted disposable collection checkout; no workstation synchronization is needed.
 
-The command emits one JSON report: stdout/exit **0** for satisfied Git conditions, stderr/exit **1** for failure. It records UTC `checked_at`, `reviewed_commit`, `head_commit`, `target_commit`, `remote_commit`, branch/remote names, `working_tree_clean`, `delivery_state`, `git_contract_satisfied`, and fixed `errors`. Unavailable identities remain null. Only full 40- or 64-character commit IDs are accepted; revisions, missing/non-commit objects, invalid/missing branches, uncommitted tracked or untracked work, and unavailable remote evidence fail explicitly.
+It emits JSON on stdout/exit **0** for reachability or stderr/exit **1** otherwise: `checked_at`, `landing_commit`, `remote`, `remote_branch`, `remote_commit`, `reachable`, and fixed `errors`. Only full 40- or 64-character commit IDs are accepted. A later reachable landing may complete even after main advances. The timestamp is an observation, not a lock on history.
 
-Index entries marked `assume-unchanged` or `skip-worktree` can hide tracked edits. The check conservatively fails with `index_visibility_restricted` and `working_tree_clean: null` when either flag is present, including sparse checkouts; it leaves those flags unchanged.
+The proof neither fetches nor changes files, branches, refs, `FETCH_HEAD`, configuration, or index flags. Reads remove inherited Git selectors, disable replacement/lazy objects, tracing and filesystem monitoring, suppress credential prompts, and have a 30-second per-command bound. Diagnostics, remote URLs and machine-private paths are excluded. This proves publication only, not acceptance, Full or ticket gates.
 
-Reachability uses Git's commit graph. Remote mode reads the actual advertised branch with `git ls-remote`; it does not fetch objects, refresh tracking refs, or overwrite `FETCH_HEAD`. Each Git command has a ten-second bound and credential prompts are disabled. Git diagnostics and remote URLs are never printed. Optional index locks, filesystem monitoring, Git tracing, lazy object fetches, and replacement objects are disabled for these reads.
+Use the [automatic/manual receipt workflows and operator protocol](../delivery-receipts.md) for the complete path. Inspect the event-bound push batch's per-landing outcomes and explicit exceptions; manual dispatch targets one identified PR. Each landing independently separates exact-landing validation from trusted comment publication and stores essential evidence plus sequential attempt history in one automation-owned PR comment. Hosted activation requires human/default-branch bootstrap and actual acceptance evidence. Explicit unsupported or malformed ticket declarations remain pending; this slice posts no ticket pointers.
 
-The check never edits files, switches branches, commits, merges, rebases, stashes, pushes, deploys, or closes issues. Necessary writes remain subject to the standing grant and human-only landing boundary. Proof is a timestamped observation, not a lock on the local or remote branch; rerun it after relevant changes.
+### Legacy/local-target proof
+
+`scripts/check-completion.mjs` is unchanged. Its `--reviewed-commit`, `--target-branch` and `--publication local|remote` interface still measures local-target reachability, clean/unrestricted checkout state and, in remote mode, exact local/live-remote tip equality. Its `delivery_state` and `git_contract_satisfied` fields retain their original meanings. It remains useful for explicit local handoffs or independent workstation checks; it is not the new remote-only delivery contract. Historical receipts and tests are not retroactively reinterpreted, and running this checker in an Actions checkout is not a substitute for the new proof.
 
 ## Acceptance can advance the frontier
 
@@ -78,8 +79,8 @@ After recording acceptance, clear only the satisfied implementation dependency's
 ## Closure and final reporting
 
 1. Record required verification results and review acceptance for the implementation content, including any scope-specific evidence. Tests and deployment evidence supplement, rather than replace, Git proof.
-2. A human performs landing/publication to the agreed integration target. Follow [post-human-merge bookkeeping](post-merge.md) to route approved synchronization to a permitted checkout and establish acceptance/provenance for the actual merge, squash, or cherry-pick identity. Reachability alone does not prove unchanged implementation content.
-3. From a clean checkout, run the existing check for the agreed contract, using the full accepted resulting commit ID after human landing. Record its invocation, exit status, and full JSON proof in the ticket or a linked durable artifact **before** closure and the final report, alongside the contract and verification/review provenance. Keep credentials, remote URLs, and private runtime inputs out of the record.
+2. A human performs landing/publication to the agreed target. Follow [post-human-merge bookkeeping](post-merge.md) to resolve the actual result and default human-merge acceptance while retaining actual reviews and extra requirements.
+3. Run fresh Full on the exact landing, observe live publication, and persist essential identities, outcomes, provenance, blockers and run/attempt identity in the canonical receipt **before** claiming completion. A prior complete observation does not make a newer pending/failed attempt complete. Keep credentials, remote URLs, private runtime inputs and machine-private paths out of the record.
 4. Close a delivery ticket or report delivery complete only when **every** agreed condition is satisfied. Otherwise report the PR handoff as **ready for review**, or describe the actual remaining blocker if it is not ready, and leave the delivery ticket open. After human landing, name any remaining publication or evidence gate. Use issue references rather than automatic closing keywords until the closure gate has been met.
 
-An Azure activation checklist, when part of the ticket, remains an additional gate. The PR handoff adds no CI/CD, branch protection, application behavior, or deployment step.
+An Azure activation checklist remains an additional gate. A repository-change receipt does not certify a delivery ticket. Collection grants no landing, deployment, workstation synchronization, protection/credential changes or ticket closure.

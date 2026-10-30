@@ -89,6 +89,72 @@ function fieldSchema(settings) {
   return schema;
 }
 
+function archiveValidation(response) {
+  const issues = new Map();
+  const fields = ["name", "description", "strategy", "polling_url", "polling_verb", "polling_headers",
+    "polling_body", "refresh_interval", "framework_version", "no_screen_padding", "dark_mode", "custom_fields", "base"];
+  const reasons = [
+    ["required", /^(?:can't be blank|cannot be blank|is required)\b/i],
+    ["too_long", /^(?:(?:is )?too long|cannot exceed|maximum length)\b/i],
+    ["unsupported", /^(?:(?:is )?not included in the list|(?:is )?not supported|unsupported)\b/i],
+    ["duplicate", /^(?:(?:has )?already been taken|already exists)\b/i],
+    ["out_of_range", /^(?:must be (?:greater|less) than|(?:is )?out of range)\b/i],
+    ["invalid", /^(?:is invalid|invalid format)\b/i]
+  ];
+  const record = (value, field) => {
+    if (typeof value !== "string") return;
+    let message = value.slice(0, 512).trimStart().replace(/^Validation failed:\s*/i, "");
+    if (!field) {
+      for (const candidate of fields) {
+        const match = message.match(new RegExp(`^${candidate.replaceAll("_", "[ _]")}\\b[: ]*([\\s\\S]*)$`, "i"));
+        if (match) {
+          field = candidate;
+          message = match[1];
+          break;
+        }
+      }
+    }
+    if (!fields.includes(field)) return;
+    message = message.trimStart();
+    // Text after a colon can echo private values, not additional validation errors.
+    if (/[,\r\n;]/.test(message.split(":", 1)[0])) return;
+    const reason = reasons.find(([_code, pattern]) => pattern.test(message))?.[0] ?? "unclassified";
+    issues.set(`${field}:${reason}`, { field, reason });
+  };
+  const visit = (value, depth = 0) => {
+    if (depth > 2 || value === null) return;
+    if (typeof value === "string") record(value);
+    else if (Array.isArray(value)) value.slice(0, 16).forEach(item => visit(item, depth + 1));
+    else if (typeof value === "object") {
+      if (value.field === undefined || fields.includes(value.field)) record(value.message, value.field);
+      if (value.errors !== undefined) visit(value.errors, depth + 1);
+      for (const field of fields) {
+        const messages = value[field];
+        for (const message of Array.isArray(messages) ? messages.slice(0, 16) : [messages]) {
+          record(message, field);
+        }
+      }
+    }
+  };
+  const text = response.trimStart();
+  const closing = text[0] === "{" ? "}" : text[0] === "[" ? "]" : null;
+  const end = closing === null ? -1 : text.lastIndexOf(closing);
+  if (end >= 0 && end < 65_536) {
+    let body;
+    try {
+      body = JSON.parse(text.slice(0, end + 1));
+    } catch {
+      return { classified: false, issues: [] };
+    }
+    visit(body);
+    if (body && typeof body === "object" && body.error !== undefined) visit(body.error);
+  }
+  const classified = [...issues.values()]
+    .sort((left, right) => left.field.localeCompare(right.field) || left.reason.localeCompare(right.reason))
+    .slice(0, 16);
+  return { classified: classified.length > 0, issues: classified };
+}
+
 async function runCli(command, args, env, cwd, runCommand, signal, stage) {
   signal?.throwIfAborted();
   try {
@@ -102,9 +168,16 @@ async function runCli(command, args, env, cwd, runCommand, signal, stage) {
     if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") fail(`trmnl_${stage}_output_limit`);
     if (error.killed) fail(`trmnl_${stage}_timeout`);
     const diagnostic = `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
-    const status = diagnostic.match(
+    const archiveError = diagnostic.match(
       /failed to (?:download|upload) plugin settings archive: (400|401|403|404|409|422|429|500|502|503|504)\b/
-    )?.[1];
+    );
+    const status = archiveError?.[1];
+    if (status === "422") {
+      const response = diagnostic.slice(archiveError.index + archiveError[0].length);
+      console.error(JSON.stringify({
+        event: "trmnl_archive_validation", stage, http_status: 422, ...archiveValidation(response)
+      }));
+    }
     fail(status ? `trmnl_${stage}_http_${status}` : `trmnl_${stage}_failed`);
   }
 }

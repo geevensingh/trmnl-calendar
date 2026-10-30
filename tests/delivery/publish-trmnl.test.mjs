@@ -199,6 +199,102 @@ test("TRMNL publisher does not promote arbitrary diagnostic text into safe statu
   }), { code: "trmnl_preflight_pull_failed" });
 });
 
+for (const [label, body, issues] of [
+  ["field map", { errors: {
+    description: ["is too long (maximum is 35 characters): synthetic-private-value"],
+    polling_url: ["is invalid: https://private.invalid"],
+    private_configured_field: ["synthetic-private-key"]
+  }, data: { function_key: "synthetic-private-key" } }, [
+    { field: "description", reason: "too_long" }, { field: "polling_url", reason: "invalid" }
+  ]],
+  ["message list", { errors: [
+    "Description is too long (maximum is 35 characters)",
+    "Polling verb is not included in the list",
+    "synthetic-private-key"
+  ] }, [
+    { field: "description", reason: "too_long" }, { field: "polling_verb", reason: "unsupported" }
+  ]],
+  ["validation message", { message: "Validation failed: Description is too long (maximum is 35 characters)" }, [
+    { field: "description", reason: "too_long" }
+  ]],
+  ["validation records", { errors: [
+    { field: "refresh_interval", message: "must be greater than 0: synthetic-private-value" },
+    { field: "name", message: "has already been taken: synthetic-private-name" },
+    { field: "private_field", message: "Description is invalid: synthetic-private-value" }
+  ] }, [
+    { field: "name", reason: "duplicate" }, { field: "refresh_interval", reason: "out_of_range" }
+  ]],
+  ["echoed reason words", { errors: {
+    polling_url: ["is invalid: https://private.invalid/unsupported"]
+  } }, [{ field: "polling_url", reason: "invalid" }]],
+  ["unknown validation prefix", { errors: {
+    description: ["synthetic-private-value is required: unsupported"]
+  } }, [{ field: "description", reason: "unclassified" }]],
+  ["normalized validation prefix", { errors: {
+    polling_url: [" \tIs invalid: https://private.invalid/unsupported"]
+  } }, [{ field: "polling_url", reason: "invalid" }]],
+  ["combined validation message", {
+    message: "Validation failed: Description is too long, Name can't be blank"
+  }, []],
+  ["combined field-map message", { errors: {
+    description: ["is too long, Name can't be blank"]
+  } }, []],
+  ["echoed combined message", { errors: {
+    description: ["is too long: synthetic-private-value, Name can't be blank"]
+  } }, [{ field: "description", reason: "too_long" }]],
+  ["unrecognized response", { error: "synthetic-private-key", private_field: "https://private.invalid" }, []]
+]) {
+  test(`TRMNL upload validation classifies ${label} without disclosing response values`, async t => {
+    const sourceDirectory = await pluginSource(t);
+    const diagnostics = [];
+    t.mock.method(console, "error", message => diagnostics.push(JSON.parse(message)));
+    const calls = [];
+    await assert.rejects(publishTrmnl({
+      sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async (_command, args, { cwd }) => {
+        calls.push(args[0]);
+        if (args[0] === "pull") await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+        else throw Object.assign(new Error("synthetic-private-key"), {
+          stderr: `api_client.rb:81: failed to upload plugin settings archive: 422 ${JSON.stringify(body)} (TRMNLP::Error)\n from cli.rb:1`
+        });
+      }
+    }), { code: "trmnl_push_http_422" });
+    assert.deepEqual(calls, ["pull", "push"]);
+    assert.deepEqual(diagnostics, [{
+      event: "trmnl_archive_validation", stage: "push", http_status: 422,
+      classified: issues.length > 0, issues
+    }]);
+    assert.doesNotMatch(JSON.stringify(diagnostics),
+      /synthetic|private|function_key|https|35|maximum|api_client|cli\.rb/);
+  });
+}
+
+test("TRMNL upload validation never prints malformed or oversized response bodies", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const diagnostics = [];
+  t.mock.method(console, "error", message => diagnostics.push(JSON.parse(message)));
+  const oversized = JSON.stringify({
+    errors: { description: ["is too long"] }, private_value: " ".repeat(65_536)
+  });
+  assert.ok(oversized.length > 65_536);
+  assert.deepEqual(JSON.parse(oversized).errors, { description: ["is too long"] });
+  for (const body of ["not-json synthetic-private-key", oversized]) {
+    await assert.rejects(publishTrmnl({
+      sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async (_command, args, { cwd }) => {
+        if (args[0] === "pull") await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+        else throw Object.assign(new Error(), { stderr: `failed to upload plugin settings archive: 422 ${body}` });
+      }
+    }), { code: "trmnl_push_http_422" });
+  }
+  assert.equal(diagnostics.length, 2);
+  for (const diagnostic of diagnostics) {
+    assert.deepEqual(diagnostic.issues, []);
+    assert.equal(diagnostic.classified, false);
+  }
+  assert.doesNotMatch(JSON.stringify(diagnostics), /synthetic|private/);
+});
+
 test("TRMNL publisher identifies unreadable exported settings without exposing their values", async t => {
   const sourceDirectory = await pluginSource(t);
   let calls = 0;

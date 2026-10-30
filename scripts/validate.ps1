@@ -13,7 +13,22 @@ $savedTimingDirectory = $env:TRMNL_TIMING_DIRECTORY
 $location = Get-Location
 $project = Join-Path $root 'tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj'
 $results = [Collections.Generic.List[object]]::new()
-New-ValidationReport $root $Scope
+$components = @(
+    @{ id = 'prerequisites'; name = 'Prerequisites'; requires = @() }
+    @{ id = 'format'; name = 'C# formatting (read-only)'; requires = @('prerequisites') }
+    @{ id = 'build'; name = '.NET build (warnings as errors)'; requires = @('prerequisites') }
+    @{ id = 'syntax'; name = 'PowerShell and Node syntax'; requires = @('prerequisites') }
+    if ($Scope -eq 'Full') {
+        @{ id = 'browser'; name = 'Pinned Chromium readiness'; requires = @('prerequisites', 'build') }
+        @{ id = 'node'; name = 'Node delivery and guardrail tests'; requires = @('prerequisites', 'build', 'syntax') }
+        @{ id = 'dotnet'; name = '.NET tests (production rendering)'; requires = @('prerequisites', 'format', 'build', 'syntax', 'browser', 'node') }
+        @{ id = 'evidence'; name = 'Complete timing evidence'; requires = @() }
+    }
+) | ForEach-Object {
+    [ordered]@{ id = $_.id; name = $_.name; requires = $_.requires
+        outcome = 'incomplete'; evidence_outcome = $null; blocked_by = @() }
+}
+New-ValidationReport $root $Scope $components
 
 function Invoke-Tool([string]$Command, [string[]]$Arguments, [string]$Hint) {
     $previousBicepCheck = $env:AZURE_BICEP_CHECK_VERSION
@@ -21,7 +36,9 @@ function Invoke-Tool([string]$Command, [string[]]$Arguments, [string]$Hint) {
         $env:AZURE_BICEP_CHECK_VERSION = 'false'
         & $Command @Arguments
         if ($LASTEXITCODE -ne 0) {
-            throw "$Command exited with code $LASTEXITCODE. $Hint"
+            $error = [InvalidOperationException]::new("$Command exited with code $LASTEXITCODE. $Hint")
+            $error.Data['tool_exit_code'] = $LASTEXITCODE
+            throw $error
         }
     }
     finally {
@@ -29,8 +46,15 @@ function Invoke-Tool([string]$Command, [string[]]$Arguments, [string]$Hint) {
     }
 }
 
-function Invoke-Check([string]$Name, [scriptblock]$Check, [bool]$Ready = $true) {
-    if (!$Ready) {
+function Invoke-Check([string]$Id, [scriptblock]$Check) {
+    $component = $script:validationReport.components | Where-Object id -EQ $Id
+    $Name = $component.name
+    $blocked = @($component.requires | Where-Object {
+        ($script:validationReport.components | Where-Object id -EQ $_).outcome -ne 'success'
+    })
+    if ($blocked.Count) {
+        $component.outcome = 'blocked'
+        $component.blocked_by = $blocked
         $results.Add([pscustomobject]@{ Check = $Name; Result = 'BLOCKED'; Seconds = 0 })
         $stage = Start-ValidationStage $Name
         Stop-ValidationStage $stage 'blocked'
@@ -43,16 +67,25 @@ function Invoke-Check([string]$Name, [scriptblock]$Check, [bool]$Ready = $true) 
     try {
         & $Check | Out-Host
         $passed = $true
+        $component.outcome = 'success'
     }
     catch {
+        $component.outcome = if ($component.evidence_outcome -eq 'cancelled' -or
+            $_.Exception -is [OperationCanceledException] -or
+            $_.Exception -is [Management.Automation.PipelineStoppedException]) { 'cancelled' }
+        elseif ($_.Exception.Data.Contains('tool_exit_code')) { 'failure' }
+        elseif ($component.evidence_outcome -and $component.evidence_outcome -ne 'success') {
+            $component.evidence_outcome
+        } else { 'failure' }
         Write-Host "[FAIL] ${Name}: $($_.Exception.Message)"
     }
+    $stageResult = if ($passed) { 'passed' } elseif ($component.outcome -eq 'cancelled') { 'cancelled' } else { 'failed' }
     $results.Add([pscustomobject]@{
         Check = $Name
-        Result = if ($passed) { 'PASSED' } else { 'FAILED' }
+        Result = $stageResult.ToUpperInvariant()
         Seconds = [Math]::Round($timer.Elapsed.TotalSeconds, 1)
     })
-    Stop-ValidationStage $stage $(if ($passed) { 'passed' } else { 'failed' })
+    Stop-ValidationStage $stage $stageResult
     return $passed
 }
 
@@ -62,7 +95,8 @@ try {
     if ($Scope -eq 'Full') { Set-DisplayEnvironment $root }
     if ($Scope -eq 'Full') { $env:TRMNL_TIMING_DIRECTORY = $script:validationDirectory }
 
-    $ready = Invoke-Check 'Prerequisites' {
+    $null = Invoke-Check 'prerequisites' {
+        if ($script:validationReport.content.error) { throw 'Evaluated input fingerprint is unavailable; validation cannot bind this execution.' }
         Assert-DisplaySdk
         if (!(Get-Command node -ErrorAction SilentlyContinue)) {
             throw 'Install Node.js 22 or newer and add node to PATH. No npm install is needed.'
@@ -116,20 +150,20 @@ try {
         }
     }
 
-    $null = Invoke-Check 'C# formatting (read-only)' {
+    $null = Invoke-Check 'format' {
         $arguments = @('format')
         if ($Scope -eq 'Fast') { $arguments += 'whitespace' }
         $arguments += @($project, '--no-restore', '--verify-no-changes', '--verbosity', 'quiet')
         Invoke-Tool dotnet $arguments `
             'Fix the reported formatting explicitly; validation never rewrites source.'
-    } $ready
+    }
 
-    $built = Invoke-Check '.NET build (warnings as errors)' {
+    $null = Invoke-Check 'build' {
         Invoke-Tool dotnet @('build', $project, '--no-restore', '--nologo', '--verbosity', 'quiet') `
             'Fix compiler errors/warnings; restore missing dependencies with .\scripts\setup-display.ps1.'
-    } $ready
+    }
 
-    $null = Invoke-Check 'PowerShell and Node syntax' {
+    $null = Invoke-Check 'syntax' {
         foreach ($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File) {
             $parseErrors = $null
             $null = [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$parseErrors)
@@ -142,22 +176,16 @@ try {
                 Invoke-Tool node @('--check', $file.FullName) 'Fix the reported JavaScript syntax.'
             }
         }
-    } $ready
+    }
 
     if ($Scope -eq 'Full') {
-        $browserReady = Invoke-Check 'Pinned Chromium readiness' {
+        $null = Invoke-Check 'browser' {
             if (!(Test-DisplayBrowser $root)) {
                 throw 'Pinned Chromium is not ready. Run .\scripts\setup-display.ps1 with the selected browser cache before Full validation.'
             }
-        } ($ready -and $built)
+        }
 
-        $null = Invoke-Check '.NET tests (production rendering)' {
-            Invoke-Tool dotnet @('test', $project, '--no-build', '--no-restore', '--nologo', '--verbosity', 'minimal',
-                '--logger', 'trx;LogFileName=dotnet.trx', '--results-directory', $script:validationDirectory) `
-                'Fix the reported synthetic test failure. For missing Liquid/framework/fonts/Chromium, run .\scripts\setup-display.ps1. The real local host needs Core Tools v4.'
-        } ($ready -and $built -and $browserReady)
-
-        $null = Invoke-Check 'Node delivery and guardrail tests' {
+        $null = Invoke-Check 'node' {
             $files = @(foreach ($directory in @('tests\delivery', 'tests\validation')) {
                 $tests = @(Get-ChildItem -LiteralPath (Join-Path $root $directory) -Filter '*.test.mjs' -File |
                     Sort-Object Name)
@@ -166,17 +194,31 @@ try {
             })
             $script:validationReport.node_files = @($files | ForEach-Object { [IO.Path]::GetRelativePath($root, $_) })
             Save-ValidationReport
-            Invoke-Tool node (@('--test', '--test-reporter=spec', '--test-reporter-destination=stdout',
-                "--test-reporter=$(([uri](Join-Path $PSScriptRoot 'node-timing-reporter.mjs')).AbsoluteUri)",
-                "--test-reporter-destination=$(Join-Path $script:validationDirectory 'node.jsonl')") + $files) `
-                'Fix the reported local tooling test failures; no npm packages or Azure login are required.'
-        } $ready
-        $null = Invoke-Check 'Complete timing evidence' {
+            try {
+                Invoke-Tool node (@('--test', '--test-reporter=spec', '--test-reporter-destination=stdout',
+                    "--test-reporter=$(([uri](Join-Path $PSScriptRoot 'node-timing-reporter.mjs')).AbsoluteUri)",
+                    "--test-reporter-destination=$(Join-Path $script:validationDirectory 'node.jsonl')") + $files) `
+                    'Fix the reported local tooling test failures; no npm packages or Azure login are required.'
+            }
+            finally { $nodeEvidenceReady = Read-ValidationEvidence -NodeOnly }
+            if (!$nodeEvidenceReady) {
+                throw 'Node result evidence is failed, cancelled or incomplete; production rendering is blocked.'
+            }
+        }
+        $null = Invoke-Check 'dotnet' {
+            Invoke-Tool dotnet @('test', $project, '--no-build', '--no-restore', '--nologo', '--verbosity', 'minimal',
+                '--logger', 'trx;LogFileName=dotnet.trx', '--results-directory', $script:validationDirectory) `
+                'Fix the reported synthetic test failure. For missing Liquid/framework/fonts/Chromium, run .\scripts\setup-display.ps1. The real local host needs Core Tools v4.'
+        }
+        $null = Invoke-Check 'evidence' {
             if (!(Read-ValidationEvidence)) {
                 throw "Timing evidence is incomplete. See $script:validationDirectory\summary.json; do not retry a profiling attempt without budget allocation."
             }
         }
     }
+}
+catch {
+    Write-Host "[FAIL] Validation interrupted: $($_.Exception.Message)"
 }
 finally {
     Restore-DisplayEnvironment $savedEnvironment
@@ -186,7 +228,23 @@ finally {
 
 Write-Host ''
 $results | Format-Table -AutoSize | Out-Host
-$failed = @($results | Where-Object Result -NE 'PASSED').Count -gt 0
+$failed = @($script:validationReport.components | Where-Object outcome -NE 'success').Count -gt 0
+if ($script:validationReport.content.started) {
+    try {
+        $script:validationReport.content.finished = Get-ValidationInputFingerprint $root
+        $script:validationReport.content.unchanged = $null -ne $script:validationReport.content.finished -and
+            $script:validationReport.content.started.sha256 -ceq $script:validationReport.content.finished.sha256
+    }
+    catch {
+        $script:validationReport.content.unchanged = $false
+        Write-Host "[FAIL] Evaluated input fingerprint: $($_.Exception.Message)"
+    }
+    if (!$script:validationReport.content.unchanged) {
+        $failed = $true
+        $script:validationReport.unavailable.Add('unchanged evaluated input fingerprint')
+        Write-Host '[FAIL] Evaluated inputs changed during validation; this execution cannot certify the final content.'
+    }
+}
 $outcome = if ($failed) { 'FAILED' } else { 'PASSED' }
 Complete-ValidationReport (!$failed)
 Write-Host "$Scope validation $outcome."

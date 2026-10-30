@@ -15,6 +15,7 @@ on:
         options:
           - main
           - status
+          - inspect-trmnl
           - activate
           - retry
           - skip

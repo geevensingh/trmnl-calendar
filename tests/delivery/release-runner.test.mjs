@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { artifactIdentity, activateReleaseBaseline, listReleaseStatus } from "../../scripts/release-controller.mjs";
-import { activateFromMain, runReleaseBatch } from "../../scripts/release-runner.mjs";
+import * as runner from "../../scripts/release-runner.mjs";
 import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
+const { activateFromMain, runReleaseBatch } = runner;
 const execFileAsync = promisify(execFile);
 
 function memoryLedger() {
@@ -116,6 +117,11 @@ test("release runner admits first-parent main commits and drains their FIFO queu
       },
       async publishAndVerifyTrmnl() {
         assert.fail("TRMNL must not deploy for an Azure-only change");
+      },
+      async inspectTrmnl() {
+        return {
+          operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: true, content_matches: false
+        };
       }
     };
 
@@ -142,6 +148,11 @@ test("release runner admits first-parent main commits and drains their FIFO queu
       stage: "azure_deploy", code: "azure_verification_failed"
     }]);
     assert.doesNotMatch(JSON.stringify(failed), /private diagnostic/);
+    const beforeInspection = await ledger.read();
+    assert.equal((await runner.inspectTrmnlFromMain({
+      ledger, services, cwd: repository, through: failedHead
+    })).commit, failedHead);
+    assert.deepEqual(await ledger.read(), beforeInspection);
   } finally {
     await rm(repository, { recursive: true, force: true });
   }
@@ -187,18 +198,36 @@ test("activation recovery resumes the recorded commit and retained artifacts aft
       assert.equal(commit, baseline);
       assert.deepEqual(artifact, originalArtifact);
       return true;
+    },
+    async inspectTrmnl(commit) {
+      assert.equal(commit, baseline);
+      return {
+        operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: true, content_matches: false
+      };
     }
   };
   const options = {
     ledger, services, cwd, through: baseline, actor: "owner", reason: "initial activation",
     azureBootstrapVerified: true, trmnlBackupRecoveryAccepted: true
   };
+  assert.equal((await runner.inspectTrmnlFromMain({
+    ledger: memoryLedger(), services, cwd, through: baseline
+  })).commit, baseline);
   assert.equal((await activateFromMain(options)).blocked, true);
   await writeFile(join(cwd, "README.md"), "main advanced");
   await git(cwd, "add", ".");
   await git(cwd, "commit", "--quiet", "-m", "advance main");
   const through = await git(cwd, "rev-parse", "HEAD");
   await git(cwd, "update-ref", "refs/remotes/origin/main", through);
+  const beforeInspection = await ledger.read();
+  assert.deepEqual(await runner.inspectTrmnlFromMain({ ledger, services, cwd, through }), {
+    operation: "inspect-trmnl", commit: baseline,
+    remote_readable: true, field_schema_compatible: true, content_matches: false
+  });
+  assert.deepEqual(await ledger.read(), beforeInspection);
+  assert.equal(azureDeploys, 1);
+  assert.equal(publications, 1);
+  assert.equal(prepares, 1);
   await assert.rejects(activateFromMain({ ...options, ledger: memoryLedger() }), {
     message: "activation_commit_must_be_current_main"
   });

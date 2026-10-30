@@ -47,7 +47,44 @@ function Read-ValidationGit([string]$Root, [string[]]$Arguments) {
     finally { $process.Dispose() }
 }
 
-function New-ValidationReport([string]$Root, [string]$Scope) {
+function Get-ValidationDigest($Value) {
+    $json = ConvertTo-Json -InputObject $Value -Depth 20 -Compress
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+        [Text.Encoding]::UTF8.GetBytes($json))).ToLowerInvariant()
+}
+
+function Get-ValidationInputFingerprint([string]$Root) {
+    $files = Read-ValidationGit $Root @('ls-files', '-z', '--cached', '--others', '--exclude-standard')
+    $index = Read-ValidationGit $Root @('ls-files', '--stage', '-z')
+    if (!$files -or !$index) { return $null }
+    $paths = [string[]]@($files.text.Split([char]0, [StringSplitOptions]::RemoveEmptyEntries) | Select-Object -Unique)
+    if ($paths.Count -gt 10000) { throw 'Validation input inventory exceeds 10000 paths.' }
+    [Array]::Sort($paths, [StringComparer]::Ordinal)
+    $inventory = @(
+        foreach ($path in $paths) {
+            $file = Join-Path $Root $path
+            $item = Get-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+            $kind = 'missing'
+            $hash = $null
+            if ($item) {
+                if ($item.LinkType) {
+                    $kind = 'link'
+                    $hash = Get-ValidationDigest $item.LinkTarget
+                } elseif (!$item.PSIsContainer) {
+                    $kind = 'file'
+                    $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+                } else { throw 'Validation inputs contain an unsupported directory entry.' }
+            }
+            [ordered]@{ path = $path; kind = $kind; sha256 = $hash }
+        }
+    )
+    return [ordered]@{
+        sha256 = Get-ValidationDigest @($index.text, $inventory)
+        paths = $paths.Count
+    }
+}
+
+function New-ValidationReport([string]$Root, [string]$Scope, [object[]]$Components = @()) {
     $script:validationClock = [Diagnostics.Stopwatch]::StartNew()
     $script:validationDirectory = Join-Path $Root "artifacts\validation\$($Scope.ToLowerInvariant())-$([Guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path $script:validationDirectory -Force | Out-Null
@@ -80,6 +117,11 @@ function New-ValidationReport([string]$Root, [string]$Scope) {
         stage_wall_ms = 0
         orchestration_ms = 0
         first_failure_ms = $null
+        components = @($Components)
+        component_contract_sha256 = Get-ValidationDigest @($Components | ForEach-Object {
+            [ordered]@{ id = $_.id; name = $_.name; requires = $_.requires }
+        })
+        content = [ordered]@{ started = $null; finished = $null; unchanged = $null; error = $null }
         total_job_runner_minutes = $null
         provenance = [ordered]@{
             head_commit = if ($env:PR_HEAD_COMMIT) { $env:PR_HEAD_COMMIT } else { $commit }
@@ -114,6 +156,21 @@ function New-ValidationReport([string]$Root, [string]$Scope) {
         unavailable = $unavailable
         timing_semantics = 'Stage intervals are sequential wall time; per-test/class/phase sums are work, not elapsed time. Nested and concurrent intervals can overlap.'
     }
+    if ($Scope -ne 'Setup' -and (Test-Path -LiteralPath (Join-Path $Root '.git'))) {
+        try {
+            if (!$commit -or !$tree) {
+                $script:validationReport.content.error = 'Git evaluated identity unavailable'
+                throw 'Git evaluated commit/tree identity is unavailable.'
+            }
+            $script:validationReport.content.started = Get-ValidationInputFingerprint $Root
+            if (!$script:validationReport.content.started) { throw 'Git input inventory unavailable.' }
+        }
+        catch {
+            if (!$script:validationReport.content.error) { $script:validationReport.content.error = 'input fingerprint unavailable' }
+            $unavailable.Add('evaluated input fingerprint')
+            Write-Host "[FAIL] Evaluated input fingerprint: $($_.Exception.Message)"
+        }
+    }
     if ($commit -and $gitVersion) { $script:validationReport.provenance.tools.git = $gitVersion.text }
     foreach ($path in @('global.json', 'Gemfile.lock', 'tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj')) {
         $file = Join-Path $Root $path
@@ -141,17 +198,27 @@ function Start-ValidationStage([string]$Name) {
 function Stop-ValidationStage($Stage, [string]$Result) {
     $Stage.result = $Result
     $Stage.duration_ms = [Math]::Round($script:validationClock.Elapsed.TotalMilliseconds - $Stage.offset_ms, 3)
-    if ($Result -eq 'failed' -and $null -eq $script:validationReport.first_failure_ms) {
+    if ($Result -in @('failed', 'cancelled') -and $null -eq $script:validationReport.first_failure_ms) {
         $script:validationReport.first_failure_ms = [Math]::Round($script:validationClock.Elapsed.TotalMilliseconds, 3)
     }
     Save-ValidationReport
 }
 
-function Read-ValidationEvidence {
+function Set-ValidationComponentEvidence([string]$Id, [string]$Outcome) {
+    $component = $script:validationReport.components | Where-Object id -EQ $Id
+    $component.evidence_outcome = $Outcome
+    if (($Outcome -ne 'success' -and $component.outcome -in @('success', 'incomplete')) -or
+        ($Outcome -eq 'cancelled' -and $component.outcome -eq 'failure')) {
+        $component.outcome = $Outcome
+    }
+}
+
+function Read-ValidationEvidence([switch]$NodeOnly) {
     $missing = [Collections.Generic.List[string]]::new()
     $reportedFailures = 0
     $evidence = [ordered]@{ status = 'incomplete'; dotnet = $null; node = $null; phases = $null }
-    try {
+    $dotnetOutcome = 'incomplete'
+    if (!$NodeOnly) { try {
         $path = Join-Path $script:validationDirectory 'dotnet.trx'
         if ((Get-Item -LiteralPath $path).Length -gt 20MB) { throw 'TRX exceeds diagnostic limit.' }
         $settings = [Xml.XmlReaderSettings]::new()
@@ -172,6 +239,7 @@ function Read-ValidationEvidence {
             foreach ($result in $trx.SelectNodes("//*[local-name()='UnitTestResult']")) {
                 if (!$definitions.ContainsKey($result.testId)) { throw 'Missing test definition.' }
                 [pscustomobject]@{
+                    test_id = $result.testId
                     name = $result.testName
                     method = $definitions[$result.testId]
                     result = $result.outcome
@@ -181,6 +249,10 @@ function Read-ValidationEvidence {
         )
         $counters = $trx.SelectSingleNode("//*[local-name()='Counters']")
         $summary = $trx.SelectSingleNode("//*[local-name()='ResultSummary']")
+        if ($summary -and $summary.outcome -eq 'Aborted') {
+            $dotnetOutcome = 'cancelled'
+            throw 'Aborted .NET execution.'
+        }
         if ($tests.Count -eq 0 -or !$counters -or [int]$counters.total -ne $tests.Count -or
             !$summary -or $summary.outcome -notin @('Completed', 'Passed', 'Failed') -or
             [int]$counters.executed -ne $tests.Count -or
@@ -194,13 +266,19 @@ function Read-ValidationEvidence {
             })
         $evidence.dotnet = [ordered]@{ tests = $tests; classes = $classes; count = $tests.Count }
         $reportedFailures += @($tests | Where-Object result -EQ 'Failed').Count
+        Set-ValidationComponentEvidence 'dotnet' $(if ($reportedFailures) { 'failure' } else { 'success' })
     }
-    catch { $missing.Add('complete .NET TRX results') }
+    catch {
+        $missing.Add('complete .NET TRX results')
+        Set-ValidationComponentEvidence 'dotnet' $dotnetOutcome
+    } }
+    $nodeOutcome = 'incomplete'
     try {
         $path = Join-Path $script:validationDirectory 'node.jsonl'
         if ((Get-Item -LiteralPath $path).Length -gt 20MB) { throw 'Node report exceeds diagnostic limit.' }
         $events = @(Get-Content -LiteralPath $path | ForEach-Object { $_ | ConvertFrom-Json })
         $summaries = @($events | Where-Object kind -EQ 'summary')
+        if ($summaries.Count -eq 1 -and $summaries[0].cancelled -gt 0) { $nodeOutcome = 'cancelled' }
         if ($summaries.Count -ne 1 -or $summaries[0].cancelled -ne 0 -or
             $summaries[0].skipped -ne 0 -or $summaries[0].todo -ne 0 -or $summaries[0].tests -le 0) {
             throw 'Incomplete Node results.'
@@ -223,9 +301,11 @@ function Read-ValidationEvidence {
             note = 'Top-level work excludes nested case durations; it is not wall time across concurrent files.'
         }
         $reportedFailures += [int]$summaries[0].failed
+        $nodeOutcome = if ($summaries[0].failed) { 'failure' } else { 'success' }
     }
     catch { $missing.Add('complete Node results') }
-    try {
+    Set-ValidationComponentEvidence 'node' $nodeOutcome
+    if (!$NodeOnly) { try {
         $files = @(Get-ChildItem -LiteralPath $script:validationDirectory -Filter 'phases-*.jsonl' -File)
         if (($files | Measure-Object Length -Sum).Sum -gt 20MB) { throw 'Phase reports exceed aggregate diagnostic limit.' }
         $events = @(
@@ -306,9 +386,26 @@ function Read-ValidationEvidence {
         }
         $evidence.phases.inventory = $inventory
     }
-    catch { $missing.Add('complete rendering phase results') }
-    foreach ($item in $missing) { $script:validationReport.unavailable.Add($item) }
-    if ($missing.Count -eq 0) { $evidence.status = if ($reportedFailures) { 'failed' } else { 'complete' } }
+    catch {
+        $missing.Add('complete rendering phase results')
+        Set-ValidationComponentEvidence 'dotnet' 'incomplete'
+    } }
+    foreach ($item in $missing) {
+        if (!$script:validationReport.unavailable.Contains($item)) { $script:validationReport.unavailable.Add($item) }
+    }
+    if ($reportedFailures) { $evidence.status = 'failed' }
+    elseif ($missing.Count -eq 0 -and !$NodeOnly) { $evidence.status = 'complete' }
+    if (!$NodeOnly -and $evidence.dotnet -and $evidence.node -and $evidence.phases) {
+        $evidence.inventory_sha256 = Get-ValidationDigest ([ordered]@{
+            dotnet = @($evidence.dotnet.tests | Select-Object test_id, name, method | Sort-Object test_id, name, method)
+            node = @($evidence.node.tests | Select-Object file, nesting, name, type | Sort-Object file, nesting, name, type)
+            rendering = $evidence.phases.inventory
+        })
+        $evidence.content_sha256 = if ($script:validationReport.content.started) {
+            $script:validationReport.content.started.sha256
+        } else { $null }
+        $evidence.component_contract_sha256 = $script:validationReport.component_contract_sha256
+    }
     $script:validationReport.evidence = $evidence
     return $missing.Count -eq 0 -and $reportedFailures -eq 0
 }

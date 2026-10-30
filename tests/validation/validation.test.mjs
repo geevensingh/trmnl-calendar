@@ -60,7 +60,16 @@ exit 0
            ruby = $env:TRMNL_RUBY; bundlePath = $env:BUNDLE_PATH } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
         if ($env:VALIDATION_FAIL -eq 'dotnet:throw') { throw 'Synthetic unusable SDK executable' }
+        if ($env:VALIDATION_CANCEL_TOOL -eq "dotnet:$($args[0])") {
+          throw [OperationCanceledException]::new('Synthetic cancelled tool')
+        }
         if ($args[0] -eq 'format' -and $env:VALIDATION_PAUSE) { Start-Sleep -Seconds 30 }
+        if ($args[0] -eq 'build' -and $env:VALIDATION_MUTATE_INPUT) {
+          'changed during validation' | Set-Content -LiteralPath 'content.txt'
+        }
+        if ($args[0] -eq 'test' -and $env:VALIDATION_RENDER_DELAY_MS) {
+          Start-Sleep -Milliseconds ([int]$env:VALIDATION_RENDER_DELAY_MS)
+        }
         if ($args[0] -eq '--version') {
           if ($env:VALIDATION_SDK_VERSION) { $env:VALIDATION_SDK_VERSION } else { '10.0.100' }
         }
@@ -80,6 +89,10 @@ exit 0
 '@ | Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
           if ($env:VALIDATION_REPORTED_FAILURE -eq 'dotnet') {
             (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')) -replace 'outcome="Passed"','outcome="Failed"' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
+          }
+          if ($env:VALIDATION_ABORTED_DOTNET) {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')) -replace 'outcome="Completed"','outcome="Aborted"' |
               Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
           }
           $phases = @('browser.create', 'browser.launch', 'ruby.startup', 'ruby.render', 'screenshot', 'png.decode', 'png.inspect')
@@ -163,16 +176,18 @@ exit 0
       if ($env:VALIDATION_SELECTED_RUBY) {
         Set-Alias -Name $env:VALIDATION_SELECTED_RUBY -Value ruby -Scope Global
       }
-      $before = @{}
-      Get-ChildItem Env: | Where-Object {
-        $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE')
-      } | ForEach-Object { $before[$_.Name] = $_.Value }
+      function Get-CallerEnvironment {
+        $snapshot = @{}
+        Get-ChildItem Env: | Where-Object {
+          $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE',
+            'TRMNL_TIMING_DIRECTORY', 'AZURE_BICEP_CHECK_VERSION')
+        } | ForEach-Object { $snapshot[$_.Name] = $_.Value }
+        return $snapshot
+      }
+      $before = Get-CallerEnvironment
       & $env:VALIDATION_SCRIPT -Scope $env:VALIDATION_SCOPE
       $code = $LASTEXITCODE
-      $after = @{}
-      Get-ChildItem Env: | Where-Object {
-        $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE')
-      } | ForEach-Object { $after[$_.Name] = $_.Value }
+      $after = Get-CallerEnvironment
       @{ before = $before; after = $after } | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath $env:VALIDATION_ENVIRONMENT
       exit $code
@@ -258,6 +273,10 @@ test("public reports bind exact event/evaluated identities and reject hidden wor
   assert.equal(report.provenance.evaluated_commit, commit);
   assert.equal(report.provenance.evaluated_tree, tree);
   assert.equal(report.provenance.working_tree_clean, true);
+  assert.match(report.content.started.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(report.content.unchanged, true);
+  assert.deepEqual(report.content.finished, report.content.started);
+  assert.match(report.component_contract_sha256, /^[a-f0-9]{64}$/);
   assert.ok(report.provenance.tools.git.startsWith("git version"));
   git("update-index", "--assume-unchanged", "content.txt");
   await writeFile(join(fixture.directory, "content.txt"), "hidden modification\n");
@@ -265,6 +284,11 @@ test("public reports bind exact event/evaluated identities and reject hidden wor
   const hidden = await fixture.report();
   assert.equal(hidden.provenance.working_tree_clean, null);
   assert.ok(hidden.unavailable.includes("clean evaluated content identity"));
+  assert.notEqual(hidden.content.started.sha256, report.content.started.sha256);
+  assert.equal(fixture.run("Fast", { ...pins, VALIDATION_MUTATE_INPUT: "1" }).status, 1);
+  const changed = await fixture.report();
+  assert.equal(changed.outcome, "failed");
+  assert.equal(changed.content.unchanged, false);
 });
 
 test("Full fails closed when successful tools leave missing timing evidence", async t => {
@@ -276,6 +300,48 @@ test("Full fails closed when successful tools leave missing timing evidence", as
   assert.equal(report.evidence.status, "incomplete");
   for (const name of ["complete .NET TRX results", "complete Node results", "complete rendering phase results"])
     assert.ok(report.unavailable.includes(name), name);
+});
+
+test("a Git checkout without resolvable evaluated identity cannot pass unbound validation", async t => {
+  const fixture = await checkout(t);
+  const initialized = spawnSync("git", ["init", "--quiet", "--template="], {
+    cwd: fixture.directory, encoding: "utf8", timeout: 10_000,
+    env: isolatedGitEnvironment({
+      GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(fixture.directory, "empty.gitconfig")
+    })
+  });
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const result = fixture.run("Fast");
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const report = await fixture.report();
+  assert.equal(report.outcome, "failed");
+  assert.equal(report.content.error, "Git evaluated identity unavailable");
+  assert.equal(report.components.find(component => component.id === "prerequisites").outcome, "failure");
+  assert.equal(report.components.find(component => component.id === "build").outcome, "blocked");
+});
+
+test("Full reports a tooling failure before the rendering tail and records every unexecuted component", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", {
+    VALIDATION_FAIL: "node:--test", VALIDATION_RENDER_DELAY_MS: "10000"
+  });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const calls = await fixture.calls();
+  assert.ok(calls.some(call => call.tool === "node" && call.arguments[0] === "--test"));
+  assert.ok(!calls.some(call => call.tool === "dotnet" && call.arguments[0] === "test"),
+    "An inexpensive tooling failure must not wait for production rendering");
+  const report = await fixture.report();
+  assert.deepEqual(report.components.map(component => component.id), [
+    "prerequisites", "format", "build", "syntax", "browser", "node", "dotnet", "evidence"
+  ]);
+  assert.equal(report.components.find(component => component.id === "node").outcome, "failure");
+  const rendering = report.components.find(component => component.id === "dotnet");
+  assert.equal(rendering.outcome, "blocked");
+  assert.deepEqual(rendering.blocked_by, ["node"]);
+  assert.ok(report.first_failure_ms < report.duration_ms);
+  assert.ok(report.first_failure_ms < 10000, "Useful failure feedback must precede the controlled rendering tail");
+  assert.ok(report.components.every(component =>
+    ["success", "failure", "blocked", "cancelled", "incomplete"].includes(component.outcome)));
 });
 
 test("Full reports per-test/class work and excludes nested Node costs from top-level work", async t => {
@@ -290,19 +356,37 @@ test("Full reports per-test/class work and excludes nested Node costs from top-l
   ]);
   assert.equal(report.evidence.node.top_level_work_ms, 100);
   assert.equal(report.evidence.node.tests.length, 2);
+  assert.deepEqual(report.evidence.dotnet.tests.map(test => [test.test_id, test.name]), [
+    ["one", "All views"], ["two", "All scenarios"]
+  ]);
+  assert.match(report.evidence.inventory_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(report.evidence.component_contract_sha256, report.component_contract_sha256);
+  assert.ok(report.components.every(component => component.outcome === "success"));
+  const calls = await fixture.calls();
+  assert.ok(calls.findIndex(call => call.tool === "node" && call.arguments[0] === "--test")
+    < calls.findIndex(call => call.tool === "dotnet" && call.arguments[0] === "test"));
   assert.ok(report.duration_ms >= Math.max(...report.stages.map(stage => stage.duration_ms)));
 });
 
 test("cancelled Node evidence and unfinished rendering phases cannot certify complete Full", async t => {
   const fixture = await checkout(t);
   for (const environment of [
-    { VALIDATION_CANCELLED_NODE: "1" }, { VALIDATION_UNFINISHED_PHASE: "png.inspect" }
+    { VALIDATION_CANCELLED_NODE: "1" },
+    { VALIDATION_CANCELLED_NODE: "1", VALIDATION_FAIL: "node:--test" },
+    { VALIDATION_ABORTED_DOTNET: "1", VALIDATION_FAIL: "dotnet:test" },
+    { VALIDATION_UNFINISHED_PHASE: "png.inspect" }
   ]) {
     const result = fixture.run("Full", environment);
     assert.equal(result.status, 1, result.stdout + result.stderr);
     const report = await fixture.report();
     assert.equal(report.outcome, "failed");
     assert.equal(report.evidence.status, "incomplete");
+    const component = report.components.find(component =>
+      component.id === (environment.VALIDATION_CANCELLED_NODE ? "node" : "dotnet"));
+    assert.equal(component.outcome,
+      environment.VALIDATION_CANCELLED_NODE || environment.VALIDATION_ABORTED_DOTNET ? "cancelled" : "incomplete");
+    if (environment.VALIDATION_CANCELLED_NODE)
+      assert.equal(report.components.find(component => component.id === "dotnet").outcome, "blocked");
   }
 });
 
@@ -335,6 +419,23 @@ test("a terminated public validation leaves an incomplete report with its active
   assert.equal(report.outcome, "incomplete");
   assert.equal(report.finished_at, null);
   assert.ok(report.stages.some(stage => stage.name === "C# formatting (read-only)" && stage.result === "running"));
+  assert.equal(report.components.find(component => component.id === "format").outcome, "incomplete");
+  assert.equal(report.components.find(component => component.id === "build").outcome, "incomplete");
+});
+
+test("a cooperatively cancelled component stays cancelled, blocks rendering and restores its caller environment", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", {
+    VALIDATION_CANCEL_TOOL: "dotnet:build", TRMNL_TIMING_DIRECTORY: "caller-timing",
+    AZURE_BICEP_CHECK_VERSION: "true"
+  });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const report = await fixture.report();
+  assert.equal(report.components.find(component => component.id === "build").outcome, "cancelled");
+  assert.equal(report.components.find(component => component.id === "dotnet").outcome, "blocked");
+  assert.equal(report.stages.find(stage => stage.name === ".NET build (warnings as errors)").result, "cancelled");
+  const { before, after } = await fixture.environment();
+  assert.deepEqual(after, before);
 });
 
 test("a failed component cannot become overall success when later commands pass", async t => {
@@ -400,9 +501,13 @@ test("full validation propagates test failures and blocks .NET execution after a
     const result = fixture.run("Full", { VALIDATION_FAIL: failure });
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.stdout, /Full validation FAILED/);
-    if (failure === "dotnet:build")
+    if (failure === "dotnet:build") {
       assert.match(result.stdout, /\.NET tests \(production rendering\)\s+BLOCKED/);
-    if (failure !== "node:--test")
+      assert.match(result.stdout, /Node delivery and guardrail tests\s+BLOCKED/);
+      const report = await fixture.report();
+      assert.deepEqual(report.components.find(component => component.id === "node").blocked_by, ["build"]);
+    }
+    if (failure === "dotnet:test")
       assert.match(result.stdout, /Node delivery and guardrail tests\s+PASSED/);
   }
 });

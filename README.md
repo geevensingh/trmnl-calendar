@@ -85,6 +85,8 @@ The checked-in [Full validation workflow](.github/workflows/full-validation.yml)
 
 The workflow also exposes **Required validation** as an additional, not-yet-required check. It accepts only this execution's successful genuine Full result and, for PRs, its successful event-pinned preparation report. It does not reduce coverage or change admission or the existing Full protection requirement. Failed, blocked, cancelled, missing or skipped Full work cannot pass the additional gate. See the [gate checkpoint and rollback](docs/ci-validation-design.md#additive-required-validation-checkpoint-77).
 
+Full runs **serially**, with Node delivery/guardrail tests before the expensive production-rendering suite. Formatting, build, syntax, browser or Node failures block that tail, rather than reporting unexecuted rendering as passed. Each invocation's `artifacts\validation\<scope>-<id>\summary.json` declares every expected component with `success`, `failure`, `blocked`, `cancelled` or `incomplete` outcomes and dependency reasons. A successful Full still requires the unfiltered .NET suite, every Node file, real raster evidence and all six native views. Reports bind the component contract and complete result inventory to evaluated input fingerprints; changing inputs during validation fails the execution. See the [serial component checkpoint](docs/ci-validation-design.md#serial-early-failure-and-component-checkpoint-83) for interrupted evidence, measurement limits and rollback.
+
 ### Setup once per worktree
 
 For Fast-only work, restore .NET dependencies without requesting an SDK development certificate:

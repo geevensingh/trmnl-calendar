@@ -1,3 +1,22 @@
+function Assert-AgendaOwnerAddress {
+    param([object]$Value)
+    $ownerUri = $null
+    $ownerMailbox = $null
+    if ($Value -isnot [string] -or
+        ![System.Uri]::TryCreate($Value, [System.UriKind]::Absolute, [ref]$ownerUri) -or
+        $ownerUri.Scheme -cne 'mailto' -or $ownerUri.Query -or $ownerUri.Fragment -or
+        $Value -match '\s|\p{Cc}') {
+        throw 'agendaOwnerAddress must be one exact mailto: address.'
+    }
+    $ownerAddress = $ownerUri.GetComponents([System.UriComponents]::AbsoluteUri, [System.UriFormat]::Unescaped).
+        Substring('mailto:'.Length)
+    if (![System.Net.Mail.MailAddress]::TryCreate($ownerAddress, [ref]$ownerMailbox) -or
+        $ownerMailbox.Address -cne $ownerAddress -or $ownerAddress.Contains(',') -or
+        $ownerAddress -match '\s|\p{Cc}') {
+        throw 'agendaOwnerAddress must be one exact mailto: address.'
+    }
+}
+
 function Invoke-Azure {
     param([string[]]$Arguments, [string]$Stage, [switch]$Json)
     $PSNativeCommandUseErrorActionPreference = $false

@@ -3,7 +3,7 @@
   "name": "Spring offset change",
   "description": "Friday PST and Monday PDT supplied instants both display at 1 PM; no live clock or recurrence expansion.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "current",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-03-06T19:00:00Z",
@@ -13,7 +13,7 @@
       "label": "Friday, Mar 6",
       "eligible_total": 1,
       "occurrences": [
-        { "time_kind": "timed", "id": "before-spring-change", "title": "Friday planning (PST)", "location": null, "start_at": "2026-03-06T21:00:00Z", "end_at": "2026-03-06T22:00:00Z" }
+        { "time_kind": "timed", "id": "before-spring-change", "title": "Friday planning (PST)", "participation_expectation": "definite", "location": null, "start_at": "2026-03-06T21:00:00Z", "end_at": "2026-03-06T22:00:00Z" }
       ]
     },
     "secondary": {
@@ -21,7 +21,7 @@
       "label": "Monday, Mar 9",
       "eligible_total": 1,
       "occurrences": [
-        { "time_kind": "timed", "id": "after-spring-change", "title": "Monday planning (PDT)", "location": null, "start_at": "2026-03-09T20:00:00Z", "end_at": "2026-03-09T21:00:00Z" }
+        { "time_kind": "timed", "id": "after-spring-change", "title": "Monday planning (PDT)", "participation_expectation": "likely", "location": null, "start_at": "2026-03-09T20:00:00Z", "end_at": "2026-03-09T21:00:00Z" }
       ]
     },
     "error": null

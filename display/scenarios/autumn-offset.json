@@ -3,7 +3,7 @@
   "name": "Autumn offset change",
   "description": "Friday PDT and Monday PST supplied instants both display at 1 PM across the offset change.",
   "agenda": {
-    "schema_version": 1,
+    "schema_version": 2,
     "state": "current",
     "time_zone": "America/Los_Angeles",
     "generated_at": "2026-10-30T18:00:00Z",
@@ -13,7 +13,7 @@
       "label": "Friday, Oct 30",
       "eligible_total": 1,
       "occurrences": [
-        { "time_kind": "timed", "id": "before-autumn-change", "title": "Friday planning (PDT)", "location": null, "start_at": "2026-10-30T20:00:00Z", "end_at": "2026-10-30T21:00:00Z" }
+        { "time_kind": "timed", "id": "before-autumn-change", "title": "Friday planning (PDT)", "participation_expectation": "definite", "location": null, "start_at": "2026-10-30T20:00:00Z", "end_at": "2026-10-30T21:00:00Z" }
       ]
     },
     "secondary": {
@@ -21,7 +21,7 @@
       "label": "Monday, Nov 2",
       "eligible_total": 1,
       "occurrences": [
-        { "time_kind": "timed", "id": "after-autumn-change", "title": "Monday planning (PST)", "location": null, "start_at": "2026-11-02T21:00:00Z", "end_at": "2026-11-02T22:00:00Z" }
+        { "time_kind": "timed", "id": "after-autumn-change", "title": "Monday planning (PST)", "participation_expectation": "likely", "location": null, "start_at": "2026-11-02T21:00:00Z", "end_at": "2026-11-02T22:00:00Z" }
       ]
     },
     "error": null

@@ -4,7 +4,7 @@
     "fileLoggingMode": "never",
     "logLevel": {
       "default": "None",
-      "Function.Agenda.User": "Warning",
+      "Function.Agenda.User": "Information",
       "Function.RefreshSource.User": "Information",
       "Host.Aggregator": "Information",
       "System.Net.Http.HttpClient": "None",
@@ -24,7 +24,8 @@
       },
       "samplingSettings": {
         "isEnabled": true,
-        "maxTelemetryItemsPerSecond": 1
+        "maxTelemetryItemsPerSecond": 1,
+        "excludedTypes": "Trace"
       }
     }
   }

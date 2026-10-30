@@ -52,16 +52,27 @@ export function rowProblems(rows) {
     const bounds = row.getBoundingClientRect();
     const time = row.querySelector(".agenda-time .label");
     const title = row.querySelector("td .title");
-    if (!time || !title) {
-      problems.push(`Row ${index + 1} is missing essential time or title text.`);
+    const participation = row.querySelector(".agenda-participation");
+    if (!time || !title || !participation) {
+      problems.push(`Row ${index + 1} is missing essential time, title, or participation text.`);
       continue;
     }
     const timeBounds = time.getBoundingClientRect();
     const titleBounds = title.getBoundingClientRect();
+    const participationBounds = participation.getBoundingClientRect();
     if (bounds.top < previousBottom - 1) problems.push(`Row ${index + 1} overlaps its predecessor.`);
-    if (!inside(timeBounds, bounds) || !inside(titleBounds, bounds))
-      problems.push(`Row ${index + 1} does not contain its time and title.`);
-    if (!separate(timeBounds, titleBounds)) problems.push(`Row ${index + 1} has overlapping time and title.`);
+    if (!inside(timeBounds, bounds) || !inside(titleBounds, bounds) || !inside(participationBounds, bounds))
+      problems.push(`Row ${index + 1} does not contain its time, title, and participation label.`);
+    if (!separate(timeBounds, titleBounds) || !separate(timeBounds, participationBounds)
+      || !separate(titleBounds, participationBounds))
+      problems.push(`Row ${index + 1} has overlapping time, title, or participation text.`);
+    const status = row.querySelector(".agenda-status");
+    if (status) {
+      const statusBounds = status.getBoundingClientRect();
+      if (!inside(statusBounds, bounds) || !separate(statusBounds, titleBounds)
+        || !separate(statusBounds, timeBounds) || !separate(statusBounds, participationBounds))
+        problems.push(`Row ${index + 1} status must fit without overlapping its title or scheduled time.`);
+    }
     const range = row.ownerDocument.createRange();
     range.selectNodeContents(title);
     const rectangles = [...range.getClientRects()];
@@ -167,22 +178,66 @@ export function checkLayout(document, agenda, target, allowLegacy = false) {
         "Narrow source metadata uses a second header line; wide source metadata stays at the right.");
       }
     }
-    add("admission", rows.length === day.occurrences.length && shown.every((row, index) => row === rows[index]),
-      `The ${name} rows must retain the supplied order and admit a prefix.`);
+    add("admission", rows.length === day.occurrences.length
+      && rows.every((row, index) => row.dataset.agendaId === day.occurrences[index]?.id)
+      && new Set(rows.map(row => row.dataset.agendaId)).size === rows.length,
+    `The ${name} rows must retain the supplied order.`);
     const problems = rowProblems(shown);
     add("overlap", problems.length === 0, problems.join(" ") || `${name} occurrence rows do not overlap.`);
-    for (const [index, row] of shown.entries()) {
+    for (const [index, row] of rows.entries()) {
+      if (!visible(row)) continue;
       const timing = row.querySelector(".agenda-time .label");
       const title = row.querySelector("td .title");
+      const occurrence = day.occurrences[index];
+      const participation = row.querySelector(".agenda-participation");
       requireText(timing, `${name} row ${index + 1} time`);
       requireText(title, `${name} row ${index + 1} title`, true);
-      add("readability", timing && title && parseFloat(getComputedStyle(timing).fontSize) >= 20
-        && parseFloat(getComputedStyle(title).fontSize) >= 20, `${name} essential rows must retain readable logical type.`);
-      add("content", title?.textContent === day.occurrences[index]?.title,
+      const expectation = occurrence.participation_expectation;
+      const labels = { definite: "Definite", likely: "Likely", maybe: "Maybe", unlikely: "Unlikely", unknown: "Unknown" };
+      requireText(participation, `${name} row ${index + 1} participation label`);
+      add("participation", participation?.textContent.trim() === labels[expectation],
+        `${name} row ${index + 1} must render the supplied participation expectation as its exact text label.`);
+      add("readability", timing && title && participation
+        && parseFloat(getComputedStyle(timing).fontSize) >= 20
+        && parseFloat(getComputedStyle(title).fontSize) >= 20
+        && parseFloat(getComputedStyle(participation).fontSize) >= 16,
+      `${name} essential rows must retain readable logical type, including participation labels.`);
+      add("content", title?.textContent === occurrence?.title,
         `${name} row ${index + 1} must retain the supplied title as text.`);
-      if (day.occurrences[index]?.time_kind === "all_day")
+      const expectedEmphasis = occurrence?.emphasis ?? null;
+      const actualEmphasis = row.dataset.agendaEmphasis ?? null;
+      add("emphasis", actualEmphasis === expectedEmphasis,
+        `${name} row ${index + 1} must preserve its adapter-selected emphasis.`);
+      if (expectedEmphasis) {
+        const status = row.querySelector(".agenda-status");
+        const cells = [...row.querySelectorAll("td")];
+        const label = expectedEmphasis === "in_progress" ? "IN PROGRESS" : "UPCOMING";
+        requireText(status, `${name} row ${index + 1} status`);
+        add("emphasis", status?.textContent.trim() === label,
+          `${name} row ${index + 1} must display its explicit ${label} status.`);
+        add("emphasis", cells.length === 2 && cells.every(cell =>
+          getComputedStyle(cell).backgroundColor === "rgb(0, 0, 0)"
+          && getComputedStyle(cell).color === "rgb(255, 255, 255)")
+          && getComputedStyle(timing).color === "rgb(255, 255, 255)"
+          && getComputedStyle(title).color === "rgb(255, 255, 255)"
+          && participation && getComputedStyle(participation).color === "rgb(255, 255, 255)"
+          && status && getComputedStyle(status).color === "rgb(255, 255, 255)",
+        `${name} row ${index + 1} must use a black card with white essential text.`);
+        add("readability", parseFloat(getComputedStyle(title).fontSize) > 21
+          && parseInt(getComputedStyle(title).fontWeight, 10) >= 700,
+        `${name} row ${index + 1} emphasized title must be larger and bold.`);
+      }
+      if (occurrence?.time_kind === "all_day")
         add("all-day", timing?.textContent.trim() === "All day" && !timing.hasAttribute("data-agenda-start"),
           "All-day entries must remain date-only, not midnight meetings.");
+      else if (occurrence?.time_kind === "timed") {
+        const clock = new Intl.DateTimeFormat("en-US", {
+          timeZone: agenda.time_zone, hour: "numeric", minute: "2-digit", hour12: true
+        });
+        add("content", timing?.textContent.trim()
+          === `${clock.format(new Date(occurrence.start_at))} - ${clock.format(new Date(occurrence.end_at))}`,
+        `${name} row ${index + 1} must retain the supplied scheduled start and end.`);
+      }
       if (source)
         add("overlap", separate(row.getBoundingClientRect(), source.getBoundingClientRect()),
           `${name} row ${index + 1} must not overlap source information.`);
@@ -200,7 +255,15 @@ export function checkLayout(document, agenda, target, allowLegacy = false) {
       }
     }
   }
-  add("priority", !visibleCounts.secondary || visibleCounts.primary === agenda.primary.occurrences.length,
-    "Secondary details must not displace supplied primary rows.");
+  const allEmphasizedVisible = ["primary", "secondary"].every(name =>
+    [...root.querySelectorAll(`.agenda-${name} tbody tr[data-agenda-emphasis]`)].every(visible));
+  const ordinaryVisible = ["primary", "secondary"].some(name =>
+    [...root.querySelectorAll(`.agenda-${name} tbody tr:not([data-agenda-emphasis])`)].some(visible));
+  add("priority", !ordinaryVisible || allEmphasizedVisible,
+    "Ordinary rows must not be admitted ahead of an emphasized event.");
+  const secondaryOrdinaryVisible = [...root.querySelectorAll(".agenda-secondary tbody tr:not([data-agenda-emphasis])")]
+    .some(visible);
+  add("priority", !secondaryOrdinaryVisible || visibleCounts.primary === agenda.primary.occurrences.length,
+    "Ordinary secondary details must not displace primary rows.");
   return findings;
 }

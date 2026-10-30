@@ -3,7 +3,9 @@ import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { publishTrmnl } from "../../scripts/publish-trmnl.mjs";
+import * as publisher from "../../scripts/publish-trmnl.mjs";
+
+const { publishTrmnl } = publisher;
 
 async function pluginSource(t) {
   const root = await mkdtemp(join(tmpdir(), "trmnl-plugin-source-"));
@@ -157,6 +159,134 @@ test("TRMNL publisher rejects content mismatch after the remote pull", async t =
   }), { message: "trmnl_deployed_content_mismatch" });
 });
 
+for (const [failureAt, stage] of [[1, "preflight_pull"], [2, "push"], [3, "verify_pull"]]) {
+  test(`TRMNL ${stage} failure retains only its stage and allowlisted HTTP status`, async t => {
+    const sourceDirectory = await pluginSource(t);
+    let calls = 0;
+    await assert.rejects(publishTrmnl({
+      sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345",
+      apiKey: "synthetic-private-key",
+      runCommand: async (_command, args, { cwd, env }) => {
+        assert.equal(env.TRMNL_API_KEY, "synthetic-private-key");
+        calls += 1;
+        if (calls === failureAt) {
+          throw Object.assign(new Error("synthetic-private-key https://private.invalid"), {
+            stderr: "Error: failed to download plugin settings archive: 403 synthetic-private-key"
+          });
+        }
+        if (args[0] === "pull") await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      }
+    }), error => {
+      assert.equal(error.code, `trmnl_${stage}_http_403`);
+      assert.equal(error.message, error.code);
+      assert.doesNotMatch(JSON.stringify(error), /synthetic-private|private.invalid|stderr/);
+      return true;
+    });
+    assert.equal(calls, failureAt);
+  });
+}
+
+test("TRMNL publisher does not promote arbitrary diagnostic text into safe status codes", async t => {
+  const sourceDirectory = await pluginSource(t);
+  await assert.rejects(publishTrmnl({
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async () => {
+      throw Object.assign(new Error("private diagnostic"), {
+        code: "trmnl_private_key_value",
+        stdout: "private field 401; failed to download plugin settings archive: 418 private body"
+      });
+    }
+  }), { code: "trmnl_preflight_pull_failed" });
+});
+
+test("TRMNL publisher identifies unreadable exported settings without exposing their values", async t => {
+  const sourceDirectory = await pluginSource(t);
+  let calls = 0;
+  await assert.rejects(publishTrmnl({
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => {
+      calls += 1;
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      await writeFile(join(cwd, "src", "settings.yml"), "private: [unterminated\n");
+    }
+  }), { code: "trmnl_preflight_settings_invalid" });
+  assert.equal(calls, 1);
+});
+
+for (const [failure, suffix] of [
+  [{ code: "ENOENT" }, "unavailable"],
+  [{ killed: true }, "timeout"],
+  [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true }, "output_limit"],
+  [{ stdout: "Error: failed to download plugin settings archive: 401 private response" }, "http_401"]
+]) {
+  test(`TRMNL publisher reports fixed ${suffix} diagnostics without raw command output`, async t => {
+    const sourceDirectory = await pluginSource(t);
+    await assert.rejects(publishTrmnl({
+      sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async () => { throw Object.assign(new Error("private diagnostic"), failure); }
+    }), { code: `trmnl_preflight_pull_${suffix}` });
+  });
+}
+
+test("TRMNL publisher distinguishes invalid source and post-push settings", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const sourceSettings = await readFile(join(sourceDirectory, "settings.yml"), "utf8");
+  await writeFile(join(sourceDirectory, "settings.yml"), "private: [unterminated\n");
+  let calls = 0;
+  const options = {
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      calls += 1;
+      if (args[0] === "pull") {
+        await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+        if (calls === 3) await writeFile(join(cwd, "src", "settings.yml"), "private: [unterminated\n");
+      }
+    }
+  };
+  await assert.rejects(publishTrmnl(options), { code: "trmnl_source_settings_invalid" });
+  assert.equal(calls, 0);
+  await writeFile(join(sourceDirectory, "settings.yml"), sourceSettings);
+  await assert.rejects(publishTrmnl(options), { code: "trmnl_verify_settings_invalid" });
+  assert.equal(calls, 3);
+});
+
+test("read-only TRMNL inspection pulls once and reports compatibility without publishing or backup approval", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const calls = [];
+  const result = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      calls.push(args[0]);
+      assert.equal(args[0], "pull");
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+    }
+  });
+  assert.deepEqual(result, {
+    operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: true, content_matches: true
+  });
+  assert.deepEqual(calls, ["pull"]);
+  assert.doesNotMatch(JSON.stringify(result), /synthetic|12345|agenda_endpoint|function_key|rules_json/);
+});
+
+test("read-only TRMNL inspection reports mismatches without mutating the plugin", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const calls = [];
+  const result = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      calls.push(args[0]);
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      const settings = await readFile(join(cwd, "src", "settings.yml"), "utf8");
+      await writeFile(join(cwd, "src", "settings.yml"), settings.replace("keyname: function_key", "keyname: previous_key"));
+      await writeFile(join(cwd, "src", "full.liquid"), "different remote template\n");
+    }
+  });
+  assert.deepEqual(result, {
+    operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: false, content_matches: false
+  });
+  assert.deepEqual(calls, ["pull"]);
+});
+
 test("sequential TRMNL releases retain the parent credential while isolating child environments", async t => {
   const previous = process.env.TRMNL_API_KEY;
   process.env.TRMNL_API_KEY = "synthetic-key";
@@ -221,7 +351,7 @@ test("publisher cancellation reaches the active push and prevents a subsequent p
       abort.abort(new Error("storage_lease_lost"));
       return cancelled;
     }
-  }), { message: "trmnl_publish_or_verify_failed" });
+  }), { message: "trmnl_push_cancelled" });
   assert.deepEqual(calls, ["pull", "push"]);
 });
 

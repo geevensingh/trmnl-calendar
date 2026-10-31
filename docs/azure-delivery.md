@@ -302,6 +302,17 @@ When file sets match, `definition.fields` lists only differing **allowlisted
 top-level definition fields** with `source_missing`, `deployed_missing`,
 `type_mismatch`, or `value_mismatch`. Custom-field differences are reported only
 as `custom_fields`, never as configured field identifiers or nested paths.
+Each differing field also has `source_type` and `deployed_type`: exactly
+`missing`, `null`, `string`, `object`, `array`, `boolean`, or `number`.
+`source_empty` and `deployed_empty` are booleans only for strings/arrays/objects
+(zero characters/elements/keys); they are null for the other types. Whitespace
+strings are nonempty. These are structural signals, not values or lengths:
+null/missing polling configuration is distinct from an empty object, and neither
+is presumed equivalent to the intended string.
+The comparison-only name allowlist additionally recognizes `static_data`,
+`serverless_language` and the OAuth setting identifiers in the cited schema
+below. Identifying a name does **not** make it ignored, harmless metadata, or
+an accepted default; its presence, type and content remain compared exactly.
 Unknown definition fields and files remain part of exact verification, but only
 their source/deployed counts and aggregate equality booleans are exposed.
 When file sets differ, definition comparison is explicitly unevaluated:
@@ -318,6 +329,26 @@ configured-value preservation or a verified target. Read the bounded evidence
 before choosing a fix; do not strip unknown remote fields or retry blindly.
 Read-only inspection does not retarget a pinned repair source/archive or clear
 its mutation-confirmation barrier.
+
+#### Definition representation evidence (2026-10-31)
+
+The pinned publisher is [`trmnl_preview` 0.32.3 / tag v0.32.3](https://github.com/usetrmnl/trmnlp/tree/a7a813bc46358adf5b53e06004d6ab337e51d5a3).
+The following distinguishes documented/source behavior from observed cloud
+behavior; none permits coercing missing data into a verified target.
+
+| Claim | Status and primary evidence | Remaining limitation |
+|---|---|---|
+| Pinned CLI pull converts archive setting types | **Unsupported**: [`Pull#call`](https://github.com/usetrmnl/trmnlp/blob/a7a813bc46358adf5b53e06004d6ab337e51d5a3/lib/trmnlp/commands/pull.rb) extracts ZIP entries unchanged. | The hosted archive serializer is a separate component. |
+| Polling headers/body are intended as strings | **Supported** by the pinned [`Plugin` readers](https://github.com/usetrmnl/trmnlp/blob/a7a813bc46358adf5b53e06004d6ab337e51d5a3/lib/trmnlp/config/plugin.rb), [header tests](https://github.com/usetrmnl/trmnlp/blob/a7a813bc46358adf5b53e06004d6ab337e51d5a3/spec/lib/trmnlp/config/plugin_spec.rb) and [scaffold](https://github.com/usetrmnl/trmnlp/blob/a7a813bc46358adf5b53e06004d6ab337e51d5a3/templates/init/src/settings.yml). JSON-object header syntax there is still a **string**, parsed after Liquid rendering. | This does not show what types the failed cloud export contains. |
+| Additional static/serverless/OAuth setting names exist | **Supported** by the first-party [`Terminus` import schema at df71a84](https://github.com/usetrmnl/terminus/blob/df71a84e1a59e428b5f72ff4dd310265e1950469/app/aspects/extensions/importers/remote/schema.rb), plus pinned `Plugin` readers for static/serverless. These names are diagnostic identifiers only. | Terminus is another server, not proof of cloud exporter defaults or inert metadata. |
+| Cloud non-string polling values and five extra fields are equivalent to this source | **Unknown**. The first-party [API index](https://github.com/usetrmnl/api-docs/blob/70480dc83430adcf36e868d6fdde7cde94a8d97a/private-api/more-endpoints.md) points to the hosted OpenAPI, which was inaccessible from this investigation environment. | Run read-only inspection against the same pinned source to obtain the fixed type/emptiness/known-name evidence. Any remaining arbitrary names stay hidden and unverified, not silently stripped. |
+
+Synthetic pinned-CLI loopback execution can establish unchanged archive
+round-tripping and correct diagnostic signals for deliberately injected
+representations. It cannot establish the production export's types or prove
+that a cloud import preserved the required polling headers/body. In particular,
+null headers/body may indicate lost configuration rather than serialization
+noise; a mismatch remains a blocking failure.
 
 Publisher failures identify `source_settings`, `preflight_pull`, `preflight_settings`, `push`, `verify_pull`, or `verify_settings` rather than collapsing every tool error into `trmnl_publish_or_verify_failed`. Archive API failures include only an allowlisted HTTP status, such as `trmnl_preflight_pull_http_403`; absent tools, cancellation, timeouts and output limits have fixed codes. Tool output is captured in bounded memory only, never printed or retained as an artifact. Private settings, archive contents, credentials and response bodies stay out of logs. A push or post-push failure still requires stopped-mutation verification before recovery; a diagnostic code is not proof of rollback.
 

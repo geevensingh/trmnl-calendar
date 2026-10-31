@@ -25,14 +25,15 @@ public sealed class AdaptiveDisplayTests
     public static IEnumerable<object[]> CoverageViews(string family) => DisplayCoverage.FamilyCases(family);
 
     [Theory]
-    [MemberData(nameof(Views))]
-    public async Task Ordinary_title_lowercase_s_keeps_readable_native_raster_ink(NativeView view)
+    [MemberData(nameof(CoverageViews), nameof(Ordinary_title_lowercase_s_keeps_readable_native_raster_ink))]
+    public async Task Ordinary_title_lowercase_s_keeps_readable_native_raster_ink(string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 2, secondaryRows: 0);
         data["primary"]!["occurrences"]![0]!["title"] = "Finalize the Offers";
         data["primary"]!["occurrences"]![1]!["title"] = "Doors";
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
@@ -57,7 +58,7 @@ public sealed class AdaptiveDisplayTests
         var image = Path.Combine(DisplayTests.Root, "artifacts", $"title-strokes-{view.Device}-{view.Placement}.png");
         var referenceImage = Path.Combine(DisplayTests.Root, "artifacts", $"title-strokes-{view.Device}-{view.Placement}-reference.png");
         var regions = await Glyphs();
-        await page.ScreenshotAsync(new() { Path = image });
+        await ValidationTiming.Screenshot(page, new() { Path = image });
         using var actual = JsonDocument.Parse(DisplayTests.RunRuby(
             Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image, regions }));
         var weight = view.Device == "og" ? 700 : 600;
@@ -70,7 +71,7 @@ public sealed class AdaptiveDisplayTests
             "titles => titles.map(title => getComputedStyle(title).fontWeight)"),
             actualWeight => Assert.Equal(weight.ToString(), actualWeight));
         regions = await Glyphs();
-        await page.ScreenshotAsync(new() { Path = referenceImage });
+        await ValidationTiming.Screenshot(page, new() { Path = referenceImage });
         using var reference = JsonDocument.Parse(DisplayTests.RunRuby(
             Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image = referenceImage, regions }));
         for (var index = 0; index < regions.GetArrayLength(); index++)
@@ -82,6 +83,7 @@ public sealed class AdaptiveDisplayTests
                 $"{view.Device}/{view.Placement}: lowercase s in {regions[index].GetProperty("text")} " +
                 $"has {ink} dark pixels; require at least 90% of the stronger native reference ({referenceInk}).");
         }
+        DisplayCoverage.Complete(view);
     }
 
     [Fact]

@@ -13,6 +13,7 @@
     "emphasis-in-progress", "emphasis-upcoming", "long-text", "error-unknown"
   ],
   "adaptive_families": {
+    "Ordinary_title_lowercase_s_keeps_readable_native_raster_ink": "all",
     "Empty_days_keep_date_and_message_on_one_line_without_a_zero_count": "og-full",
     "Emphasized_secondary_event_is_admitted_ahead_of_ordinary_primary_overflow": "og-full",
     "Emphasized_overflow_is_admitted_in_chronological_order_before_ordinary_rows": "og-full",

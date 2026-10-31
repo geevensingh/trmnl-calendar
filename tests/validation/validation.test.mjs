@@ -101,6 +101,10 @@ exit 0
             (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')) -replace 'outcome="Completed"','outcome="Aborted"' |
               Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
           }
+          if ($env:VALIDATION_FAILED_TRX_SUMMARY) {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')) -replace 'outcome="Completed"','outcome="Failed"' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
+          }
           $phases = @('browser.create', 'browser.launch', 'ruby.startup', 'ruby.render', 'screenshot', 'png.decode', 'png.inspect')
           foreach ($phase in $phases) {
             @{ kind = 'start'; id = $phase; phase = $phase } | ConvertTo-Json -Compress |
@@ -194,6 +198,10 @@ exit 0
             (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')) -replace '"failed":0','"failed":1' |
               Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')
           }
+          if ($env:VALIDATION_FAILED_NODE_EVENT) {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')) -replace '"result":"passed"','"result":"failed"' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')
+          }
         }
         $global:LASTEXITCODE = if ($env:VALIDATION_FAIL -eq "node:$($args[0])") { 29 } else { 0 }
       }
@@ -222,6 +230,21 @@ exit 0
       if ($env:VALIDATION_SELECTED_RUBY) {
         Set-Alias -Name $env:VALIDATION_SELECTED_RUBY -Value ruby -Scope Global
       }
+      function global:Move-Item {
+        [CmdletBinding()]
+        param($LiteralPath, $Destination, [switch]$Force)
+        if ($env:VALIDATION_FINAL_STAGE_SAVE_FAIL -and !$global:failedStageSave -and
+            $LiteralPath -like '*summary.tmp') {
+          $report = Get-Content -LiteralPath $LiteralPath -Raw | ConvertFrom-Json
+          if ($report.components[-1].outcome -eq 'success' -and
+              $report.stages[-1].result -eq 'passed' -and $null -eq $report.finished_at) {
+            $global:failedStageSave = $true
+            throw 'Synthetic final-stage report write failure'
+          }
+        }
+        Microsoft.PowerShell.Management\\Move-Item @PSBoundParameters
+      }
+      $global:failedStageSave = $false
       function Get-CallerEnvironment {
         $snapshot = @{}
         Get-ChildItem Env: | Where-Object {
@@ -513,6 +536,37 @@ test("reported test failures cannot become success even if a test tool exits zer
     assert.equal(report.outcome, "failed");
     assert.equal(report.evidence.status, "failed");
   }
+});
+
+test("failed run summaries and individual Node events cannot be overridden by passing peers", async t => {
+  for (const [environment, component] of [
+    [{ VALIDATION_FAILED_TRX_SUMMARY: "1" }, "dotnet"],
+    [{ VALIDATION_FAILED_NODE_EVENT: "1" }, "node"]
+  ]) {
+    await t.test(component, async t => {
+      const fixture = await checkout(t);
+      const result = fixture.run("Full", environment);
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      const report = await fixture.report();
+      assert.equal(report.outcome, "failed");
+      assert.equal(report.components.find(item => item.id === component).outcome, "failure");
+      assert.equal(report.evidence.status, "failed");
+      if (component === "node") {
+        assert.equal(report.components.find(item => item.id === "dotnet").outcome, "blocked");
+        assert.ok(!(await fixture.calls()).some(call => call.arguments[0] === "test"));
+      }
+    });
+  }
+});
+
+test("an interruption after successful evidence cannot become successful Full on a later report write", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", { VALIDATION_FINAL_STAGE_SAVE_FAIL: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /Validation interrupted: Synthetic final-stage report write failure/);
+  assert.equal((await fixture.report()).outcome, "failed");
+  const { before, after } = await fixture.environment();
+  assert.deepEqual(after, before);
 });
 
 test("expected rendering errors and owned supersession stay visible without failing passing tests", async t => {

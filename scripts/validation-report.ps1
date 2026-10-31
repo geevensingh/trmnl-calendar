@@ -365,8 +365,10 @@ function Read-ValidationEvidence([switch]$NodeOnly) {
                     work_ms = ($_.Group | Measure-Object duration_ms -Sum).Sum }
             })
         $evidence.dotnet = [ordered]@{ tests = $tests; classes = $classes; count = $tests.Count }
-        $reportedFailures += @($tests | Where-Object result -EQ 'Failed').Count
-        Set-ValidationComponentEvidence 'dotnet' $(if ($reportedFailures) { 'failure' } else { 'success' })
+        $dotnetFailures = @($tests | Where-Object result -EQ 'Failed').Count
+        if ($summary.outcome -eq 'Failed') { $dotnetFailures = [Math]::Max(1, $dotnetFailures) }
+        $reportedFailures += $dotnetFailures
+        Set-ValidationComponentEvidence 'dotnet' $(if ($dotnetFailures) { 'failure' } else { 'success' })
     }
     catch {
         $missing.Add('complete .NET TRX results')
@@ -400,8 +402,9 @@ function Read-ValidationEvidence([switch]$NodeOnly) {
             top_level_work_ms = ($tests | Where-Object nesting -EQ 0 | Measure-Object duration_ms -Sum).Sum
             note = 'Top-level work excludes nested case durations; it is not wall time across concurrent files.'
         }
-        $reportedFailures += [int]$summaries[0].failed
-        $nodeOutcome = if ($summaries[0].failed) { 'failure' } else { 'success' }
+        $nodeFailures = [Math]::Max([int]$summaries[0].failed, @($tests | Where-Object result -EQ 'failed').Count)
+        $reportedFailures += $nodeFailures
+        $nodeOutcome = if ($nodeFailures) { 'failure' } else { 'success' }
     }
     catch { $missing.Add('complete Node results') }
     Set-ValidationComponentEvidence 'node' $nodeOutcome

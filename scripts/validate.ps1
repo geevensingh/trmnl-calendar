@@ -17,6 +17,7 @@ $savedCoverageProfile = $env:TRMNL_DISPLAY_COVERAGE
 $location = Get-Location
 $project = Join-Path $root 'tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj'
 $results = [Collections.Generic.List[object]]::new()
+$validationInterrupted = $false
 $components = @(
     @{ id = 'prerequisites'; name = 'Prerequisites'; requires = @() }
     @{ id = 'format'; name = 'C# formatting (read-only)'; requires = @('prerequisites') }
@@ -241,6 +242,8 @@ try {
     }
 }
 catch {
+    $validationInterrupted = $true
+    $script:validationReport.unavailable.Add('uninterrupted validation execution')
     Write-Host "[FAIL] Validation interrupted: $($_.Exception.Message)"
 }
 finally {
@@ -252,7 +255,7 @@ finally {
 
 Write-Host ''
 $results | Format-Table -AutoSize | Out-Host
-$failed = @($script:validationReport.components | Where-Object outcome -NE 'success').Count -gt 0
+$failed = $validationInterrupted -or @($script:validationReport.components | Where-Object outcome -NE 'success').Count -gt 0
 if ($script:validationReport.content.started) {
     try {
         $script:validationReport.content.finished = Get-ValidationInputFingerprint $root

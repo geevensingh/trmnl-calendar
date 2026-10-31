@@ -22,22 +22,22 @@ function runHarness(profile, directory = "", filter) {
   return result;
 }
 
-test("OG-first discovery retains every OG adaptive case and selects six representative families on each other view", () => {
+test("OG-first discovery retains every OG adaptive case and selects seven representative families on each other view", () => {
   const adaptive = runHarness("OgFirst").stdout.split(/\r?\n/).filter(line => line.includes("AdaptiveDisplayTests."));
-  assert.equal(adaptive.length, 73, "Unexpected adaptive discovery count");
-  assert.equal(adaptive.filter(line => line.includes('nativeView: "og/full"')).length, 17);
+  assert.equal(adaptive.length, 79, "Unexpected adaptive discovery count");
+  assert.equal(adaptive.filter(line => line.includes('nativeView: "og/full"')).length, 18);
   for (const [device, placement] of [
     ["og", "half_horizontal"], ["og", "half_vertical"],
     ["v2", "full"], ["v2", "half_horizontal"], ["v2", "half_vertical"]
   ]) {
     assert.equal(adaptive.filter(line => line.includes(`nativeView: "${device}/${placement}"`)).length,
-      6, `${device}/${placement}`);
+      7, `${device}/${placement}`);
   }
 });
 
-test("exhaustive discovery restores all 128 adaptive rows without removing the six-view HTTP coverage", () => {
+test("exhaustive discovery restores all 134 adaptive rows without removing the six-view HTTP coverage", () => {
   const exhaustive = runHarness("Exhaustive").stdout;
-  assert.equal(exhaustive.split(/\r?\n/).filter(line => line.includes("AdaptiveDisplayTests.")).length, 128);
+  assert.equal(exhaustive.split(/\r?\n/).filter(line => line.includes("AdaptiveDisplayTests.")).length, 134);
   const methods = [
     "Http_emphasis_clock_transitions_reach_all_six_native_views_with_original_source_metadata",
     "Http_response_pressure_retains_both_card_states_over_ordinary_and_all_day_competition_in_native_views",
@@ -50,6 +50,33 @@ test("exhaustive discovery restores all 128 adaptive rows without removing the s
     assert.ok(selected.includes(method), `OG-first must retain ${method}`);
     assert.ok(exhaustive.includes(method), `Exhaustive must retain ${method}`);
   }
+  const family = "Ordinary_title_lowercase_s_keeps_readable_native_raster_ink";
+  for (const discovery of [selected, exhaustive]) {
+    const rows = discovery.split(/\r?\n/).filter(line => line.includes(family));
+    assert.equal(rows.length, 6, "The inherited raster family must retain every native view under both profiles.");
+    for (const view of ["og/full", "og/half_horizontal", "og/half_vertical",
+      "v2/full", "v2/half_horizontal", "v2/half_vertical"]) {
+      assert.ok(rows.some(row => row.includes(`nativeView: "${view}"`)), view);
+    }
+  }
+});
+
+test("the inherited lowercase-s raster family completes all six native assertion identities", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "agenda retained raster coverage "));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const family = "Ordinary_title_lowercase_s_keeps_readable_native_raster_ink";
+  runHarness("OgFirst", directory, `FullyQualifiedName~${family}`);
+  const files = await readdir(directory);
+  const inventory = JSON.parse(await readFile(join(directory,
+    files.find(name => /^inventory-.*\.json$/.test(name))), "utf8"));
+  const expected = inventory.coverage.expected.filter(item => item.method.endsWith(`.${family}`));
+  assert.equal(expected.length, 6);
+  assert.ok(!inventory.coverage.omitted.some(item => item.method.endsWith(`.${family}`)));
+  const journal = files.filter(name => /^coverage-.*\.jsonl$/.test(name));
+  assert.equal(journal.length, 1);
+  const completed = (await readFile(join(directory, journal[0]), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  assert.deepEqual(completed.map(item => JSON.stringify(item)).sort(),
+    expected.map(item => JSON.stringify(item)).sort());
 });
 
 test("a focused real-render run reports the full selected inventory but completes only its actual assertion case", async t => {
@@ -63,9 +90,9 @@ test("a focused real-render run reports the full selected inventory but complete
   assert.equal(inventory.coverage.profile, "OgFirst");
   assert.equal(inventory.coverage.policy_id, "og-first-v1");
   assert.match(inventory.coverage.policy_sha256, /^[a-f0-9]{64}$/);
-  assert.equal(inventory.coverage.expected.length, 136);
+  assert.equal(inventory.coverage.expected.length, 142);
   assert.equal(inventory.coverage.omitted.length, 140);
-  assert.equal(new Set(inventory.coverage.expected.map(item => JSON.stringify(item))).size, 136);
+  assert.equal(new Set(inventory.coverage.expected.map(item => JSON.stringify(item))).size, 142);
   const scenarios = inventory.coverage.expected.filter(item => item.scenario !== null);
   assert.equal(scenarios.length, 67);
   assert.equal(scenarios.filter(item => item.view === "og/full").length, 22);

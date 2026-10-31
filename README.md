@@ -127,6 +127,26 @@ Check `az bicep version` and, only if missing, install the local compiler once w
 | Fast (default) | Read-only C# whitespace formatting, production and test-project compilation with existing warnings-as-errors settings, PowerShell parsing, and Node syntax | Optional manual feedback |
 | Full | Complete read-only C# formatting, the Fast build/syntax checks, the unfiltered production .NET suite with the explicit **OG-first** adaptive view matrix (real Functions host, Liquid, framework/fonts and Chromium), and every delivery/guardrail `*.test.mjs` through Node's existing runner | PR CI and optional manual full feedback |
 
+#### Isolated component execution
+
+Ordinary Full and the checked-in workflow remain serial. The same validator now exposes opt-in preparation, worker and raw-aggregation modes for the approved four-.NET-plus-complete-Node boundary; these are not a measured acceleration or enabled hosted topology.
+
+```powershell
+.\scripts\validate.ps1 -Scope Fast -Execution Plan -DisplayCoverage OgFirst
+.\scripts\validate.ps1 -Scope Full -Execution Worker -Component d1 -ExecutionPlan C:\owned\plan\execution-plan.json
+.\scripts\validate.ps1 -Scope Full -Execution Aggregate -ExecutionPlan C:\owned\plan\execution-plan.json `
+  -ReportsDirectory C:\owned\incoming `
+  -JobResults '{"d1":"success","d2":"success","d3":"success","d4":"success","node":"success"}'
+```
+
+Preparation emits `execution-plan.json`, its source request and independently discovered raw identities. Without a GitHub run it creates a distinct `local-<GUID>` identity; every worker and aggregate inherits that identity from the plan, never invents a hosted run. The profile must match explicitly; pass `-DisplayCoverage Exhaustive` to **all** invocations for that diagnostic matrix. Each worker (`d1` through `d4`, or `node`) requires its own restored checkout and normal independent build/dependency outputs. It repeats readiness, formatting, build, syntax and discovery, then runs its entire assigned .NET subset or the complete Node suite. At most five workers and two conservative xUnit collections per .NET worker are approved. Do not run these workers concurrently in one checkout.
+
+Opt-in execution rejects linked artifact ancestors before writing any report. Preparation and workers also reject links anywhere in existing mutable build/dependency output trees and inherited MSBuild output redirection (including `BaseOutputPath`, `OutDir` and `MSBuildProjectExtensionsPath`) before invoking tools; unset these overrides rather than redirecting outputs into a shared directory.
+
+Owned tools inherit only the scheduler's explicit native-system/tool/run input allowlist (`native-inputs-v1`), not arbitrary environment variables that MSBuild could interpret as additional output properties. Omitted variable names, never values, are reported in isolation evidence; the caller's environment remains unchanged. Serial execution retains its existing environment behavior.
+
+Aggregation requires a clean identical source revision/content, exact run/attempt, policy and component bindings. Downloads must contain exactly `d1`, `d2`, `d3`, `d4` and `node`, each containing one original `component-*` directory, including its raw journals/results, `summary.json` and `raw-manifest.json`. Transfer hashes alone cannot certify passing tests: the authoritative reader re-decodes raw TRX, complete Node results, global expected/omitted inventory and each assigned assertion-completion subset before joining all five successful job outcomes. A worker alone is **Component**, never Full. Aggregate duration excludes worker/setup time and must not be reported as successful workflow latency or occupied runner minutes. Native five-lane equivalence, hosted wiring and coordinator-allocated successful-run measurements remain pending.
+
 #### OG-first display coverage
 
 Local Full and PR CI default to `-DisplayCoverage OgFirst`. **This deliberately reduces view-dependent coverage; it is not the former exhaustive six-view matrix.** `-DisplayCoverage Exhaustive` restores that matrix through the same authoritative validator, and diagnostic workflow dispatch explicitly uses Exhaustive. The validator overrides an inherited diagnostic profile for its selected run and restores the original environment afterward. Unknown profiles fail rather than falling back.

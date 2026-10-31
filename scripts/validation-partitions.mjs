@@ -71,8 +71,8 @@ export function compilePartitions(manifest) {
 export function describePartitions(manifest, inventory) {
   const compiled = compilePartitions(manifest);
   requireCondition(exactKeys(inventory, [
-    "schema_version", "methods", "scenarios", "tests", "xunit", "adapter"
-  ]) && inventory.schema_version === 1 && inventory.xunit === "2.9.3.0" &&
+    "schema_version", "methods", "scenarios", "tests", "scenario_bridges", "xunit", "adapter"
+  ]) && inventory.schema_version === 2 && inventory.xunit === "2.9.3.0" &&
     inventory.adapter === "3.1.4.0", "pinned_discovery_schema_required");
   requireCondition(Array.isArray(inventory.methods) &&
     inventory.methods.length > 0 && inventory.methods.length <= 10_000 &&
@@ -112,6 +112,32 @@ export function describePartitions(manifest, inventory) {
   };
   const assignedTests = assignTests(plan, inventory);
   for (const partition of plan.partitions) partition.expected_tests = assignedTests[partition.id];
+  requireCondition(Array.isArray(inventory.scenario_bridges), "scenario_identity_bridges_required");
+  const scenarioTests = plan.partitions.flatMap(partition =>
+    partition.expected_tests.filter(item => partition.methods.find(method =>
+      method.method === item.method).scenarios !== null));
+  const bridged = new Set();
+  const canonicalCases = new Set();
+  const canonicalScenarios = new Set();
+  for (const bridge of inventory.scenario_bridges) {
+    requireCondition(exactKeys(bridge, ["actual", "canonical"]) &&
+      exactKeys(bridge.canonical, ["test_id", "name", "method", "scenario"]), "scenario_bridge_shape");
+    const actual = scenarioTests.find(item => caseKey(item) === caseKey(bridge.actual));
+    const owner = actual && plan.partitions.flatMap(partition => partition.methods)
+      .find(method => method.method === actual.method);
+    requireCondition(actual && JSON.stringify(actual) === JSON.stringify(bridge.actual) &&
+      !bridged.has(caseKey(actual)) && bridge.canonical.method === owner.canonical_method &&
+      bridge.canonical.scenario === actual.scenario && testId.test(bridge.canonical.test_id) &&
+      typeof bridge.canonical.name === "string" && bridge.canonical.name.startsWith(`${owner.canonical_method}(`) &&
+      !canonicalCases.has(caseKey(bridge.canonical)) &&
+      !canonicalScenarios.has(JSON.stringify([bridge.canonical.method, bridge.canonical.scenario])),
+    "scenario_bridge_identity_mismatch");
+    bridged.add(caseKey(actual));
+    canonicalCases.add(caseKey(bridge.canonical));
+    canonicalScenarios.add(JSON.stringify([bridge.canonical.method, bridge.canonical.scenario]));
+  }
+  requireCondition(bridged.size === scenarioTests.length, "scenario_identity_bridges_incomplete");
+  plan.scenario_bridges = inventory.scenario_bridges;
   plan.inventory_sha256 = createHash("sha256").update(JSON.stringify(inventory)).digest("hex");
   return plan;
 }

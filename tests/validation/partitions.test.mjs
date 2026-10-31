@@ -25,7 +25,7 @@ function fixture() {
     }
   };
   const inventory = {
-    schema_version: 1, xunit: "2.9.3.0", adapter: "3.1.4.0",
+    schema_version: 2, xunit: "2.9.3.0", adapter: "3.1.4.0",
     methods: [...compilePartitions(manifest).methods.keys()],
     scenarios: ["first", "second", "third", "fourth"],
     tests: [...compilePartitions(manifest).methods].map(([method, assignment], index) => ({
@@ -33,6 +33,9 @@ function fixture() {
       name: `${method}(data: complete)`, method, scenario: assignment.scenarios?.[0] ?? null
     }))
   };
+  inventory.scenario_bridges = inventory.tests.filter(item => item.scenario !== null).map(actual => ({
+    actual, canonical: { ...actual, method: scenarioMethod, name: `${scenarioMethod}(${actual.scenario})` }
+  }));
   const coverage = {
     profile: "OgFirst", policy_id: "og-first-v1", policy_sha256: "a".repeat(64), omitted: [],
     expected: inventory.scenarios.flatMap(scenario => ["og/full", "v2/full"].map(view => ({
@@ -112,6 +115,24 @@ test("raw reconciliation rejects missing, duplicate, foreign, failed and skipped
   }
 });
 
+test("scenario wrappers require a complete one-to-one canonical identity bridge", () => {
+  for (const mutate of [
+    inventory => { delete inventory.scenario_bridges; },
+    inventory => { inventory.scenario_bridges.pop(); },
+    inventory => { inventory.scenario_bridges.push(inventory.scenario_bridges[0]); },
+    inventory => { inventory.scenario_bridges[0].actual = inventory.tests[0]; },
+    inventory => { inventory.scenario_bridges[0].canonical.method = "Synthetic.Foreign.Tests"; },
+    inventory => { inventory.scenario_bridges[0].canonical.scenario = "foreign"; },
+    inventory => { inventory.scenario_bridges[0].canonical.test_id = "not-a-test-id"; },
+    inventory => { inventory.scenario_bridges[0].canonical.name = "foreign"; },
+    inventory => { inventory.scenario_bridges[0].canonical.result = "Passed"; }
+  ]) {
+    const { manifest, inventory } = fixture();
+    mutate(inventory);
+    assert.throws(() => describePartitions(manifest, inventory));
+  }
+});
+
 test("partition planning rejects unapproved concurrency and arbitrary shard counts", () => {
   for (const mutate of [
     manifest => { manifest.execution_runners = 6; },
@@ -142,7 +163,7 @@ test("partition planning fails closed for missing, extra and duplicated discover
 
 test("partition identity derivation requires the verified discovery schema and pinned tools", () => {
   for (const mutate of [
-    inventory => { inventory.schema_version = 2; },
+    inventory => { inventory.schema_version = 1; },
     inventory => { inventory.xunit = "3.0.0.0"; },
     inventory => { inventory.adapter = "4.0.0.0"; },
     inventory => { inventory.unknown = true; }

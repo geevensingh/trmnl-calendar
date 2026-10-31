@@ -28,14 +28,39 @@ public sealed class ValidationPartitionTests
         {
             File.WriteAllText(path, JsonSerializer.Serialize(new
             {
-                schema_version = 1,
+                schema_version = 2,
                 methods = cases.Select(item => item.Method).Distinct().Order(StringComparer.Ordinal).ToArray(),
                 scenarios = AgendaScenarios.Ids.ToArray(),
                 tests = cases,
+                scenario_bridges = ScenarioBridges(cases),
                 xunit = typeof(FactAttribute).Assembly.GetName().Version?.ToString(),
                 adapter = Assembly.Load("xunit.runner.visualstudio.testadapter").GetName().Version?.ToString()
             }));
         }
+    }
+
+    private static object[] ScenarioBridges(Case[] cases)
+    {
+        var type = typeof(AdaptiveDisplayTests);
+        var assembly = type.Assembly;
+        var testAssembly = new TestAssembly(new ReflectionAssemblyInfo(assembly), null, assembly.GetName().Version);
+        var collection = new TestCollection(testAssembly, null, $"Test collection for {type.FullName}");
+        var testClass = new TestClass(collection, new ReflectionTypeInfo(type));
+        var canonical = type.GetMethod(DisplayCoverage.ScenarioMethod, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Missing canonical scenario implementation.");
+        var testMethod = new TestMethod(testClass, new ReflectionMethodInfo(canonical));
+        return cases.Where(item => DisplayCoverage.ScenarioWrappers.Any(wrapper =>
+            item.Method == $"{type.FullName}.{wrapper}")).Select(item =>
+        {
+            object[] arguments = [item.Scenario!];
+            using var testCase = new XunitTestCase(new NullMessageSink(), TestMethodDisplay.ClassAndMethod,
+                TestMethodDisplayOptions.None, testMethod, arguments);
+            return (object)new
+            {
+                actual = item,
+                canonical = Identity(testCase.UniqueID, testCase.DisplayName, canonical, arguments)
+            };
+        }).ToArray();
     }
 
     internal static Case[] Discover()

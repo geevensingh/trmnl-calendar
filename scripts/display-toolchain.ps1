@@ -1,8 +1,14 @@
+function Invoke-DisplayCommand([string]$Command, [string[]]$Arguments) {
+    $executor = Get-Variable -Name DisplayToolExecutor -Scope Script -ErrorAction SilentlyContinue
+    if ($executor) { & $executor.Value $Command $Arguments }
+    else { & $Command @Arguments }
+}
+
 function Assert-DisplaySdk {
     $hint = 'Install the .NET 10 SDK selected by global.json and add dotnet to PATH.'
     if (!(Get-Command dotnet -ErrorAction SilentlyContinue)) { throw $hint }
     try {
-        $sdk = & dotnet --version
+        $sdk = Invoke-DisplayCommand dotnet @('--version')
         if ($LASTEXITCODE -ne 0 -or "$sdk" -notmatch '^10\.') {
             throw "Reported '$sdk' (exit $LASTEXITCODE)."
         }
@@ -32,7 +38,7 @@ function Get-DisplayRuby([string]$Root) {
     if ($command.Source) { $selection = $command.Source }
     $hint = 'Set TRMNL_RUBY to a working Ruby 4 executable; use RubyInstaller with Devkit on Windows. See README.md#local-prerequisites.'
     try {
-        $version = (& $selection -e 'puts RUBY_VERSION') -join "`n"
+        $version = (Invoke-DisplayCommand $selection @('-e', 'puts RUBY_VERSION')) -join "`n"
         if ($LASTEXITCODE -ne 0) { throw "Exit code $LASTEXITCODE." }
     }
     catch {
@@ -57,7 +63,8 @@ function Get-DisplayToolchain([string]$Root) {
     $quotedRuby = $ruby.Replace("'", "''")
     $hint = "Install Bundler $bundlerVersion explicitly (gem install bundler --version $bundlerVersion) using the selected Ruby: & '$quotedRuby' -rrubygems/gem_runner -e 'Gem::GemRunner.new.run(ARGV)' -- install bundler --version $bundlerVersion --no-document. Then run .\scripts\setup-display.ps1."
     try {
-        $version = (& $ruby -e 'gem "bundler", ARGV.fetch(0); require "bundler"; puts Bundler::VERSION' $bundlerVersion) -join "`n"
+        $version = (Invoke-DisplayCommand $ruby @('-e',
+            'gem "bundler", ARGV.fetch(0); require "bundler"; puts Bundler::VERSION', $bundlerVersion)) -join "`n"
         if ($LASTEXITCODE -ne 0 -or $version -ne $bundlerVersion) {
             throw "Required Bundler $bundlerVersion is unavailable (reported '$version', exit $LASTEXITCODE)."
         }
@@ -154,8 +161,9 @@ function Invoke-DisplayBundle($Toolchain, [string[]]$Arguments) {
 }
 
 function Assert-DisplayGems($Toolchain) {
-    & $Toolchain.Ruby -e 'gem "bundler", ARGV.fetch(0); require "bundler/setup"; require "trmnl/liquid"; require "oily_png"; require "redcarpet"; require "bigdecimal"; require "strscan"; puts "Locked Liquid/raster/native gems loaded"' `
-        $Toolchain.BundlerVersion | Out-Host
+    Invoke-DisplayCommand $Toolchain.Ruby @('-e',
+        'gem "bundler", ARGV.fetch(0); require "bundler/setup"; require "trmnl/liquid"; require "oily_png"; require "redcarpet"; require "bigdecimal"; require "strscan"; puts "Locked Liquid/raster/native gems loaded"',
+        $Toolchain.BundlerVersion) | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw 'The locked Liquid/raster gems or native extensions cannot load. Run .\scripts\setup-display.ps1 with the selected Ruby and compatible Devkit; repair worktree-local gems if necessary. Do not update Gemfile.lock.'
     }
@@ -191,7 +199,8 @@ function Test-DisplayBrowser([string]$Root) {
     try {
         New-Item -ItemType Directory -Force (Split-Path $image) | Out-Null
         try {
-            $output = & $script screenshot --browser chromium --timeout 15000 about:blank $image 2>&1
+            $output = Invoke-DisplayCommand $script @('screenshot', '--browser', 'chromium',
+                '--timeout', '15000', 'about:blank', $image) 2>&1
         }
         catch {
             throw "Pinned Playwright Chromium probe failed. Run .\scripts\setup-display.ps1 to repair the local runtime/browser prerequisites. $($_.Exception.Message)"

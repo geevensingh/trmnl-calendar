@@ -82,12 +82,33 @@ test("a focused real-render run reports the full selected inventory but complete
   assert.match(completed[0].method, /Empty_days_keep_date_and_message_on_one_line_without_a_zero_count$/);
 });
 
+test("all four real scenario wrappers complete their original canonical assertion identities", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "agenda scenario wrappers "));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const method = "CalendarAgenda.Tests.AdaptiveDisplayTests.Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views";
+  const scenarios = ["error-configuration", "weekend-labels", "autumn-offset", "error-source"];
+  const filter = scenarios.map((scenario, index) =>
+    `(FullyQualifiedName=${method}_d${index + 1}&DisplayName~${scenario})`).join("|");
+  runHarness("OgFirst", directory, filter);
+  const files = await readdir(directory);
+  const journal = files.filter(name => /^coverage-.*\.jsonl$/.test(name));
+  assert.equal(journal.length, 1);
+  const completed = (await readFile(join(directory, journal[0]), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(completed.length, 4);
+  assert.deepEqual(completed.map(item => item.scenario).sort(), [...scenarios].sort());
+  for (const item of completed) {
+    assert.deepEqual(item, { policy: "og-first-v1/OgFirst", method, scenario: item.scenario,
+      view: "og/full", variant: "default" });
+  }
+});
+
 test("the real harness rejects unknown profiles and unclassified scenarios or test families before rendering", async t => {
   const directory = await mkdtemp(join(tmpdir(), "agenda invalid display policy "));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const output = join("tests", "CalendarAgenda.Tests", "bin", "Debug", "net10.0");
   await cp(join(root, output), join(directory, output), { recursive: true });
   await cp(join(root, "display", "scenarios"), join(directory, "display", "scenarios"), { recursive: true });
+  await cp(join(root, "tests", "validation-partitions.json"), join(directory, "tests", "validation-partitions.json"));
   const policy = JSON.parse(await readFile(join(root, "tests", "display-coverage.json"), "utf8"));
   for (const fault of ["unknown-profile", "unclassified-scenario", "unclassified-family"]) {
     await t.test(fault, async () => {
@@ -126,6 +147,7 @@ test("an actual additional legacy-signature view theory cannot escape policy cla
   await cp(join(root, "tests", "CalendarAgenda.Tests", "bin", "Debug", "net10.0"), output, { recursive: true });
   await cp(join(root, "display", "scenarios"), join(directory, "display", "scenarios"), { recursive: true });
   await cp(join(root, "tests", "display-coverage.json"), join(directory, "tests", "display-coverage.json"));
+  await cp(join(root, "tests", "validation-partitions.json"), join(directory, "tests", "validation-partitions.json"));
   const inputs = spawnSync("dotnet", [
     "msbuild", join(root, "tests", "CalendarAgenda.Tests", "CalendarAgenda.Tests.csproj"),
     "-nologo", "-verbosity:quiet", "-target:ResolveReferences", "-property:BuildProjectReferences=false",

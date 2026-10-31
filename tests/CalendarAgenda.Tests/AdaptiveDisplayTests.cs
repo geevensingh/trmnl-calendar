@@ -21,7 +21,30 @@ public sealed class AdaptiveDisplayTests
         new("v2", "half_vertical", 1872, 1404, 1.8f, 505, 760)
     };
 
-    public static IEnumerable<object[]> ScenarioCases => AgendaScenarios.Ids.Select(id => new object[] { id });
+    public static IEnumerable<object[]> ScenarioCases(string partition)
+    {
+        using var manifest = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(DisplayTests.Root, "tests", "validation-partitions.json")));
+        var root = manifest.RootElement;
+        if (root.GetProperty("schema_version").GetInt32() != 1
+            || root.GetProperty("id").GetString() != "full-partitions-v1"
+            || root.GetProperty("execution_runners").GetInt32() != 5
+            || root.GetProperty("max_parallel_collections").GetInt32() != 2)
+            throw new InvalidOperationException("Unapproved validation partition contract.");
+        var groups = root.GetProperty("methods").GetProperty(typeof(AdaptiveDisplayTests).FullName!)
+            .GetProperty(DisplayCoverage.ScenarioMethod);
+        var ids = new[] { "d1", "d2", "d3", "d4" };
+        if (!groups.EnumerateObject().Select(group => group.Name).Order(StringComparer.Ordinal).SequenceEqual(ids))
+            throw new InvalidOperationException("Invalid scenario partition groups.");
+        var assignments = ids.ToDictionary(id => id,
+            id => groups.GetProperty(id).EnumerateArray().Select(value => value.GetString()!).ToArray());
+        var scenarios = assignments.Values.SelectMany(values => values).ToArray();
+        if (!assignments.ContainsKey(partition) || assignments.Values.Any(values => values.Length == 0)
+            || scenarios.Distinct(StringComparer.Ordinal).Count() != scenarios.Length
+            || !scenarios.Order(StringComparer.Ordinal).SequenceEqual(AgendaScenarios.Ids.Order(StringComparer.Ordinal)))
+            throw new InvalidOperationException("Scenario partitions must cover the catalogue exactly once.");
+        return assignments[partition].Select(id => new object[] { id });
+    }
     public static IEnumerable<object[]> CoverageViews(string family) => DisplayCoverage.FamilyCases(family);
 
     [Fact]
@@ -94,9 +117,26 @@ public sealed class AdaptiveDisplayTests
     }
 
     [Theory]
-    [MemberData(nameof(ScenarioCases))]
-    // Retain the canonical scenario method identity; the coverage policy selects its native views.
-    public async Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(
+    [MemberData(nameof(ScenarioCases), "d1")]
+    public Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views_d1(string scenario)
+        => Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(scenario);
+
+    [Theory]
+    [MemberData(nameof(ScenarioCases), "d2")]
+    public Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views_d2(string scenario)
+        => Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(scenario);
+
+    [Theory]
+    [MemberData(nameof(ScenarioCases), "d3")]
+    public Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views_d3(string scenario)
+        => Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(scenario);
+
+    [Theory]
+    [MemberData(nameof(ScenarioCases), "d4")]
+    public Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views_d4(string scenario)
+        => Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(scenario);
+
+    private async Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(
         string scenario)
     {
         using var playwright = await ValidationTiming.CreatePlaywright();

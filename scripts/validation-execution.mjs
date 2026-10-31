@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { win32 } from "node:path";
-import { assignCoverage, reconcileTests } from "./validation-partitions.mjs";
+import { dirname, join, resolve, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+import { assignCoverage, describePartitions, readPartitionJson, reconcileTests } from "./validation-partitions.mjs";
 
 const componentIds = ["d1", "d2", "d3", "d4", "node"];
 const serialIds = ["prerequisites", "format", "build", "syntax", "browser", "node", "dotnet", "evidence"];
@@ -108,8 +110,10 @@ export function createExecutionPlan(partitions, coverage, serial, context, nodeF
     "complete_node_build_and_browser_dependencies_required");
   requireCondition(serial.find(item => item.id === "dotnet").requires.includes("node"),
     "explicit_serial_feedback_edge_required");
-  requireCondition(context && typeof context.run_id === "string" && /^[1-9]\d*$/.test(context.run_id) &&
+  requireCondition(context && typeof context.run_id === "string" &&
+    (/^[1-9]\d*$/.test(context.run_id) || /^local-[a-f0-9]{32}$/.test(context.run_id)) &&
     typeof context.run_attempt === "string" && /^[1-9]\d*$/.test(context.run_attempt) &&
+    (!context.run_id.startsWith("local-") || context.run_attempt === "1") &&
     digest.test(context.content_sha256) &&
     ["head_commit", "evaluated_commit", "evaluated_tree"].every(key => objectId.test(context[key])) &&
     (context.base_commit === null || objectId.test(context.base_commit)), "execution_revision_and_attempt_required");
@@ -132,6 +136,7 @@ export function createExecutionPlan(partitions, coverage, serial, context, nodeF
     max_parallel_collections: 2,
     partition_manifest_sha256: partitions.manifest_sha256,
     discovery_inventory_sha256: partitions.inventory_sha256,
+    scenario_bridges: partitions.scenario_bridges,
     serial_component_contract_sha256: hash(contract),
     coverage: { profile: coverage.profile, policy_id: coverage.policy_id, policy_sha256: coverage.policy_sha256 },
     removed_serial_policy_edges: [{ prerequisite: "node", component: "dotnet" }],
@@ -148,6 +153,30 @@ export function createExecutionPlan(partitions, coverage, serial, context, nodeF
     })
   };
   return { ...plan, sha256: hash(plan) };
+}
+
+async function main() {
+  const { values } = parseArgs({ options: {
+    operation: { type: "string" }, request: { type: "string" }
+  } });
+  requireCondition(values.request && ["plan", "reconcile"].includes(values.operation),
+    "execution_operation_and_request_required");
+  const request = await readPartitionJson(values.request);
+  if (values.operation === "plan") {
+    const root = dirname(dirname(fileURLToPath(import.meta.url)));
+    const manifest = await readPartitionJson(join(root, "tests", "validation-partitions.json"));
+    console.log(JSON.stringify(createExecutionPlan(describePartitions(manifest, request.inventory),
+      request.coverage, request.serial, request.context, request.node_files)));
+  } else {
+    console.log(JSON.stringify(reconcileExecution(request.plan, request.reports, request.job_results)));
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(error => {
+    console.error(JSON.stringify({ execution_succeeded: false, error: error.message }));
+    process.exitCode = 1;
+  });
 }
 
 function reconcileCoverage(expected, actual) {

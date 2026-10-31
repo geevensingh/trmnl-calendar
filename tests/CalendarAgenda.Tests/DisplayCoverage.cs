@@ -11,6 +11,13 @@ internal static class DisplayCoverage
     internal sealed record Case(string Policy, string Method, string? Scenario, string View, string Variant);
 
     internal const string ScenarioMethod = "Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views";
+    internal static readonly string[] ScenarioWrappers =
+    [
+        nameof(AdaptiveDisplayTests.Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views_d1),
+        nameof(AdaptiveDisplayTests.Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views_d2),
+        nameof(AdaptiveDisplayTests.Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views_d3),
+        nameof(AdaptiveDisplayTests.Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views_d4)
+    ];
     private const string TitleMethod = "Timed_and_all_day_titles_preserve_text_and_typography_with_visible_end_ellipsis";
     private sealed record Policy(int Version, string Id, string[] Scenarios, string[] SecondaryScenarios,
         Dictionary<string, string> AdaptiveFamilies, string[] TitleVariants, string[] SecondaryTitleVariants);
@@ -109,7 +116,7 @@ internal static class DisplayCoverage
         ValidateSet(policy.Scenarios, AgendaScenarios.Ids, "scenario catalogue");
         var families = typeof(AdaptiveDisplayTests).GetMethods()
             .Where(method => method.IsDefined(typeof(TheoryAttribute), inherit: false)
-                && method.Name != ScenarioMethod)
+                && method.Name != ScenarioMethod && !ScenarioWrappers.Contains(method.Name, StringComparer.Ordinal))
             .Select(method => method.Name);
         ValidateSet(policy.AdaptiveFamilies.Keys.ToArray(), families, "adaptive test families");
         ValidateSubset(policy.SecondaryScenarios, policy.Scenarios, "secondary scenarios");

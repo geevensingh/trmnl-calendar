@@ -89,7 +89,10 @@ function Assert-DisplayCoverageEvidence($Inventory) {
     if ($files.Count -ne 1 -or $files[0].Length -gt 1MB) { throw 'Missing or oversized display assertion completions.' }
     $completed = @(Get-Content -LiteralPath $files[0].FullName | ForEach-Object { $_ | ConvertFrom-Json })
     $actual = @($completed | ForEach-Object { Get-DisplayCoverageKey $_ })
-    $expected = @($plan.expected | ForEach-Object { Get-DisplayCoverageKey ([pscustomobject]$_) })
+    $assigned = if (Get-Variable -Name coverageSubset -Scope Script -ErrorAction SilentlyContinue) {
+        @($script:coverageSubset)
+    } else { @($plan.expected) }
+    $expected = @($assigned | ForEach-Object { Get-DisplayCoverageKey ([pscustomobject]$_) })
     if ($actual.Count -ne $expected.Count -or
         @($actual | Sort-Object -Unique -CaseSensitive).Count -ne $actual.Count -or
         @(Compare-Object $expected $actual -CaseSensitive).Count) {
@@ -225,7 +228,7 @@ function New-ValidationReport([string]$Root, [string]$Scope, [object[]]$Componen
         total_job_runner_minutes = $null
         provenance = [ordered]@{
             head_commit = if ($env:PR_HEAD_COMMIT) { $env:PR_HEAD_COMMIT } else { $commit }
-            base_commit = $env:PR_BASE_COMMIT
+            base_commit = if ($env:PR_BASE_COMMIT) { $env:PR_BASE_COMMIT } else { $null }
             evaluated_commit = $commit
             evaluated_tree = $tree
             working_tree_clean = $clean
@@ -235,6 +238,7 @@ function New-ValidationReport([string]$Root, [string]$Scope, [object[]]$Componen
             image_version = $env:ImageVersion
             run_id = $env:GITHUB_RUN_ID
             run_attempt = $env:GITHUB_RUN_ATTEMPT
+            run_source = if ($env:GITHUB_RUN_ID) { 'github' } else { 'local' }
             tools = [ordered]@{ powershell = $PSVersionTable.PSVersion.ToString() }
             cache = [ordered]@{
                 dependency_cache_hit = 'unknown (no cache restore evidence supplied)'
@@ -313,7 +317,8 @@ function Set-ValidationComponentEvidence([string]$Id, [string]$Outcome) {
     }
 }
 
-function Read-ValidationEvidence([switch]$NodeOnly) {
+function Read-ValidationEvidence([switch]$NodeOnly, [switch]$DotnetOnly, [switch]$Component) {
+    if ($NodeOnly -and $DotnetOnly) { throw 'Evidence cannot be both Node-only and .NET-only.' }
     $missing = [Collections.Generic.List[string]]::new()
     $reportedFailures = 0
     $evidence = [ordered]@{ status = 'incomplete'; dotnet = $null; node = $null; phases = $null }
@@ -365,6 +370,18 @@ function Read-ValidationEvidence([switch]$NodeOnly) {
                     work_ms = ($_.Group | Measure-Object duration_ms -Sum).Sum }
             })
         $evidence.dotnet = [ordered]@{ tests = $tests; classes = $classes; count = $tests.Count }
+        if ($DotnetOnly) {
+            $expected = @($script:workerExpected.expected_tests | ForEach-Object {
+                Get-ValidationDigest @($_.test_id, $_.name, $_.method)
+            })
+            $actual = @($tests | ForEach-Object { Get-ValidationDigest @($_.test_id, $_.name, $_.method) })
+            if ($actual.Count -ne $expected.Count -or
+                @($actual | Sort-Object -Unique -CaseSensitive).Count -ne $actual.Count -or
+                @(Compare-Object $actual $expected -CaseSensitive).Count -or
+                @($tests | Where-Object result -CNE 'Passed').Count) {
+                throw 'Assigned .NET raw identity inventory is incomplete or foreign.'
+            }
+        }
         $reportedFailures += @($tests | Where-Object result -EQ 'Failed').Count
         Set-ValidationComponentEvidence 'dotnet' $(if ($reportedFailures) { 'failure' } else { 'success' })
     }
@@ -373,7 +390,7 @@ function Read-ValidationEvidence([switch]$NodeOnly) {
         Set-ValidationComponentEvidence 'dotnet' $dotnetOutcome
     } }
     $nodeOutcome = 'incomplete'
-    try {
+    if (!$DotnetOnly) { try {
         $path = Join-Path $script:validationDirectory 'node.jsonl'
         if ((Get-Item -LiteralPath $path).Length -gt 20MB) { throw 'Node report exceeds diagnostic limit.' }
         $events = @(Get-Content -LiteralPath $path | ForEach-Object { $_ | ConvertFrom-Json })
@@ -401,10 +418,12 @@ function Read-ValidationEvidence([switch]$NodeOnly) {
             note = 'Top-level work excludes nested case durations; it is not wall time across concurrent files.'
         }
         $reportedFailures += [int]$summaries[0].failed
+        $reportedFailures += @($tests | Where-Object result -EQ 'failed').Count
         $nodeOutcome = if ($summaries[0].failed) { 'failure' } else { 'success' }
     }
     catch { $missing.Add('complete Node results') }
     Set-ValidationComponentEvidence 'node' $nodeOutcome
+    }
     if (!$NodeOnly) { try {
         $files = @(Get-ChildItem -LiteralPath $script:validationDirectory -Filter 'phases-*.jsonl' -File)
         if (($files | Measure-Object Length -Sum).Sum -gt 20MB) { throw 'Phase reports exceed aggregate diagnostic limit.' }
@@ -474,12 +493,16 @@ function Read-ValidationEvidence([switch]$NodeOnly) {
         if (@(Compare-Object $expectedViews @($inventory.views)).Count -or @($inventory.scenarios).Count -eq 0) {
             throw 'Incomplete rendering inventory.'
         }
-        foreach ($view in $expectedViews) {
+        $executedViews = if ($DotnetOnly) { @($script:coverageSubset.view | Sort-Object -Unique) } else { $expectedViews }
+        foreach ($view in $executedViews) {
             if (!@($phases | Where-Object { $_.phase -eq 'render.view' -and $_.scenario.EndsWith("/$view") }).Count) {
                 throw 'Missing executed native view.'
             }
         }
-        foreach ($scenario in $inventory.scenarios) {
+        $executedScenarios = if ($DotnetOnly) {
+            @($script:coverageSubset | Where-Object { $null -ne $_.scenario } | ForEach-Object scenario | Sort-Object -Unique)
+        } else { @($inventory.scenarios) }
+        foreach ($scenario in $executedScenarios) {
             if (!@($phases | Where-Object { $_.phase -eq 'scenario.load' -and $_.scenario -eq $scenario }).Count) {
                 throw 'Missing executed synthetic scenario.'
             }
@@ -495,14 +518,13 @@ function Read-ValidationEvidence([switch]$NodeOnly) {
         if (!$script:validationReport.unavailable.Contains($item)) { $script:validationReport.unavailable.Add($item) }
     }
     if ($reportedFailures) { $evidence.status = 'failed' }
-    elseif ($missing.Count -eq 0 -and !$NodeOnly) { $evidence.status = 'complete' }
-    if (!$NodeOnly -and $evidence.dotnet -and $evidence.node -and $evidence.phases -and
-        $evidence.phases.Contains('inventory') -and $evidence.phases.Contains('display_coverage')) {
+    elseif ($missing.Count -eq 0 -and (!$NodeOnly -or $Component)) { $evidence.status = 'complete' }
+    if ($evidence.status -eq 'complete') {
         $evidence.inventory_sha256 = Get-ValidationDigest ([ordered]@{
-            dotnet = @($evidence.dotnet.tests | Select-Object test_id, name, method | Sort-Object test_id, name, method)
-            node = @($evidence.node.tests | Select-Object file, nesting, name, type | Sort-Object file, nesting, name, type)
-            rendering = $evidence.phases.inventory
-            display_coverage = $evidence.phases.display_coverage
+            dotnet = if ($evidence.dotnet) { @($evidence.dotnet.tests | Select-Object test_id, name, method | Sort-Object test_id, name, method) } else { @() }
+            node = if ($evidence.node) { @($evidence.node.tests | Select-Object file, nesting, name, type | Sort-Object file, nesting, name, type) } else { @() }
+            rendering = if ($evidence.phases) { $evidence.phases.inventory } else { $null }
+            display_coverage = if ($evidence.phases) { $evidence.phases.display_coverage } else { @() }
         })
         $evidence.content_sha256 = if ($script:validationReport.content.started) {
             $script:validationReport.content.started.sha256
@@ -517,4 +539,171 @@ function Complete-ValidationReport([bool]$Passed) {
     $script:validationReport.finished_at = [DateTimeOffset]::UtcNow.ToString('O')
     $script:validationReport.outcome = if ($Passed) { 'passed' } else { 'failed' }
     Save-ValidationReport
+}
+
+function Get-ValidationRawInventory([string]$Directory) {
+    Assert-ValidationPhysicalDirectory $Directory
+    $files = @(Get-ChildItem -LiteralPath $Directory -Recurse -Force)
+    if ($files.Count -gt 2000) { throw 'Component artifact inventory exceeds its size bound.' }
+    foreach ($item in $files) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked component artifact is forbidden.' }
+        if ($item.PSIsContainer -or $item.FullName -eq (Join-Path $Directory 'raw-manifest.json')) { continue }
+        if ($item.Length -gt 20MB) { throw 'Component raw file exceeds its diagnostic size bound.' }
+        [ordered]@{
+            path = [IO.Path]::GetRelativePath($Directory, $item.FullName)
+            length = $item.Length
+            sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+}
+
+function Write-ValidationRawManifest([string]$Directory) {
+    [ordered]@{ schema_version = 1; files = @(Get-ValidationRawInventory $Directory | Sort-Object path -CaseSensitive) } |
+        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Directory 'raw-manifest.json') -Encoding utf8
+}
+
+function Assert-ValidationRawManifest([string]$Directory) {
+    Assert-ValidationPhysicalDirectory $Directory
+    $path = Join-Path $Directory 'raw-manifest.json'
+    $item = Get-Item -LiteralPath $path -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint -or $item.PSIsContainer) {
+        throw 'Linked component manifest is forbidden.'
+    }
+    if ($item.Length -gt 1MB) { throw 'Component manifest exceeds its size bound.' }
+    $manifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $actual = @(Get-ValidationRawInventory $Directory | Sort-Object path -CaseSensitive)
+    $expected = @($manifest.files | Sort-Object path -CaseSensitive)
+    if ($manifest.schema_version -ne 1 -or !$actual.Count -or $actual.Count -ne $expected.Count -or
+        @($expected.path | Sort-Object -Unique -CaseSensitive).Count -ne $expected.Count) {
+        throw 'Component raw artifact inventory is incomplete or duplicated.'
+    }
+    for ($index = 0; $index -lt $actual.Count; $index++) {
+        if ($actual[$index].path -cne $expected[$index].path -or
+            $actual[$index].length -ne $expected[$index].length -or
+            $actual[$index].sha256 -cne $expected[$index].sha256) {
+            throw 'Component raw artifact bytes differ from their transfer manifest.'
+        }
+    }
+}
+
+function Read-ValidationComponentArtifact([string]$Root, [string]$Directory, $Expected, $CoveragePlan) {
+    Assert-ValidationRawManifest $Directory
+    $summary = Join-Path $Directory 'summary.json'
+    $script:validationReport = Get-Content -LiteralPath $summary -Raw | ConvertFrom-Json -AsHashtable
+    $script:validationReport.unavailable = [Collections.Generic.List[string]]::new(
+        [string[]]@($script:validationReport.unavailable))
+    $script:validationDirectory = $Directory
+    $script:validationRoot = $Root
+    $script:coveragePlan = $CoveragePlan
+    $script:workerExpected = $Expected
+    $script:coverageSubset = @($Expected.expected_coverage)
+    $declared = $script:validationReport.evidence.inventory_sha256
+    $ready = if ($Expected.id -eq 'node') { Read-ValidationEvidence -NodeOnly -Component }
+        else { Read-ValidationEvidence -DotnetOnly }
+    if (!$ready -or $declared -cne $script:validationReport.evidence.inventory_sha256) {
+        throw 'Fresh raw component evidence differs from its claimed complete report.'
+    }
+    return $script:validationReport
+}
+
+function Invoke-ValidationAggregation([string]$Root, $Plan, [string]$PlanPath,
+    [string]$ReportsDirectory, [string]$JobResults) {
+    $aggregateReport = $script:validationReport
+    $aggregateDirectory = $script:validationDirectory
+    $coverage = $script:coveragePlan
+    try {
+        $context = [ordered]@{}
+        foreach ($key in @('run_id', 'run_attempt', 'head_commit', 'base_commit', 'evaluated_commit', 'evaluated_tree')) {
+            $context[$key] = $aggregateReport.provenance[$key]
+            if ($Plan.context.$key -cne $context[$key]) { throw 'Aggregate revision or run/attempt differs from the execution plan.' }
+        }
+        if ($aggregateReport.provenance.working_tree_clean -ne $true -or
+            $aggregateReport.content.started.sha256 -cne $Plan.context.content_sha256 -or
+            $Plan.coverage.profile -cne $coverage.profile -or
+            $Plan.coverage.policy_sha256 -cne $coverage.policy_sha256) {
+            throw 'Aggregate content or coverage policy does not match the execution plan.'
+        }
+        $requestPath = Join-Path (Split-Path $PlanPath -Parent) 'execution-request.json'
+        if ((Get-Item -LiteralPath $requestPath).Length -gt 10MB) { throw 'Execution request exceeds its size bound.' }
+        $request = Get-Content -LiteralPath $requestPath -Raw | ConvertFrom-Json
+        $sourceContract = @(Get-ValidationComponents 'Full' | ForEach-Object {
+            [ordered]@{ id = $_.id; name = $_.name; requires = $_.requires }
+        })
+        if ((Get-ValidationDigest $request.serial) -cne (Get-ValidationDigest $sourceContract) -or
+            (Get-ValidationDigest $request.coverage) -cne (Get-ValidationDigest $coverage) -or
+            @($request.node_files).Count -ne @(Get-ValidationNodeFiles $Root).Count -or
+            @(Compare-Object @($request.node_files) @(Get-ValidationNodeFiles $Root |
+                ForEach-Object { [IO.Path]::GetRelativePath($Root, $_) }) -CaseSensitive).Count) {
+            throw 'Execution request differs from the authoritative source contract, policy or complete Node files.'
+        }
+        $fresh = (Invoke-Tool node @((Join-Path $Root 'scripts\validation-execution.mjs'),
+            '--operation', 'plan', '--request', $requestPath) 'Execution plan reconstruction failed.') -join "`n" |
+            ConvertFrom-Json
+        if ($fresh.sha256 -cne $Plan.sha256 -or
+            (Get-ValidationDigest $fresh) -cne (Get-ValidationDigest $Plan)) {
+            throw 'Aggregate execution plan cannot be reconstructed.'
+        }
+        Assert-ValidationPhysicalDirectory $ReportsDirectory
+        $entries = @(Get-ChildItem -LiteralPath $ReportsDirectory -Force)
+        if ($entries.Count -ne $fresh.components.Count -or
+            @($entries | Where-Object { !$_.PSIsContainer }).Count -or
+            @(Compare-Object @($entries.Name) @($fresh.components.id) -CaseSensitive).Count) {
+            throw 'The downloaded component set contains missing, duplicate or foreign entries.'
+        }
+        $reports = @(
+            foreach ($component in $fresh.components) {
+                $directory = Join-Path $ReportsDirectory $component.id
+                Assert-ValidationPhysicalDirectory $directory
+                $candidates = @(Get-ChildItem -LiteralPath $directory -Force)
+                if ($candidates.Count -ne 1 -or !$candidates[0].PSIsContainer -or
+                    $candidates[0].Name -cnotlike 'component-*') {
+                    throw 'Each expected component must supply exactly one report directory.'
+                }
+                Read-ValidationComponentArtifact $Root $candidates[0].FullName $component $coverage
+            }
+        )
+        $joinRequest = [ordered]@{
+            plan = $fresh; reports = $reports; job_results = $JobResults | ConvertFrom-Json
+        }
+        $joinPath = Join-Path $aggregateDirectory 'aggregation-request.json'
+        $joinRequest | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $joinPath -Encoding utf8
+        $joined = (Invoke-Tool node @((Join-Path $Root 'scripts\validation-execution.mjs'),
+            '--operation', 'reconcile', '--request', $joinPath) 'Every exact expected component must succeed.') -join "`n" |
+            ConvertFrom-Json
+        $aggregateReport.execution = [ordered]@{
+            plan_sha256 = $fresh.sha256; components = $reports
+            reconciliation = $joined; scenario_bridges = $fresh.scenario_bridges
+            controller_isolation = $aggregateReport.execution.isolation
+        }
+        $dotnet = @($reports | Where-Object { $_.execution.component -ne 'node' })
+        $node = @($reports | Where-Object { $_.execution.component -eq 'node' })[0]
+        $tests = @($dotnet | ForEach-Object { $_.evidence.dotnet.tests })
+        $completions = @($dotnet | ForEach-Object { $_.evidence.phases.display_coverage })
+        $aggregateReport.evidence = [ordered]@{
+            status = 'complete'; execution_plan_sha256 = $fresh.sha256
+            dotnet = [ordered]@{ count = $tests.Count; tests = $tests }
+            node = $node.evidence.node
+            phases = [ordered]@{
+                count = ($dotnet | ForEach-Object { $_.evidence.phases.count } | Measure-Object -Sum).Sum
+                interrupted_child_phases = ($dotnet | ForEach-Object { $_.evidence.phases.interrupted_child_phases } | Measure-Object -Sum).Sum
+                display_coverage = $completions
+                inventory = $dotnet[0].evidence.phases.inventory
+                components = @($dotnet | ForEach-Object { $_.evidence.phases })
+            }
+            inventory_sha256 = Get-ValidationDigest @($reports | ForEach-Object { $_.evidence.inventory_sha256 })
+            content_sha256 = $Plan.context.content_sha256
+            component_contract_sha256 = $aggregateReport.component_contract_sha256
+        }
+        foreach ($component in $aggregateReport.components) {
+            $component.outcome = 'success'
+            $component.evidence_outcome = 'success'
+        }
+        $aggregateReport.timing_semantics = 'Full aggregation duration excludes worker/setup execution. See bound component intervals and completed hosted job timeline for actual successful elapsed and occupied runner time; UTC spans can include host clock skew.'
+    }
+    finally {
+        $script:validationReport = $aggregateReport
+        $script:validationDirectory = $aggregateDirectory
+        $script:coveragePlan = $coverage
+        Remove-Variable -Name coverageSubset -Scope Script -ErrorAction SilentlyContinue
+    }
 }

@@ -357,8 +357,24 @@ test("read-only TRMNL inspection pulls once and reports compatibility without pu
       await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
     }
   });
-  assert.deepEqual(result, {
+  const { content_comparison, ...existing } = result;
+  assert.deepEqual(existing, {
     operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: true, content_matches: true
+  });
+  assert.deepEqual(content_comparison, {
+    file_set_matches: true,
+    files: [
+      { file: "settings.yml", result: "match" },
+      { file: "shared.liquid", result: "match" },
+      { file: "full.liquid", result: "match" },
+      { file: "half_horizontal.liquid", result: "match" },
+      { file: "half_vertical.liquid", result: "match" }
+    ],
+    unknown_files: { source_count: 0, deployed_count: 0, matches: true },
+    definition: {
+      compared: true, fields: [],
+      unknown_fields: { source_count: 0, deployed_count: 0, matches: true }
+    }
   });
   assert.deepEqual(calls, ["pull"]);
   assert.doesNotMatch(JSON.stringify(result), /synthetic|12345|agenda_endpoint|function_key|rules_json/);
@@ -377,10 +393,186 @@ test("read-only TRMNL inspection reports mismatches without mutating the plugin"
       await writeFile(join(cwd, "src", "full.liquid"), "different remote template\n");
     }
   });
-  assert.deepEqual(result, {
+  const { content_comparison, ...existing } = result;
+  assert.deepEqual(existing, {
     operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: false, content_matches: false
   });
+  assert.deepEqual(content_comparison.definition.fields, [
+    { field: "custom_fields", reason: "value_mismatch" }
+  ]);
+  assert.equal(content_comparison.files.find(item => item.file === "full.liquid").result, "different");
   assert.deepEqual(calls, ["pull"]);
+});
+
+test("read-only comparison identifies fixed fields and files without exposing remote names, values or hashes", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const marker = "SYNTHETIC_PRIVATE_COMPARISON_MARKER";
+  const calls = [];
+  const result = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      calls.push(args[0]);
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      const settings = await readFile(join(cwd, "src", "settings.yml"), "utf8");
+      await writeFile(join(cwd, "src", "settings.yml"),
+        settings.replace("name: Working-day agenda", `name: ${marker}`)
+          .replace("keyname: function_key", `keyname: ${marker}_configured_field`) +
+        `${marker}_unknown_definition: "${marker}_unknown_value"\n`);
+      await writeFile(join(cwd, "src", "half_vertical.liquid"), `${marker}_template`);
+    }
+  });
+  assert.equal(result.content_matches, false);
+  assert.equal(result.field_schema_compatible, false);
+  assert.deepEqual(result.content_comparison, {
+    file_set_matches: true,
+    files: [
+      { file: "settings.yml", result: "different" },
+      { file: "shared.liquid", result: "match" },
+      { file: "full.liquid", result: "match" },
+      { file: "half_horizontal.liquid", result: "match" },
+      { file: "half_vertical.liquid", result: "different" }
+    ],
+    unknown_files: { source_count: 0, deployed_count: 0, matches: true },
+    definition: {
+      compared: true,
+      fields: [
+        { field: "name", reason: "value_mismatch" },
+        { field: "custom_fields", reason: "value_mismatch" }
+      ],
+      unknown_fields: { source_count: 0, deployed_count: 1, matches: false }
+    }
+  });
+  assert.deepEqual(calls, ["pull"]);
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(
+    `${marker}|agenda_endpoint|function_key|rules_json|synthetic-key|12345|[a-f0-9]{64}`
+  ));
+});
+
+test("comparison distinguishes missing definitions and value types without emitting values or canonicalization noise", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const settings = await readFile(join(sourceDirectory, "settings.yml"), "utf8");
+  await writeFile(join(sourceDirectory, "settings.yml"),
+    `${settings}description: Private synthetic agenda.\nrefresh_interval: 15\n`);
+  const inspected = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => {
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      await writeFile(join(cwd, "src", "settings.yml"),
+        `${settings}refresh_interval: "15"\ndark_mode: "no"\nid: 98765\n`);
+    }
+  });
+  assert.deepEqual(inspected.content_comparison.definition.fields, [
+    { field: "description", reason: "deployed_missing" },
+    { field: "refresh_interval", reason: "type_mismatch" },
+    { field: "dark_mode", reason: "source_missing" }
+  ]);
+  assert.deepEqual(inspected.content_comparison.definition.unknown_fields, {
+    source_count: 0, deployed_count: 0, matches: true
+  });
+  assert.equal(inspected.content_matches, false);
+  assert.doesNotMatch(JSON.stringify(inspected), /Private synthetic|98765|15/);
+});
+
+test("file-set comparison reports fixed missing files and only counts for arbitrary filenames", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const marker = "SYNTHETIC_PRIVATE_FILENAME";
+  await writeFile(join(sourceDirectory, `${marker}-source.txt`), "synthetic source");
+  const result = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => {
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      await rm(join(cwd, "src", "shared.liquid"));
+      await rm(join(cwd, "src", `${marker}-source.txt`));
+      await writeFile(join(cwd, "src", `${marker}-remote.txt`), "synthetic remote");
+    }
+  });
+  assert.equal(result.content_matches, false);
+  assert.equal(result.content_comparison.file_set_matches, false);
+  assert.deepEqual(result.content_comparison.files, [
+    { file: "settings.yml", result: "not_compared" },
+    { file: "shared.liquid", result: "deployed_missing" },
+    { file: "full.liquid", result: "match" },
+    { file: "half_horizontal.liquid", result: "match" },
+    { file: "half_vertical.liquid", result: "match" }
+  ]);
+  assert.deepEqual(result.content_comparison.unknown_files, {
+    source_count: 1, deployed_count: 1, matches: false
+  });
+  assert.deepEqual(result.content_comparison.definition, {
+    compared: false, fields: [], unknown_fields: null
+  });
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(`${marker}|[a-f0-9]{64}`));
+});
+
+test("publisher emits the bounded comparison before retaining the exact mismatch failure", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const marker = "SYNTHETIC_PRIVATE_VERIFY_CONTENT";
+  const events = [];
+  t.mock.method(console, "error", message => events.push(JSON.parse(message)));
+  const commands = [];
+  await assert.rejects(publishTrmnl({
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      commands.push(args[0]);
+      if (args[0] !== "pull") return;
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      if (commands.length === 3) {
+        await writeFile(join(cwd, "src", "full.liquid"), marker);
+        const path = join(cwd, "src", "settings.yml");
+        await writeFile(path, (await readFile(path, "utf8")) + `${marker}: ${marker}\n`);
+      }
+    }
+  }), { code: "trmnl_deployed_content_mismatch" });
+  assert.deepEqual(commands, ["pull", "push", "pull"]);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "trmnl_content_comparison");
+  assert.equal(events[0].stage, "verify");
+  assert.deepEqual(events[0].definition.fields, []);
+  assert.deepEqual(events[0].definition.unknown_fields, {
+    source_count: 0, deployed_count: 1, matches: false
+  });
+  assert.equal(events[0].files.find(item => item.file === "full.liquid").result, "different");
+  assert.doesNotMatch(JSON.stringify(events), new RegExp(`${marker}|synthetic-key|12345|[a-f0-9]{64}`));
+});
+
+test("unknown definition and file content remains part of exact verification but never becomes diagnostic identifiers", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const marker = "SYNTHETIC_PRIVATE_UNKNOWN_CONTENT";
+  const settings = await readFile(join(sourceDirectory, "settings.yml"), "utf8");
+  const privateFields = Array.from({ length: 100 }, (_, index) => `${marker}_${index}: source\n`).join("");
+  await writeFile(join(sourceDirectory, "settings.yml"), settings + privateFields);
+  await writeFile(join(sourceDirectory, `${marker}.liquid`), `${marker}_source`);
+  const events = [];
+  t.mock.method(console, "error", message => events.push(JSON.parse(message)));
+  const options = {
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      if (args[0] !== "pull") return;
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      await writeFile(join(cwd, "src", "settings.yml"), settings + privateFields.replaceAll(": source", ": deployed"));
+      await writeFile(join(cwd, "src", `${marker}.liquid`), `${marker}_deployed`);
+    }
+  };
+  const result = await publisher.inspectTrmnl(options);
+  assert.equal(result.content_matches, false);
+  assert.deepEqual(result.content_comparison.files, [
+    { file: "settings.yml", result: "different" },
+    { file: "shared.liquid", result: "match" },
+    { file: "full.liquid", result: "match" },
+    { file: "half_horizontal.liquid", result: "match" },
+    { file: "half_vertical.liquid", result: "match" }
+  ]);
+  assert.deepEqual(result.content_comparison.definition.fields, []);
+  assert.deepEqual(result.content_comparison.definition.unknown_fields, {
+    source_count: 100, deployed_count: 100, matches: false
+  });
+  assert.deepEqual(result.content_comparison.unknown_files, {
+    source_count: 1, deployed_count: 1, matches: false
+  });
+  await assert.rejects(publishTrmnl(options), { code: "trmnl_deployed_content_mismatch" });
+  assert.equal(events.length, 1);
+  assert.doesNotMatch(JSON.stringify([result, ...events]), new RegExp(`${marker}|[a-f0-9]{64}`));
+  assert.ok(JSON.stringify(result.content_comparison).length < 1500, "Output size is independent of unknown names/values.");
 });
 
 test("sequential TRMNL releases retain the parent credential while isolating child environments", async t => {

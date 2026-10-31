@@ -288,7 +288,36 @@ If activation fails, rerun `activate` on `main` with a new attributed reason. Re
 
 Use **Actions > Coordinated production release > Run workflow** on `main` for `status`, `activate`, `retry`, or `skip`. Supply a concise reason for activation/retry/skip. A retry reuses the original commit and artifacts and preserves durably verified target outcomes, including interruptions immediately after a target-success save. A skip records the actor and reason without advancing either target baseline. `main` is the normal automatic operation. Never manually edit the Blob ledger or delete retained release artifacts to clear a barrier. Keep GitHub deployment permissions enabled for the workflow; do not add CI checks or rerun unrelated CI as part of release recovery.
 
-For a TRMNL failure, run `inspect-trmnl` on the same manual workflow before retrying publication. It pulls the existing production plugin once, compares its non-secret definition/templates with the blocked activation/release commit (or the dispatch commit when nothing is blocked), and reports only boolean readability, field-schema compatibility and content equality. A pinned activation repair, including an older queued release whose TRMNL target it covers, compares against the corrected source instead. It never pushes, creates a deployment record, writes the ledger, clears a recovery barrier, or implies that configured values were preserved. Inspection needs the existing publishing key but not backup approval because it makes no plugin changes.
+For a TRMNL failure, run `inspect-trmnl` on the same manual workflow before retrying publication. It pulls the existing production plugin once, compares its non-secret definition/templates with the blocked activation/release commit (or the dispatch commit when nothing is blocked), and reports boolean readability, field-schema compatibility and content equality plus the bounded comparison below. A pinned activation repair, including an older queued release whose TRMNL target it covers, compares against the corrected source instead. It never pushes, creates a deployment record, writes the ledger, clears a recovery barrier, or implies that configured values were preserved. Inspection needs the existing publishing key but not backup approval because it makes no plugin changes.
+
+Inspection adds `content_comparison` without changing the existing result fields.
+It reports `file_set_matches` and one fixed result for each of `settings.yml`,
+`shared.liquid`, `full.liquid`, `half_horizontal.liquid`, and `half_vertical.liquid`.
+Results are `match`, `different`, `source_missing`, `deployed_missing`, or
+`not_compared`. Templates remain byte-exact; settings retain the existing parsed
+comparison (mapping order and the top-level plugin ID are ignored, arrays remain
+ordered). No new normalization or ignored remote field is introduced.
+
+When file sets match, `definition.fields` lists only differing **allowlisted
+top-level definition fields** with `source_missing`, `deployed_missing`,
+`type_mismatch`, or `value_mismatch`. Custom-field differences are reported only
+as `custom_fields`, never as configured field identifiers or nested paths.
+Unknown definition fields and files remain part of exact verification, but only
+their source/deployed counts and aggregate equality booleans are exposed.
+When file sets differ, definition comparison is explicitly unevaluated:
+`definition.compared` is false and `definition.unknown_fields` is null, not an
+invented match. The output contains no remote values, templates, configured-field
+names, arbitrary filenames/keys, credential-derived hashes, URLs or response
+bodies. A publishing verification mismatch emits the same bounded structure as
+`trmnl_content_comparison` at `stage: verify` before returning its unchanged
+file-set/content-mismatch failure code.
+
+A mismatch signal identifies **where**, not why, content differs. It does not
+establish harmless service normalization, unchanged plugin bytes, rollback,
+configured-value preservation or a verified target. Read the bounded evidence
+before choosing a fix; do not strip unknown remote fields or retry blindly.
+Read-only inspection does not retarget a pinned repair source/archive or clear
+its mutation-confirmation barrier.
 
 Publisher failures identify `source_settings`, `preflight_pull`, `preflight_settings`, `push`, `verify_pull`, or `verify_settings` rather than collapsing every tool error into `trmnl_publish_or_verify_failed`. Archive API failures include only an allowlisted HTTP status, such as `trmnl_preflight_pull_http_403`; absent tools, cancellation, timeouts and output limits have fixed codes. Tool output is captured in bounded memory only, never printed or retained as an artifact. Private settings, archive contents, credentials and response bodies stay out of logs. A push or post-push failure still requires stopped-mutation verification before recovery; a diagnostic code is not proof of rollback.
 

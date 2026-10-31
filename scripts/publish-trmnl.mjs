@@ -14,6 +14,10 @@ const expectedFiles = [
   "half_horizontal.liquid",
   "half_vertical.liquid"
 ];
+const definitionFields = [
+  "name", "description", "strategy", "polling_url", "polling_verb", "polling_headers",
+  "polling_body", "refresh_interval", "framework_version", "no_screen_padding", "dark_mode", "custom_fields"
+];
 
 function fail(code) {
   const error = new Error(code);
@@ -91,8 +95,7 @@ function fieldSchema(settings) {
 
 function archiveValidation(response) {
   const issues = new Map();
-  const fields = ["name", "description", "strategy", "polling_url", "polling_verb", "polling_headers",
-    "polling_body", "refresh_interval", "framework_version", "no_screen_padding", "dark_mode", "custom_fields", "base"];
+  const fields = [...definitionFields, "base"];
   const reasons = [
     ["required", /^(?:can't be blank|cannot be blank|is required)\b/i],
     ["too_long", /^(?:(?:is )?too long|cannot exceed|maximum length)\b/i],
@@ -196,8 +199,32 @@ function publisherEnvironment(apiKey) {
 
 async function compareContent(source, deployed, sourceFiles, signal) {
   const deployedFiles = await filesIn(deployed);
-  if (JSON.stringify(deployedFiles) !== JSON.stringify(sourceFiles)) {
-    return { fileSetMatches: false, matches: false };
+  const fileSetMatches = JSON.stringify(deployedFiles) === JSON.stringify(sourceFiles);
+  const byteMatches = new Map(await Promise.all(
+    sourceFiles.filter(path => path !== "settings.yml" && deployedFiles.includes(path)).map(async path => {
+      const [before, after] = await Promise.all([readFile(join(source, path)), readFile(join(deployed, path))]);
+      return [path, before.equals(after)];
+    })
+  ));
+  const unknownSource = sourceFiles.filter(path => !expectedFiles.includes(path));
+  const unknownDeployed = deployedFiles.filter(path => !expectedFiles.includes(path));
+  const comparison = {
+    file_set_matches: fileSetMatches,
+    files: expectedFiles.map(file => ({
+      file,
+      result: !sourceFiles.includes(file) ? "source_missing" :
+        !deployedFiles.includes(file) ? "deployed_missing" :
+          file === "settings.yml" ? "not_compared" : byteMatches.get(file) ? "match" : "different"
+    })),
+    unknown_files: {
+      source_count: unknownSource.length, deployed_count: unknownDeployed.length,
+      matches: JSON.stringify(unknownSource) === JSON.stringify(unknownDeployed) &&
+        unknownSource.every(path => byteMatches.get(path))
+    },
+    definition: { compared: false, fields: [], unknown_fields: null }
+  };
+  if (!fileSetMatches) {
+    return { fileSetMatches: false, matches: false, comparison };
   }
   const templateFiles = sourceFiles.filter(path => path !== "settings.yml");
   const [sourceTemplatesHash, deployedTemplatesHash, sourceSettings, deployedSettings] = await Promise.all([
@@ -206,10 +233,35 @@ async function compareContent(source, deployed, sourceFiles, signal) {
     canonicalSettings(join(source, "settings.yml"), signal, "trmnl_source_settings_invalid"),
     canonicalSettings(join(deployed, "settings.yml"), signal, "trmnl_verify_settings_invalid")
   ]);
+  const before = JSON.parse(sourceSettings);
+  const after = JSON.parse(deployedSettings);
+  const valueType = value => value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+  const fields = definitionFields.flatMap(field => {
+    const sourcePresent = Object.hasOwn(before, field);
+    const deployedPresent = Object.hasOwn(after, field);
+    const reason = !sourcePresent && deployedPresent ? "source_missing" :
+      sourcePresent && !deployedPresent ? "deployed_missing" :
+        valueType(before[field]) !== valueType(after[field]) ? "type_mismatch" :
+          JSON.stringify(before[field]) !== JSON.stringify(after[field]) ? "value_mismatch" : null;
+    return reason ? [{ field, reason }] : [];
+  });
+  const unknownBefore = Object.fromEntries(Object.entries(before).filter(([field]) => !definitionFields.includes(field)));
+  const unknownAfter = Object.fromEntries(Object.entries(after).filter(([field]) => !definitionFields.includes(field)));
+  comparison.files[0].result = sourceSettings === deployedSettings ? "match" : "different";
+  comparison.definition = {
+    compared: true,
+    fields,
+    unknown_fields: {
+      source_count: Object.keys(unknownBefore).length,
+      deployed_count: Object.keys(unknownAfter).length,
+      matches: JSON.stringify(unknownBefore) === JSON.stringify(unknownAfter)
+    }
+  };
   const matches = sourceTemplatesHash === deployedTemplatesHash && sourceSettings === deployedSettings;
   return {
     fileSetMatches: true,
     matches,
+    comparison,
     identity: matches ? `sha256:${createHash("sha256")
       .update(deployedTemplatesHash).update("\0").update(deployedSettings).digest("hex")}` : null
   };
@@ -253,7 +305,8 @@ async function operateTrmnl({
         const content = await compareContent(source, stagedSource, sourceFiles, signal);
         return {
           operation: "inspect-trmnl", remote_readable: true,
-          field_schema_compatible: compatible, content_matches: content.matches
+          field_schema_compatible: compatible, content_matches: content.matches,
+          content_comparison: content.comparison
         };
       }
       if (!compatible) fail("trmnl_field_migration_required");
@@ -269,6 +322,11 @@ async function operateTrmnl({
       delete childEnvironment.TRMNL_API_KEY;
     }
     const content = await compareContent(source, stagedSource, sourceFiles, signal);
+    if (!content.matches) {
+      console.error(JSON.stringify({
+        event: "trmnl_content_comparison", stage: "verify", ...content.comparison
+      }));
+    }
     if (!content.fileSetMatches) fail("trmnl_deployed_file_set_mismatch");
     if (!content.matches) fail("trmnl_deployed_content_mismatch");
     return {

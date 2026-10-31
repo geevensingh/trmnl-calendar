@@ -18,9 +18,12 @@
   .agenda .table.table--large tbody tr { height: auto; }
   .agenda .table td { padding: 2px 0; vertical-align: top; }
   .agenda .agenda-day td .title {
+    --title-font-weight: 700;
+    font-weight: var(--title-font-weight);
     display: block; flex: 1 1 auto; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
+  .screen--4bit .agenda .agenda-day td .title { --title-font-weight: 600; }
   .agenda .agenda-event-heading {
     display: flex; align-items: baseline; gap: 8px; min-width: 0;
   }
@@ -35,6 +38,7 @@
     padding: 4px 8px; background-color: #000; color: #fff;
   }
   .agenda .agenda-day tr.agenda-emphasized td .title {
+    --title-font-weight: 700;
     color: #fff; font-size: 24px; font-weight: 700; line-height: 1.25;
   }
   .agenda .agenda-emphasized .label { color: #fff; font-weight: 700; }

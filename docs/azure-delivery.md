@@ -4,6 +4,13 @@ This is the repeatable procedure for [ticket #8](https://github.com/geevensingh/
 
 Git landing, publication, completion reporting, and ticket closure follow the [delivery contract](agents/delivery.md). The live activation evidence below is an additional gate, not proof of landing on the target branch.
 
+The owner-confirmed [automated Azure/TRMNL delivery design](automated-delivery.md)
+records the main-triggered release contract, including reviewed infrastructure
+changes within `rg-trmnl-calendar`. The design record does not establish live
+activation; this runbook documents the implementation and operator procedures.
+Its fixed resource plan is the starting configuration, not the CD system's
+permanent authorization limit.
+
 ## Approved scope and permissions
 
 The owner's private resource plan supplies the subscription, exact resource names, and alert recipient. Do not commit those inputs or put them in issues. The approved location is **West US 2**, the monthly alert budget is **$20**, and always-ready capacity is **zero**. A different region, additional resource/role, increased scale, or paid warming requires renewed approval; a deployment error is not permission to change this plan.
@@ -240,13 +247,17 @@ In the actual native editor, verify quotes/newlines survive, malformed/unsupport
 
 Unfamiliar paths, including unfamiliar files under `scripts/`, conservatively select both targets. Only explicitly known Azure deployment inputs are Azure-only; known local-only inputs do not select a production target.
 
-Before enabling this workflow, the owner must complete and record the initial Azure bootstrap, TRMNL existing-plugin configuration, and synthetic-plugin configured-value-preservation test described above. Before activation, bootstrap the release OIDC identity and a **dedicated release storage account** inside the approved group, with **both** private containers (`release-control` and `release-artifacts`) and a separate container-scoped Blob Data Contributor grant on each. Set `releaseStorageAccountName` to that account, distinct from the existing runtime `storageAccountName`; deployment scripts reject a shared account. Activation uploads retained artifacts before infrastructure reconciliation, so neither the account, artifact container nor its grant can wait for that reconciliation. Configure a federated credential for audience `api://AzureADTokenExchange` and subject `repo:geevensingh/trmnl-calendar:ref:refs/heads/main`. Grant the identity only the resource-group deployment permissions required to reconcile the already-existing approved group, including its required role-assignment permissions; Bicep maintains its separate ledger-container and release-artifact-container grants. The function deployment-package container is not the retained-release-artifact container. Do not grant subscription-wide Contributor for routine releases.
+Before enabling this workflow, the owner must complete and record the initial Azure bootstrap, TRMNL existing-plugin configuration, and private backups with explicit manual-recovery approval below. Before activation, bootstrap the release OIDC identity and a **dedicated release storage account** inside the approved group, with **both** private containers (`release-control` and `release-artifacts`) and a separate container-scoped Blob Data Contributor grant on each. Set `releaseStorageAccountName` to that account, distinct from the existing runtime `storageAccountName`; deployment scripts reject a shared account. Activation uploads retained artifacts before infrastructure reconciliation, so neither the account, artifact container nor its grant can wait for that reconciliation. Configure federation with issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`, and the exact subject emitted in the workflow's Azure login diagnostics. This repository's observed `main` subject includes numeric owner/repository IDs: `repo:geevensingh@11344767/trmnl-calendar@1424811469:ref:refs/heads/main`; do not assume the shorter legacy subject matches. Grant the identity only the resource-group deployment permissions required to reconcile the already-existing approved group, including its required role-assignment permissions; Bicep maintains its separate ledger-container and release-artifact-container grants. The function deployment-package container is not the retained-release-artifact container. Do not grant subscription-wide Contributor for routine releases.
+
+The owner has accepted retaining resource-group-scoped Contributor for this setup. That role can delete the resource group: the controller's refusal to create/delete the group is an application boundary, not an effective RBAC denial. Keep the separately constrained role-assignment delegation and container-only data grants; this exception does not authorize subscription-wide permissions or grant either runtime identity release-storage access.
 
 The host identity keeps its required account-wide Blob Data Owner role only on the runtime account. Neither Function identity is granted data or control-plane access to the release account. During bootstrap, inspect effective/inherited permissions and verify both runtime identities cannot read or mutate either release container; remove conflicting inherited grants under owner authorization before activation. Keep shared-key/public access disabled and do not attach the release identity to the Function. Existing activated installations need an owner-reviewed ledger/artifact migration before changing accounts; never point an active controller at an empty account or reactivate to bypass its history. No live migration or account provisioning was performed during implementation.
 
 Routine releases compare live capacity against the `reviewedFunctionCapacity` value used by the exact commit's Bicep and returned as `reviewedCapacity` by its reconciled deployment stack. This supports reviewed maximum-instance, memory and always-ready changes without a second approval or changing resource-group, runtime, artifact, authentication, and commit checks. The standalone operator command above retains its initial max-one/2 GiB/zero-always-ready defaults unless supplied with a commit-matching `-ReviewedCapacityJson` result from reconciliation.
 
 Before any TRMNL push, the publisher pulls the existing non-secret definition and compares custom-field identifiers and types. Removing, renaming or changing a deployed field type fails with `trmnl_field_migration_required` before mutation. There is no implicit migration or configured-value reset: retain the existing schema until an explicit owner-reviewed value-preserving migration has been implemented. Post-push verification pulls into an empty source directory and compares templates and parsed settings, ignoring mapping-key order but preserving array order.
+
+Before approving TRMNL publication, export the existing production plugin and accept manual recovery if publication resets its settings. Keep the export private and separately save the currently configured endpoint, function key, and exact exclusion-rule text: do not assume the export includes password-style values. This is a recovery plan, not proof of preservation or an automatic rollback. Only after saving those backups, set `TRMNL_BACKUP_RECOVERY_ACCEPTED_PLUGIN_ID` to the same existing production plugin ID and describe the acceptance in the attributed activation reason. Both activation and routine publication require this plugin-specific approval. Definition/template verification does not verify configured-value preservation.
 
 Ruby settings parsers receive only allowlisted non-secret tool environment settings, not Azure configuration, GitHub tokens, Function keys or the TRMNL publishing key. Only the isolated `trmnlp` calls receive that publishing key.
 
@@ -261,7 +272,7 @@ Set these GitHub repository variables:
 | `AZURE_STORAGE_ACCOUNT`, `AZURE_RELEASE_CONTAINER`, `AZURE_ARTIFACT_CONTAINER` | The **dedicated release** account matching `releaseStorageAccountName`, private `release-control` ledger container, and private `release-artifacts` retained artifact container. Never use the runtime `storageAccountName`. The release identity has separate container-scoped Blob Data Contributor roles. |
 | `AZURE_BOOTSTRAP_VERIFIED` | Set to `true` only after the owner verifies the separate Azure bootstrap and required live evidence. |
 | `TRMNL_PLUGIN_ID` | The existing production plugin ID; never leave this blank or allow `trmnlp` to create a plugin. |
-| `TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID` | The same ID only after the owner has completed and recorded the synthetic-plugin preservation test. This gate does not itself prove preservation. |
+| `TRMNL_BACKUP_RECOVERY_ACCEPTED_PLUGIN_ID` | The same existing plugin ID only after the owner privately saves the export and configured values and accepts manual recovery. This is not a verified-preservation claim. |
 
 Set these GitHub Actions secrets:
 
@@ -271,17 +282,129 @@ Set these GitHub Actions secrets:
 | `TRMNL_API_KEY` | The TRMNL publishing key. It is passed only to the isolated `trmnlp` process. |
 | `TRMNL_FUNCTION_KEY` | The dedicated function-scoped key for the existing `/api/agenda` trigger, never a host/master key. |
 
-The first manual `activate` operation on `main` publishes and verifies both targets at the selected reviewed main commit before recording target baselines. It refuses to activate unless the evidence variables are set, the plugin IDs match, and the reason is attributed. It does not run the synthetic preservation test or establish missing live evidence on the owner's behalf. Do not set either evidence variable until the corresponding owner verification is complete.
+The first manual `activate` operation on `main` publishes and verifies both targets at the selected reviewed main commit before recording target baselines. It requires verified Azure bootstrap, matching plugin-specific backup approval, and an attributed reason. It does not create the private backups or establish missing live evidence on the owner's behalf. Activation records `trmnl_backup_recovery_accepted: true` alongside the actor/reason; status exposes that acceptance without private configuration. Legacy activation records without recorded acceptance report null, not inferred approval.
 
-If activation fails, rerun `activate` on `main` with a new attributed reason. Recovery resumes the ledger's original activation commit and retained artifacts, even if `main` has advanced; verified targets are not redeployed. The current-main restriction applies only to a new activation. An interrupted activation is first recorded as uncertain and blocked before a later explicit recovery can resume it. Its original `first_failure` remains in the durable record after successful recovery.
+If activation fails, rerun `activate` on `main` with a new attributed reason. Recovery resumes the ledger's original activation commit and retained artifacts, even if `main` has advanced; verified targets are not redeployed. The current-main restriction applies only to a new activation. An interrupted activation is first recorded as uncertain and blocked before a later explicit recovery can resume it. Its original `first_failure` remains in the durable record after successful recovery. An invalid retained TRMNL description instead needs the explicit [description-repair operation](#correcting-a-failed-initial-trmnl-description) below; changing source alone cannot fix that archive.
 
 Use **Actions > Coordinated production release > Run workflow** on `main` for `status`, `activate`, `retry`, or `skip`. Supply a concise reason for activation/retry/skip. A retry reuses the original commit and artifacts and preserves durably verified target outcomes, including interruptions immediately after a target-success save. A skip records the actor and reason without advancing either target baseline. `main` is the normal automatic operation. Never manually edit the Blob ledger or delete retained release artifacts to clear a barrier. Keep GitHub deployment permissions enabled for the workflow; do not add CI checks or rerun unrelated CI as part of release recovery.
+
+For a TRMNL failure, run `inspect-trmnl` on the same manual workflow before retrying publication. It pulls the existing production plugin once, compares its non-secret definition/templates with the blocked activation/release commit (or the dispatch commit when nothing is blocked), and reports boolean readability, field-schema compatibility and content equality plus the bounded comparison below. A pinned activation repair, including an older queued release whose TRMNL target it covers, compares against the corrected source instead. It never pushes, creates a deployment record, writes the ledger, clears a recovery barrier, or implies that configured values were preserved. Inspection needs the existing publishing key but not backup approval because it makes no plugin changes.
+
+Inspection adds `content_comparison` without changing the existing result fields.
+It reports `file_set_matches` and one fixed result for each of `settings.yml`,
+`shared.liquid`, `full.liquid`, `half_horizontal.liquid`, and `half_vertical.liquid`.
+Results are `match`, `different`, `source_missing`, `deployed_missing`, or
+`not_compared`. Templates remain byte-exact; settings retain the existing parsed
+comparison (mapping order and the top-level plugin ID are ignored, arrays remain
+ordered). No new normalization or ignored remote field is introduced.
+
+When file sets match, `definition.fields` lists only differing **allowlisted
+top-level definition fields** with `source_missing`, `deployed_missing`,
+`type_mismatch`, or `value_mismatch`. Custom-field differences are reported only
+as `custom_fields`, never as configured field identifiers or nested paths.
+Unknown definition fields and files remain part of exact verification, but only
+their source/deployed counts and aggregate equality booleans are exposed.
+When file sets differ, definition comparison is explicitly unevaluated:
+`definition.compared` is false and `definition.unknown_fields` is null, not an
+invented match. The output contains no remote values, templates, configured-field
+names, arbitrary filenames/keys, credential-derived hashes, URLs or response
+bodies. A publishing verification mismatch emits the same bounded structure as
+`trmnl_content_comparison` at `stage: verify` before returning its unchanged
+file-set/content-mismatch failure code.
+
+A mismatch signal identifies **where**, not why, content differs. It does not
+establish harmless service normalization, unchanged plugin bytes, rollback,
+configured-value preservation or a verified target. Read the bounded evidence
+before choosing a fix; do not strip unknown remote fields or retry blindly.
+Read-only inspection does not retarget a pinned repair source/archive or clear
+its mutation-confirmation barrier.
+
+Publisher failures identify `source_settings`, `preflight_pull`, `preflight_settings`, `push`, `verify_pull`, or `verify_settings` rather than collapsing every tool error into `trmnl_publish_or_verify_failed`. Archive API failures include only an allowlisted HTTP status, such as `trmnl_preflight_pull_http_403`; absent tools, cancellation, timeouts and output limits have fixed codes. Tool output is captured in bounded memory only, never printed or retained as an artifact. Private settings, archive contents, credentials and response bodies stay out of logs. A push or post-push failure still requires stopped-mutation verification before recovery; a diagnostic code is not proof of rollback.
+
+For HTTP 422, the runner also emits a `trmnl_archive_validation` event containing only allowlisted definition-field names and fixed reason codes, such as `description` / `too_long`. It recognizes bounded structured validation errors, not arbitrary response text. Reasons match only normalized validation prefixes, never words inside echoed values. Ambiguous comma-, semicolon- or newline-joined messages are left unclassified instead of inferring additional errors. Unknown fields, echoed values, limits, URLs and messages are never printed; unrecognized responses explicitly report `classified: false`. This event comes from the upload response, not an assumed TRMNL dashboard log location. It does not change publication, verification or recovery behavior.
 
 Status also exposes per-target `pending_reconciliation`. A target is marked before mutation and cleared only after verification. Skipping a failed release preserves this marker: the next qualifying commit must redeploy that target even if its contents match the last successful baseline, because the skipped attempt might have changed what is live.
 
 Lease-renewal failure cancels active local commands and prevents subsequent deployment stages or ledger writes by that controller. Cancellation is not proof that descendants or an already accepted Azure/TRMNL request have stopped. Before every external mutation, the ledger records `recovery_confirmation_required`; an unverified failure or interruption leaves that barrier in place. To retry, skip, or resume activation after a mutation failure, first verify that the previous runner processes (including descendants) have ended and that all Azure deployment-stack/code deployments or TRMNL publishing requests have completed or been stopped. Do not merely break the lease or cancel a GitHub run and assume remote work stopped.
 
 Only after that verification, select **I verified all previous release processes and remote mutations have stopped** in the manual workflow and provide the evidence/context in the attributed reason. The controller records this confirmation with the actor and time before allowing recovery. The equivalent CLI switch is `--previous-mutation-stopped`. Status exposes the barrier; automatic scans cannot clear it. Selection/preparation failures before any mutation can be retried without this confirmation.
+
+### Correcting a failed initial TRMNL description
+
+`repair-activation-trmnl` is a narrow exception for an **inactive initial activation**
+whose Azure target is already verified and whose TRMNL push failed with HTTP 422.
+It is not a queue retry, rollback, general artifact replacement, or a new Azure
+deployment. Ordinary `activate` and queue retries still use their original
+archives; once repair is pinned, only the explicit repair operation can resume it.
+
+The confirmed production failure for [#41](https://github.com/geevensingh/trmnl-calendar/issues/41#issuecomment-6533367465)
+identified `description` / `too_long`. The source description is now
+`Private calendar agenda.` No numerical service limit is assumed or enforced;
+successful local checks do not prove the service will accept a future upload.
+
+After human review/merge and required CI, use **Coordinated production release**
+on `main` with:
+
+| Input | Required evidence |
+|---|---|
+| `operation` | `repair-activation-trmnl` |
+| `activation_commit` | Full original failed activation SHA, matching the ledger. For #41 this is `8c3e5702f7b657f363c82acd124dd973cb7545bb`. |
+| `corrected_commit` | Full reviewed, human-landed current-main SHA on the **first** repair. Reuse this exact SHA on subsequent repair attempts, even if main advances. |
+| `reason` | Attributed non-secret correction rationale and evidence that earlier processes/remote mutations stopped. |
+| `previous_mutation_stopped` | `true`, only after the stopped-mutation checks above. This is required on every repair invocation. |
+
+Azure bootstrap evidence and the existing plugin-specific private-backup/manual
+recovery approval remain required. Do not supply private values in the reason.
+This operation does not establish configured-value preservation or remove the
+accepted settings-reset/manual-recovery risk.
+
+The corrected source must be on the original activation's first-parent main
+history. Its settings, compared with the **retained original archive**, may change
+only the single top-level description, which must be nonblank and shorter.
+Changes to the shared agenda contract documents/parser are rejected. The archive
+contains the corrected commit's complete `display/src`, including any intervening
+reviewed template/style changes; review their compatibility with the still-old
+Azure target before landing. Field-schema preflight and post-push definition/
+template verification remain mandatory.
+
+Under the existing lease and conditional ledger writes, repair verifies the
+original artifacts and retains them unchanged. It creates a separate immutable,
+digest-addressed **TRMNL-only** archive bound to the corrected source SHA, persists
+that identity before publishing, and records each repair's actor, reason,
+stopped-mutation confirmation and outcome. Original `first_failure` and the
+pre-repair failure remain available. Status shows both source/artifact identities
+and safe attempt outcomes, not freeform reasons or archive contents. Mismatched
+activation/source/artifact identities, missing evidence, initialized queues and
+unverified Azure targets fail closed.
+
+An interruption is first recorded as `interrupted_uncertain` and blocks the
+invocation. Inspect status and re-establish stopped-mutation evidence before
+resuming the **same operation and SHAs**. Once persisted, the corrected artifact
+is reused, never silently rebuilt from newer main; durably verified Azure/TRMNL
+outcomes are not repeated. A preparation interrupted before its artifact identity
+was persisted may prepare that same pinned source again.
+If the final initialization write fails, the failure record keeps activation
+inactive with checkpoint/baselines unset and retains all durably verified target
+outcomes. Resuming the same operation completes initialization without repeating
+those target mutations.
+
+Successful repair sets Azure's baseline to the original activation and TRMNL's to
+the corrected source. The admission checkpoint stays at the **original activation**:
+it does not declare the newer whole commit deployed. Subsequent normal `main`
+scans retain every qualifying successor in FIFO order and reconcile outstanding
+Azure changes. Older TRMNL targets already represented by the repaired archive
+are recorded as `covered_targets` with its source and artifact identity, not as
+independently verified uploads; they must not republish the invalid older
+description. Releases after the corrected source use normal target selection.
+Repair does not automatically drain this Azure backlog.
+
+### Azure release operator
+
+When direct Azure access is unavailable, use **Actions > Azure release operator** on `main`, or `gh workflow run release-azure-operator.yml --ref main -f operation=inspect`. This manual-only workflow uses the existing release OIDC identity and the same concurrency group as production releases. It needs no new identity, secret, or permission grant. Inspection makes no Azure writes and reports the deployment-stack state, whether group deployments have stopped, a boolean budget-email check, and the two release containers' relevant assignment IDs. It never prints parameters, email addresses, principal IDs, keys, or raw Azure diagnostics. A failed command reports its stage and an allowlisted Azure error code instead of an unhelpful generic error.
+
+Portal-created bootstrap grants can have different IDs from the exact assignment resources requested by Bicep, causing `RoleAssignmentExists` even when the principal/role/scope are correct. After inspecting current state and obtaining explicit owner approval, `repair-bootstrap-roles` accepts the old and requested GUIDs for **each** release container, an attributed `reason`, and `previous_mutation_stopped=true`. These inputs identify the two approved replacements; they do not permit arbitrary scopes, roles, or principals. Both grants must pass preflight before any write, and requested IDs must match the latest failed deployment's role-assignment operations, including individually succeeded operations after partial repair. The script checks subscription and protected target bindings, exact container scopes, release principal, Blob Data Contributor role, unconditional grants, and stopped deployments. A missing stack is reported as absent rather than treated as a failed `show` command; unknown or running work blocks repair.
+
+Repair replaces only those two assignment IDs at unchanged permission scopes. An already-aligned grant is left alone. There is a brief per-container access gap; a failed delete/create is reconciled against actual grants, and the original assignment is restored when necessary. Post-mutation reads get one bounded retry; if reconciliation stays unavailable, the original exact grant is still attempted before verifying which approved ID exists. Restoration is read back, not presumed; any unverified post-mutation result reports `operator_repair_state_uncertain` and blocks the next container. Recheck with `inspect` after a repair. Neither operation deploys application code, publishes TRMNL, modifies storage contents or the release ledger, clears a failure barrier, or authorizes activation recovery. Keep the private backups and original activation/artifacts; recovery remains the separate attributed `activate` operation described above.
 
 ## Redacted HTTP smoke and live limits
 

@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
-import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -14,6 +13,10 @@ const expectedFiles = [
   "full.liquid",
   "half_horizontal.liquid",
   "half_vertical.liquid"
+];
+const definitionFields = [
+  "name", "description", "strategy", "polling_url", "polling_verb", "polling_headers",
+  "polling_body", "refresh_interval", "framework_version", "no_screen_padding", "dark_mode", "custom_fields"
 ];
 
 function fail(code) {
@@ -43,7 +46,7 @@ async function digestFiles(root, paths) {
   return hash.digest("hex");
 }
 
-async function canonicalSettings(path, signal) {
+async function canonicalSettings(path, signal, code) {
   try {
     const { stdout } = await execFileAsync("ruby", [
       "-rjson", "-ryaml", "-e",
@@ -72,7 +75,7 @@ async function canonicalSettings(path, signal) {
     });
     return stdout;
   } catch {
-    fail("trmnl_settings_invalid");
+    fail(code);
   }
 }
 
@@ -90,28 +93,96 @@ function fieldSchema(settings) {
   return schema;
 }
 
-function runCli(command, args, env, cwd, runCommand, signal) {
+function archiveValidation(response) {
+  const issues = new Map();
+  const fields = [...definitionFields, "base"];
+  const reasons = [
+    ["required", /^(?:can't be blank|cannot be blank|is required)\b/i],
+    ["too_long", /^(?:(?:is )?too long|cannot exceed|maximum length)\b/i],
+    ["unsupported", /^(?:(?:is )?not included in the list|(?:is )?not supported|unsupported)\b/i],
+    ["duplicate", /^(?:(?:has )?already been taken|already exists)\b/i],
+    ["out_of_range", /^(?:must be (?:greater|less) than|(?:is )?out of range)\b/i],
+    ["invalid", /^(?:is invalid|invalid format)\b/i]
+  ];
+  const record = (value, field) => {
+    if (typeof value !== "string") return;
+    let message = value.slice(0, 512).trimStart().replace(/^Validation failed:\s*/i, "");
+    if (!field) {
+      for (const candidate of fields) {
+        const match = message.match(new RegExp(`^${candidate.replaceAll("_", "[ _]")}\\b[: ]*([\\s\\S]*)$`, "i"));
+        if (match) {
+          field = candidate;
+          message = match[1];
+          break;
+        }
+      }
+    }
+    if (!fields.includes(field)) return;
+    message = message.trimStart();
+    // Text after a colon can echo private values, not additional validation errors.
+    if (/[,\r\n;]/.test(message.split(":", 1)[0])) return;
+    const reason = reasons.find(([_code, pattern]) => pattern.test(message))?.[0] ?? "unclassified";
+    issues.set(`${field}:${reason}`, { field, reason });
+  };
+  const visit = (value, depth = 0) => {
+    if (depth > 2 || value === null) return;
+    if (typeof value === "string") record(value);
+    else if (Array.isArray(value)) value.slice(0, 16).forEach(item => visit(item, depth + 1));
+    else if (typeof value === "object") {
+      if (value.field === undefined || fields.includes(value.field)) record(value.message, value.field);
+      if (value.errors !== undefined) visit(value.errors, depth + 1);
+      for (const field of fields) {
+        const messages = value[field];
+        for (const message of Array.isArray(messages) ? messages.slice(0, 16) : [messages]) {
+          record(message, field);
+        }
+      }
+    }
+  };
+  const text = response.trimStart();
+  const closing = text[0] === "{" ? "}" : text[0] === "[" ? "]" : null;
+  const end = closing === null ? -1 : text.lastIndexOf(closing);
+  if (end >= 0 && end < 65_536) {
+    let body;
+    try {
+      body = JSON.parse(text.slice(0, end + 1));
+    } catch {
+      return { classified: false, issues: [] };
+    }
+    visit(body);
+    if (body && typeof body === "object" && body.error !== undefined) visit(body.error);
+  }
+  const classified = [...issues.values()]
+    .sort((left, right) => left.field.localeCompare(right.field) || left.reason.localeCompare(right.reason))
+    .slice(0, 16);
+  return { classified: classified.length > 0, issues: classified };
+}
+
+async function runCli(command, args, env, cwd, runCommand, signal, stage) {
   signal?.throwIfAborted();
-  if (runCommand) return runCommand(command, args, { env, cwd, signal });
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      signal,
-      stdio: "ignore",
-      windowsHide: true
+  try {
+    await (runCommand ?? execFileAsync)(command, args, {
+      cwd, env, signal, windowsHide: true, encoding: "utf8",
+      timeout: 120_000, maxBuffer: 1024 * 1024
     });
-    const timeout = setTimeout(() => child.kill(), 120_000);
-    child.once("error", () => {
-      clearTimeout(timeout);
-      reject(new Error("trmnl_publisher_unavailable"));
-    });
-    child.once("exit", code => {
-      clearTimeout(timeout);
-      if (code === 0) resolvePromise();
-      else reject(new Error("trmnl_publish_failed"));
-    });
-  });
+  } catch (error) {
+    if (signal?.aborted) fail(`trmnl_${stage}_cancelled`);
+    if (error.code === "ENOENT") fail(`trmnl_${stage}_unavailable`);
+    if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") fail(`trmnl_${stage}_output_limit`);
+    if (error.killed) fail(`trmnl_${stage}_timeout`);
+    const diagnostic = `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
+    const archiveError = diagnostic.match(
+      /failed to (?:download|upload) plugin settings archive: (400|401|403|404|409|422|429|500|502|503|504)\b/
+    );
+    const status = archiveError?.[1];
+    if (status === "422") {
+      const response = diagnostic.slice(archiveError.index + archiveError[0].length);
+      console.error(JSON.stringify({
+        event: "trmnl_archive_validation", stage, http_status: 422, ...archiveValidation(response)
+      }));
+    }
+    fail(status ? `trmnl_${stage}_http_${status}` : `trmnl_${stage}_failed`);
+  }
 }
 
 function publisherEnvironment(apiKey) {
@@ -126,16 +197,86 @@ function publisherEnvironment(apiKey) {
   return env;
 }
 
-export async function publishTrmnl({
+async function compareContent(source, deployed, sourceFiles, signal) {
+  const deployedFiles = await filesIn(deployed);
+  const fileSetMatches = JSON.stringify(deployedFiles) === JSON.stringify(sourceFiles);
+  const byteMatches = new Map(await Promise.all(
+    sourceFiles.filter(path => path !== "settings.yml" && deployedFiles.includes(path)).map(async path => {
+      const [before, after] = await Promise.all([readFile(join(source, path)), readFile(join(deployed, path))]);
+      return [path, before.equals(after)];
+    })
+  ));
+  const unknownSource = sourceFiles.filter(path => !expectedFiles.includes(path));
+  const unknownDeployed = deployedFiles.filter(path => !expectedFiles.includes(path));
+  const comparison = {
+    file_set_matches: fileSetMatches,
+    files: expectedFiles.map(file => ({
+      file,
+      result: !sourceFiles.includes(file) ? "source_missing" :
+        !deployedFiles.includes(file) ? "deployed_missing" :
+          file === "settings.yml" ? "not_compared" : byteMatches.get(file) ? "match" : "different"
+    })),
+    unknown_files: {
+      source_count: unknownSource.length, deployed_count: unknownDeployed.length,
+      matches: JSON.stringify(unknownSource) === JSON.stringify(unknownDeployed) &&
+        unknownSource.every(path => byteMatches.get(path))
+    },
+    definition: { compared: false, fields: [], unknown_fields: null }
+  };
+  if (!fileSetMatches) {
+    return { fileSetMatches: false, matches: false, comparison };
+  }
+  const templateFiles = sourceFiles.filter(path => path !== "settings.yml");
+  const [sourceTemplatesHash, deployedTemplatesHash, sourceSettings, deployedSettings] = await Promise.all([
+    digestFiles(source, templateFiles),
+    digestFiles(deployed, templateFiles),
+    canonicalSettings(join(source, "settings.yml"), signal, "trmnl_source_settings_invalid"),
+    canonicalSettings(join(deployed, "settings.yml"), signal, "trmnl_verify_settings_invalid")
+  ]);
+  const before = JSON.parse(sourceSettings);
+  const after = JSON.parse(deployedSettings);
+  const valueType = value => value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+  const fields = definitionFields.flatMap(field => {
+    const sourcePresent = Object.hasOwn(before, field);
+    const deployedPresent = Object.hasOwn(after, field);
+    const reason = !sourcePresent && deployedPresent ? "source_missing" :
+      sourcePresent && !deployedPresent ? "deployed_missing" :
+        valueType(before[field]) !== valueType(after[field]) ? "type_mismatch" :
+          JSON.stringify(before[field]) !== JSON.stringify(after[field]) ? "value_mismatch" : null;
+    return reason ? [{ field, reason }] : [];
+  });
+  const unknownBefore = Object.fromEntries(Object.entries(before).filter(([field]) => !definitionFields.includes(field)));
+  const unknownAfter = Object.fromEntries(Object.entries(after).filter(([field]) => !definitionFields.includes(field)));
+  comparison.files[0].result = sourceSettings === deployedSettings ? "match" : "different";
+  comparison.definition = {
+    compared: true,
+    fields,
+    unknown_fields: {
+      source_count: Object.keys(unknownBefore).length,
+      deployed_count: Object.keys(unknownAfter).length,
+      matches: JSON.stringify(unknownBefore) === JSON.stringify(unknownAfter)
+    }
+  };
+  const matches = sourceTemplatesHash === deployedTemplatesHash && sourceSettings === deployedSettings;
+  return {
+    fileSetMatches: true,
+    matches,
+    comparison,
+    identity: matches ? `sha256:${createHash("sha256")
+      .update(deployedTemplatesHash).update("\0").update(deployedSettings).digest("hex")}` : null
+  };
+}
+
+async function operateTrmnl({
   sourceDirectory,
   pluginId,
-  preservationVerifiedPluginId,
+  backupRecoveryAcceptedPluginId,
   apiKey = process.env.TRMNL_API_KEY,
   runCommand,
   signal
-}) {
+}, inspecting) {
   if (!pluginIdPattern.test(pluginId ?? "")) fail("trmnl_target_identity_missing");
-  if (preservationVerifiedPluginId !== pluginId) fail("trmnl_preservation_gate_missing");
+  if (!inspecting && backupRecoveryAcceptedPluginId !== pluginId) fail("trmnl_backup_approval_missing");
   if (typeof apiKey !== "string" || !apiKey || apiKey.length > 512 ||
     /[\s\x00-\x1f\x7f]/.test(apiKey)) fail("trmnl_authentication_missing");
 
@@ -151,53 +292,57 @@ export async function publishTrmnl({
       "---\nwatch: false\ncustom_fields: {}\n", { flag: "wx" });
     const childEnvironment = publisherEnvironment(apiKey);
     try {
-      const sourceSettings = await canonicalSettings(join(source, "settings.yml"), signal);
+      const sourceSettings = await canonicalSettings(join(source, "settings.yml"), signal,
+        "trmnl_source_settings_invalid");
       const expectedSchema = fieldSchema(JSON.parse(sourceSettings));
       await runCli("trmnlp", ["pull", "--force", "--id", pluginId],
-        childEnvironment, workingDirectory, runCommand, signal);
+        childEnvironment, workingDirectory, runCommand, signal, "preflight_pull");
       const deployedSchema = fieldSchema(JSON.parse(
-        await canonicalSettings(join(stagedSource, "settings.yml"), signal)
+        await canonicalSettings(join(stagedSource, "settings.yml"), signal, "trmnl_preflight_settings_invalid")
       ));
-      for (const [key, type] of deployedSchema) {
-        if (expectedSchema.get(key) !== type) fail("trmnl_field_migration_required");
+      const compatible = [...deployedSchema].every(([key, type]) => expectedSchema.get(key) === type);
+      if (inspecting) {
+        const content = await compareContent(source, stagedSource, sourceFiles, signal);
+        return {
+          operation: "inspect-trmnl", remote_readable: true,
+          field_schema_compatible: compatible, content_matches: content.matches,
+          content_comparison: content.comparison
+        };
       }
+      if (!compatible) fail("trmnl_field_migration_required");
       await rm(stagedSource, { recursive: true });
       await cp(source, stagedSource, { recursive: true, errorOnExist: true, force: false });
       await runCli("trmnlp", ["push", "--force", "--id", pluginId],
-        childEnvironment, workingDirectory, runCommand, signal);
+        childEnvironment, workingDirectory, runCommand, signal, "push");
       await rm(stagedSource, { recursive: true });
       await mkdir(stagedSource);
       await runCli("trmnlp", ["pull", "--force", "--id", pluginId],
-        childEnvironment, workingDirectory, runCommand, signal);
-    } catch (error) {
-      if (["trmnl_field_schema_invalid", "trmnl_field_migration_required"].includes(error?.code)) throw error;
-      fail("trmnl_publish_or_verify_failed");
+        childEnvironment, workingDirectory, runCommand, signal, "verify_pull");
     } finally {
       delete childEnvironment.TRMNL_API_KEY;
     }
-    const deployedFiles = await filesIn(stagedSource);
-    if (JSON.stringify(deployedFiles) !== JSON.stringify(sourceFiles)) {
-      fail("trmnl_deployed_file_set_mismatch");
+    const content = await compareContent(source, stagedSource, sourceFiles, signal);
+    if (!content.matches) {
+      console.error(JSON.stringify({
+        event: "trmnl_content_comparison", stage: "verify", ...content.comparison
+      }));
     }
-    const templateFiles = sourceFiles.filter(path => path !== "settings.yml");
-    const [sourceTemplatesHash, deployedTemplatesHash] = await Promise.all([
-      digestFiles(source, templateFiles),
-      digestFiles(stagedSource, templateFiles)
-    ]);
-    if (deployedTemplatesHash !== sourceTemplatesHash) fail("trmnl_deployed_content_mismatch");
-    const [sourceSettings, deployedSettings] = await Promise.all([
-      canonicalSettings(join(source, "settings.yml"), signal),
-      canonicalSettings(join(stagedSource, "settings.yml"), signal)
-    ]);
-    if (deployedSettings !== sourceSettings) fail("trmnl_deployed_content_mismatch");
-    const deployedHash = createHash("sha256")
-      .update(deployedTemplatesHash).update("\0").update(deployedSettings).digest("hex");
+    if (!content.fileSetMatches) fail("trmnl_deployed_file_set_mismatch");
+    if (!content.matches) fail("trmnl_deployed_content_mismatch");
     return {
       verified: true,
-      identity: `sha256:${deployedHash}`,
+      identity: content.identity,
       pluginId
     };
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+export async function publishTrmnl(options) {
+  return operateTrmnl(options, false);
+}
+
+export async function inspectTrmnl(options) {
+  return operateTrmnl(options, true);
 }

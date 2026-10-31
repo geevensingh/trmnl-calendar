@@ -8,7 +8,7 @@ import {
   AzureBlobArtifacts
 } from "./azure-blob-ledger.mjs";
 import { artifactIdentity } from "./release-controller.mjs";
-import { publishTrmnl } from "./publish-trmnl.mjs";
+import { inspectTrmnl, publishTrmnl } from "./publish-trmnl.mjs";
 
 const execFileAsync = promisify(execFile);
 const maximumArtifactBytes = 100 * 1024 * 1024;
@@ -255,6 +255,14 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
   );
   const artifactStore = new AzureBlobArtifacts({ account, container: artifactContainer });
 
+  const prepareTrmnl = async (checkout, commit, signal) => {
+    const bundle = await createTrmnlArchive(join(checkout, "display", "src"),
+      join(checkout, "artifacts", `trmnl-${commit}.tar`), { signal });
+    const reference = `releases/${commit}/trmnl-${bundle.sha256}.tar`;
+    const upload = await artifactStore.put(reference, bundle.bytes, { signal });
+    return makeArtifact(commit, { trmnl: upload.reference }, { trmnl: upload.sha256 });
+  };
+
   return {
     async changedPaths(from, to, { signal } = {}) {
       const result = await run("git", [
@@ -301,15 +309,46 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
           metadata.azure_manifest = manifest;
         }
         if (targets.includes("trmnl")) {
-          const bundle = await createTrmnlArchive(join(checkout, "display", "src"),
-            join(checkout, "artifacts", `trmnl-${commit}.tar`), { signal });
-          const reference = `releases/${commit}/trmnl-${bundle.sha256}.tar`;
-          const upload = await artifactStore.put(reference, bundle.bytes, { signal });
-          references.trmnl = upload.reference;
-          digests.trmnl = upload.sha256;
+          const artifact = await prepareTrmnl(checkout, commit, signal);
+          references.trmnl = artifact.references.trmnl;
+          digests.trmnl = artifact.digests.trmnl;
         }
         return makeArtifact(commit, references, digests, metadata);
       }, signal);
+    },
+
+    async prepareTrmnlActivationRepair(originalArtifact, correctedCommit, { signal } = {}) {
+      const contract = await run("git", [
+        "-C", repository, "diff", "--name-only", originalArtifact.commit, correctedCommit,
+        "--", "docs/agenda-contract.md", "scripts/agenda-contract.mjs"
+      ], { signal, code: "release_git_diff_failed" });
+      if (contract.stdout.trim()) reject("trmnl_repair_contract_changed");
+      const stored = await artifactStore.get(originalArtifact.references.trmnl, { signal });
+      if (stored.sha256 !== originalArtifact.digests.trmnl) reject("recovery_artifact_unavailable");
+      const directory = await mkdtemp(join(tmpdir(), "calendar-trmnl-repair-"));
+      try {
+        const archive = join(directory, "original.tar");
+        const source = join(directory, "original");
+        await writeFile(archive, stored.bytes, { flag: "wx", mode: 0o600 });
+        await unpackTrmnlArchive(archive, source, { signal });
+        const original = (await readFile(join(source, "settings.yml"), "utf8")).replaceAll("\r\n", "\n");
+        return await withCommitCheckout(repository, correctedCommit, async checkout => {
+          const corrected = (await readFile(join(checkout, "display", "src", "settings.yml"), "utf8"))
+            .replaceAll("\r\n", "\n");
+          const descriptions = text => [...text.matchAll(/^description: ([^\n]+)$/gm)];
+          const before = descriptions(original);
+          const after = descriptions(corrected);
+          if (before.length !== 1 || after.length !== 1 || !after[0][1].trim() ||
+            after[0][1].length >= before[0][1].length ||
+            original.replace(before[0][0], "description:") !==
+              corrected.replace(after[0][0], "description:")) {
+            reject("trmnl_repair_description_only_required");
+          }
+          return prepareTrmnl(checkout, correctedCommit, signal);
+        }, signal);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
     },
 
     async verifyArtifact(artifact, commit, { signal } = {}) {
@@ -398,6 +437,15 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
       }, signal);
     },
 
+    async inspectTrmnl(commit, { signal } = {}) {
+      return withCommitCheckout(repository, commit, checkout => inspectTrmnl({
+        sourceDirectory: join(checkout, "display", "src"),
+        pluginId: process.env.TRMNL_PLUGIN_ID,
+        apiKey: process.env.TRMNL_API_KEY,
+        signal
+      }), signal);
+    },
+
     async publishAndVerifyTrmnl(commit, artifact, { signal } = {}) {
       return withDeploymentRecord("trmnl", commit, async () => {
         const stored = await artifactStore.get(artifact.references.trmnl, { signal });
@@ -411,7 +459,7 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
           const result = await publishTrmnl({
             sourceDirectory: source,
             pluginId: process.env.TRMNL_PLUGIN_ID,
-            preservationVerifiedPluginId: process.env.TRMNL_PRESERVATION_VERIFIED_PLUGIN_ID,
+            backupRecoveryAcceptedPluginId: process.env.TRMNL_BACKUP_RECOVERY_ACCEPTED_PLUGIN_ID,
             apiKey: process.env.TRMNL_API_KEY,
             signal
           });

@@ -308,7 +308,7 @@ test("release Git fixtures preserve standard and linked owners under inherited s
       ], { cwd: root, env: { ...cleanEnvironment(), ...injection }, encoding: "utf8", timeout: 30_000 });
       await fixture.unchanged("release Git fixtures");
       assert.equal(result.status, 0, result.stdout + result.stderr);
-      assert.match(result.stdout, /\bpass 5\b/, "All five release history/runner fixture tests must execute.");
+      assert.match(result.stdout, /\bpass 6\b/, "All six release history/runner fixture tests must execute.");
     });
   }
 });

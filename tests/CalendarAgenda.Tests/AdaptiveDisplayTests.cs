@@ -24,6 +24,66 @@ public sealed class AdaptiveDisplayTests
     public static IEnumerable<object[]> ScenarioCases => AgendaScenarios.Ids.Select(id => new object[] { id });
     public static IEnumerable<object[]> CoverageViews(string family) => DisplayCoverage.FamilyCases(family);
 
+    [Theory]
+    [MemberData(nameof(Views))]
+    public async Task Ordinary_title_lowercase_s_keeps_readable_native_raster_ink(NativeView view)
+    {
+        var data = Agenda(primaryRows: 2, secondaryRows: 0);
+        data["primary"]!["occurrences"]![0]!["title"] = "Finalize the Offers";
+        data["primary"]!["occurrences"]![1]!["title"] = "Doors";
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync();
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        await DisplayTests.Show(page, data, view.Placement, view.Device);
+        await NativeBounds(page, view);
+        var titles = page.Locator(".agenda-primary tbody tr:visible td .title");
+        await Assertions.Expect(titles).ToHaveCountAsync(2);
+        async Task<JsonElement> Glyphs() => await titles.EvaluateAllAsync<JsonElement>("""
+            titles => titles.map(title => {
+              const text = title.firstChild;
+              const range = document.createRange();
+              const index = text.textContent.lastIndexOf("s");
+              range.setStart(text, index);
+              range.setEnd(text, index + 1);
+              const box = range.getBoundingClientRect();
+              return { text: title.textContent, x: box.x, y: box.y, width: box.width, height: box.height };
+            })
+            """);
+        Directory.CreateDirectory(Path.Combine(DisplayTests.Root, "artifacts"));
+        var image = Path.Combine(DisplayTests.Root, "artifacts", $"title-strokes-{view.Device}-{view.Placement}.png");
+        var referenceImage = Path.Combine(DisplayTests.Root, "artifacts", $"title-strokes-{view.Device}-{view.Placement}-reference.png");
+        var regions = await Glyphs();
+        await page.ScreenshotAsync(new() { Path = image });
+        using var actual = JsonDocument.Parse(DisplayTests.RunRuby(
+            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image, regions }));
+        var weight = view.Device == "og" ? 700 : 600;
+        await page.AddStyleTagAsync(new()
+        {
+            Content = $".agenda td .title {{ --title-font-weight: {weight} !important; font-weight: {weight} !important; font-variation-settings: 'wght' {weight} !important; }}"
+        });
+        await page.EvaluateAsync("() => document.fonts.ready");
+        Assert.All(await titles.EvaluateAllAsync<string[]>(
+            "titles => titles.map(title => getComputedStyle(title).fontWeight)"),
+            actualWeight => Assert.Equal(weight.ToString(), actualWeight));
+        regions = await Glyphs();
+        await page.ScreenshotAsync(new() { Path = referenceImage });
+        using var reference = JsonDocument.Parse(DisplayTests.RunRuby(
+            Path.Combine(DisplayTests.Root, "tests", "display-ink.rb"), new { image = referenceImage, regions }));
+        for (var index = 0; index < regions.GetArrayLength(); index++)
+        {
+            var ink = actual.RootElement[index].GetProperty("dark_pixels").GetInt32();
+            var referenceInk = reference.RootElement[index].GetProperty("dark_pixels").GetInt32();
+            Assert.True(referenceInk >= 20, "The stronger native reference must paint a readable lowercase s.");
+            Assert.True(ink >= referenceInk * 0.9,
+                $"{view.Device}/{view.Placement}: lowercase s in {regions[index].GetProperty("text")} " +
+                $"has {ink} dark pixels; require at least 90% of the stronger native reference ({referenceInk}).");
+        }
+    }
+
     [Fact]
     public async Task Empty_primary_dense_secondary_uses_reclaimed_space_without_changing_event_geometry()
     {
@@ -226,6 +286,11 @@ public sealed class AdaptiveDisplayTests
         var emphasized = page.Locator(".agenda-secondary tbody tr.agenda-emphasized:visible");
         await Assertions.Expect(emphasized).ToHaveCountAsync(1);
         await Assertions.Expect(emphasized.GetByText("UPCOMING", new() { Exact = true })).ToBeVisibleAsync();
+        var title = emphasized.Locator("td .title");
+        Assert.Equal("700", await title.EvaluateAsync<string>("element => getComputedStyle(element).fontWeight"));
+        if (view.Device == "v2")
+            Assert.Equal("\"wght\" 700", await title.EvaluateAsync<string>(
+                "element => getComputedStyle(element).fontVariationSettings"));
         await DayCount(page, "primary", 32);
         await DayCount(page, "secondary", 1);
         await NativeBounds(page, view);

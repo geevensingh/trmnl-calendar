@@ -8,7 +8,10 @@ namespace CalendarAgenda.Tests;
 internal static class ValidationTiming
 {
     private static readonly object Gate = new();
-    private static readonly string? DirectoryPath = Environment.GetEnvironmentVariable("TRMNL_TIMING_DIRECTORY");
+    private static readonly string? DirectoryPath =
+        Environment.GetEnvironmentVariable("TRMNL_TIMING_DIRECTORY") is { Length: > 0 } directory ? directory : null;
+    private static readonly HashSet<DisplayCoverage.Case> CompletedCoverage = [];
+    private static readonly JsonSerializerOptions CoverageJson = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
 
     static ValidationTiming()
     {
@@ -23,8 +26,23 @@ internal static class ValidationTiming
                     var view = (AdaptiveDisplayTests.NativeView)row[0];
                     return $"{view.Device}/{view.Placement}";
                 }).ToArray(),
-                playwright = typeof(Playwright).Assembly.GetName().Version?.ToString()
-            }));
+                playwright = typeof(Playwright).Assembly.GetName().Version?.ToString(),
+                coverage = DisplayCoverage.Inventory
+            }, CoverageJson));
+    }
+
+    internal static void CompleteCoverage(DisplayCoverage.Case identity)
+    {
+        if (!DisplayCoverage.IsExpected(identity))
+            throw new InvalidOperationException($"Unexpected display coverage completion: {identity}");
+        if (DirectoryPath is null) return;
+        lock (Gate)
+        {
+            if (!CompletedCoverage.Add(identity))
+                throw new InvalidOperationException($"Duplicate display coverage completion: {identity}");
+            var path = Path.Combine(DirectoryPath, $"coverage-{Environment.ProcessId}.jsonl");
+            File.AppendAllText(path, JsonSerializer.Serialize(identity, CoverageJson) + "\n");
+        }
     }
 
     internal static async Task<IPlaywright> CreatePlaywright([CallerMemberName] string scenario = "")

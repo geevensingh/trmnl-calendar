@@ -19,6 +19,11 @@ async function checkout(t) {
   for (const name of ["delivery", "validation"]) {
     await cp(join(root, "tests", name), join(directory, "tests", name), { recursive: true });
   }
+  await writeFile(join(directory, "tests", "display-coverage.json"), JSON.stringify({
+    version: 1, id: "og-first-v1", scenarios: ["reference"], secondary_scenarios: ["reference"],
+    adaptive_families: { All_views: "all" }, title_variants: ["short/timed"],
+    secondary_title_variants: ["short/timed"]
+  }));
   for (const project of [["src", "CalendarAgenda"], ["tests", "CalendarAgenda.Tests"]]) {
     await mkdir(join(directory, ...project, "obj"), { recursive: true });
     await writeFile(join(directory, ...project, "obj", "project.assets.json"), "{}");
@@ -46,6 +51,7 @@ exit 0
   const run = (scope = "Fast", environment = {}) => {
     const result = spawnSync("pwsh", [
     "-NoProfile", "-NonInteractive", "-Command", `
+      $ErrorActionPreference = 'Stop'
       function global:Get-Command {
         [CmdletBinding()]
         param([Parameter(Position = 0)][string]$Name)
@@ -57,7 +63,7 @@ exit 0
       }
       function global:dotnet {
         @{ tool = 'dotnet'; arguments = @($args); certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE;
-           ruby = $env:TRMNL_RUBY; bundlePath = $env:BUNDLE_PATH } | ConvertTo-Json -Compress |
+           ruby = $env:TRMNL_RUBY; bundlePath = $env:BUNDLE_PATH; coverage = $env:TRMNL_DISPLAY_COVERAGE } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
         if ($env:VALIDATION_FAIL -eq 'dotnet:throw') { throw 'Synthetic unusable SDK executable' }
         if ($env:VALIDATION_CANCEL_TOOL -eq "dotnet:$($args[0])") {
@@ -121,9 +127,47 @@ exit 0
             ) | ForEach-Object { $_ | ConvertTo-Json -Compress } |
               Add-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'phases-fixture.jsonl')
           }
-          @{ scenarios = @('reference'); views = @('og/full', 'og/half_horizontal', 'og/half_vertical',
-              'v2/full', 'v2/half_horizontal', 'v2/half_vertical') } | ConvertTo-Json |
+          $views = @('og/full', 'og/half_horizontal', 'og/half_vertical',
+            'v2/full', 'v2/half_horizontal', 'v2/half_vertical')
+          $identities = @(
+            foreach ($view in $views) {
+              [ordered]@{ policy = "og-first-v1/$env:TRMNL_DISPLAY_COVERAGE"
+                method = 'CalendarAgenda.Tests.AdaptiveDisplayTests.Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views'
+                scenario = 'reference'; view = $view; variant = 'default' }
+              [ordered]@{ policy = "og-first-v1/$env:TRMNL_DISPLAY_COVERAGE"
+                method = 'CalendarAgenda.Tests.AdaptiveDisplayTests.All_views'
+                scenario = $null; view = $view; variant = 'default' }
+            }
+          )
+          $coverage = [ordered]@{
+            profile = $env:TRMNL_DISPLAY_COVERAGE; policy_id = 'og-first-v1'
+            policy_sha256 = (Get-FileHash -LiteralPath 'tests\\display-coverage.json' -Algorithm SHA256).Hash.ToLowerInvariant()
+            expected = $identities; omitted = @()
+          }
+          [ordered]@{ scenarios = @('reference'); views = $views; coverage = $coverage } | ConvertTo-Json -Depth 10 |
               Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'inventory-fixture.json')
+          if (!$env:VALIDATION_MISSING_COVERAGE) {
+            $completed = @($identities | ForEach-Object { [pscustomobject]$_ })
+            switch ($env:VALIDATION_COVERAGE_FAULT) {
+              'missing-pair' { $completed = @($completed | Select-Object -Skip 1) }
+              'duplicate' { $completed += $completed[0] }
+              'unexpected' { $completed[0].scenario = 'not-selected' }
+              'wrong-profile' { $completed[0].policy = 'og-first-v1/unknown' }
+              'wrong-variant' { $completed[0].variant = 'not-selected' }
+              'skipped' { $completed[0] | Add-Member result 'skipped' }
+              'failed' { $completed[0] | Add-Member result 'failed' }
+              'policy-changed' { Add-Content -LiteralPath 'tests\\display-coverage.json' -Value ' ' }
+              'forged-manifest' {
+                $completed = @($completed | Select-Object -Skip 1)
+                $coverage.expected = $completed
+                [ordered]@{ scenarios = @('reference'); views = $views; coverage = $coverage } |
+                  ConvertTo-Json -Depth 10 |
+                  Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'inventory-fixture.json')
+              }
+            }
+            $completed | ForEach-Object { $_ | ConvertTo-Json -Compress } |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'coverage-fixture.jsonl')
+          }
         }
         $global:LASTEXITCODE = if ($env:VALIDATION_FAIL -eq "dotnet:$($args[0])") { 23 } else { 0 }
       }
@@ -180,12 +224,14 @@ exit 0
         $snapshot = @{}
         Get-ChildItem Env: | Where-Object {
           $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE',
-            'TRMNL_TIMING_DIRECTORY', 'AZURE_BICEP_CHECK_VERSION')
+            'TRMNL_TIMING_DIRECTORY', 'AZURE_BICEP_CHECK_VERSION', 'TRMNL_DISPLAY_COVERAGE')
         } | ForEach-Object { $snapshot[$_.Name] = $_.Value }
         return $snapshot
       }
       $before = Get-CallerEnvironment
-      & $env:VALIDATION_SCRIPT -Scope $env:VALIDATION_SCOPE
+      $selection = @{}
+      if ($env:VALIDATION_DISPLAY_PROFILE) { $selection.DisplayCoverage = $env:VALIDATION_DISPLAY_PROFILE }
+      & $env:VALIDATION_SCRIPT -Scope $env:VALIDATION_SCOPE @selection
       $code = $LASTEXITCODE
       $after = Get-CallerEnvironment
       @{ before = $before; after = $after } | ConvertTo-Json -Depth 5 |
@@ -361,11 +407,59 @@ test("Full reports per-test/class work and excludes nested Node costs from top-l
   ]);
   assert.match(report.evidence.inventory_sha256, /^[a-f0-9]{64}$/);
   assert.equal(report.evidence.component_contract_sha256, report.component_contract_sha256);
+  assert.equal(report.evidence.phases.display_coverage.length, 12);
+  assert.deepEqual(report.evidence.phases.display_coverage.map(item => JSON.stringify(item)).sort(),
+    report.evidence.phases.inventory.coverage.expected.map(item => JSON.stringify(item)).sort());
   assert.ok(report.components.every(component => component.outcome === "success"));
   const calls = await fixture.calls();
   assert.ok(calls.findIndex(call => call.tool === "node" && call.arguments[0] === "--test")
     < calls.findIndex(call => call.tool === "dotnet" && call.arguments[0] === "test"));
   assert.ok(report.duration_ms >= Math.max(...report.stages.map(stage => stage.duration_ms)));
+});
+
+test("Full explicitly selects OG-first or exhaustive coverage and restores the inherited diagnostic profile", async t => {
+  const fixture = await checkout(t);
+  const inventories = [];
+  for (const profile of ["", "OgFirst", "Exhaustive"]) {
+    const result = fixture.run("Full", {
+      VALIDATION_DISPLAY_PROFILE: profile, TRMNL_DISPLAY_COVERAGE: "Exhaustive"
+    });
+
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Full validation PASSED/, result.stderr);
+    const report = await fixture.report();
+    inventories.push(report.evidence.inventory_sha256);
+    assert.equal(report.display_coverage.profile, profile || "OgFirst");
+    assert.equal((await fixture.calls()).filter(call => call.tool === "dotnet" && call.arguments[0] === "test")
+      .at(-1).coverage, profile || "OgFirst");
+    const environment = await fixture.environment();
+    assert.deepEqual(environment.after, environment.before);
+  }
+  assert.equal(inventories[0], inventories[1], "The explicit and default OG-first inventories must agree");
+  assert.notEqual(inventories[1], inventories[2], "The inventory digest must bind the chosen coverage profile");
+});
+
+test("Full cannot certify successful tests whose selected assertion completions are missing", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", { VALIDATION_MISSING_COVERAGE: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal((await fixture.report()).outcome, "failed");
+});
+
+test("Full rejects missing duplicate unexpected skipped failed or forged selected coverage", async t => {
+  const fixture = await checkout(t);
+  for (const fault of [
+    "missing-pair", "duplicate", "unexpected", "wrong-profile", "wrong-variant",
+    "skipped", "failed", "policy-changed", "forged-manifest"
+  ]) {
+    await t.test(fault, async () => {
+      const result = fixture.run("Full", { VALIDATION_COVERAGE_FAULT: fault });
+      assert.equal(result.status, 1, `${fault}: ${result.stdout}${result.stderr}`);
+      const report = await fixture.report();
+      assert.equal(report.outcome, "failed");
+      assert.ok(report.unavailable.includes("complete rendering phase results"));
+    });
+  }
 });
 
 test("cancelled Node evidence and unfinished rendering phases cannot certify complete Full", async t => {
@@ -505,7 +599,7 @@ test("full validation propagates test failures and blocks .NET execution after a
       assert.match(result.stdout, /\.NET tests \(production rendering\)\s+BLOCKED/);
       assert.match(result.stdout, /Node delivery and guardrail tests\s+BLOCKED/);
       const report = await fixture.report();
-      assert.deepEqual(report.components.find(component => component.id === "node").blocked_by, ["build"]);
+      assert.deepEqual(report.components.find(component => component.id === "node").blocked_by, ["build", "browser"]);
     }
     if (failure === "dotnet:test")
       assert.match(result.stdout, /Node delivery and guardrail tests\s+PASSED/);
@@ -552,9 +646,13 @@ test("Full diagnoses missing or unusable pinned Chromium before running producti
     assert.match(result.stdout, /Chromium.*FAILED/s);
     assert.match(result.stdout, /Chromium.*setup-display/s);
     assert.match(result.stdout, /\.NET tests \(production rendering\)\s+BLOCKED/);
+    const report = await fixture.report();
+    assert.equal(report.components.find(component => component.id === "node").outcome, "blocked");
+    assert.deepEqual(report.components.find(component => component.id === "node").blocked_by, ["browser"]);
   }
   const calls = await fixture.calls();
   assert.ok(!calls.some(call => call.tool === "dotnet" && call.arguments[0] === "test"));
+  assert.ok(!calls.some(call => call.tool === "node" && call.arguments[0] === "--test"));
   assert.ok(!calls.some(call => call.arguments.includes("install") || call.arguments.includes("restore")));
 });
 

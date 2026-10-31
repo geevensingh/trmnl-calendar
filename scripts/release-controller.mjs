@@ -16,7 +16,8 @@ function changedTargets(path) {
     normalized === "scripts/agenda-workbench.mjs" ||
     normalized === "scripts/setup-display.ps1" ||
     normalized === "scripts/display-toolchain.ps1" ||
-    normalized === "display/render.rb"
+    normalized === "display/render.rb" ||
+    normalized === "display/timing.rb"
   ) return targetSets.none;
   if (
     normalized === "docs/agenda-contract.md" ||

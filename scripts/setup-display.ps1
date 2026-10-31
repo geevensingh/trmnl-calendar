@@ -136,6 +136,10 @@ finally {
     try {
         if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     }
+    catch {
+        $setupPassed = $false
+        throw
+    }
     finally {
         Restore-DisplayEnvironment $savedEnvironment
         Set-Location -LiteralPath $location.Path

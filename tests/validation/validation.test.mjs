@@ -175,7 +175,9 @@ exit 0
         @{ tool = 'node'; arguments = @($args); bicepCheck = $env:AZURE_BICEP_CHECK_VERSION;
            certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
-        if ($args[0] -eq '--version') { 'v24.0.0' }
+        if ($args[0] -eq '--version') {
+          if ($env:VALIDATION_NODE_VERSION) { $env:VALIDATION_NODE_VERSION } else { 'v24.0.0' }
+        }
         if ($args[0] -eq '--test' -and !$env:VALIDATION_MISSING_EVIDENCE) {
           @(
             @{kind='test';name='matrix';type='test';nesting=0;duration_ms=100;result='passed'}
@@ -273,6 +275,24 @@ test("fast validation reports success, checks formatting without edits, and comp
   for (const name of ["app.mjs", "preview.mjs", "layout-checks.mjs"])
     assert.ok(calls.some(call => call.tool === "node" && call.arguments[0] === "--check"
       && call.arguments[1].endsWith(name)), `Missing browser syntax check: ${name}`);
+});
+
+test("validation rejects Node releases without test summary events before dependent checks", async t => {
+  for (const version of ["v22.0.0", "v22.1.0", "v21.7.3", "invalid"]) {
+    const fixture = await checkout(t);
+    const result = fixture.run("Full", { VALIDATION_NODE_VERSION: version });
+    assert.equal(result.status, 1, version + result.stdout + result.stderr);
+    assert.match(result.stdout, /Install Node\.js 22\.2\.0 or newer/);
+    assert.ok(!(await fixture.calls()).some(call =>
+      ["format", "build", "test", "--check", "--test"].includes(call.arguments[0])));
+    assert.equal((await fixture.report()).components[0].outcome, "failure");
+  }
+  for (const version of ["v22.2.0", "v22.23.4", "v23.0.0", "v24.0.0"]) {
+    const fixture = await checkout(t);
+    const result = fixture.run("Full", { VALIDATION_NODE_VERSION: version });
+    assert.equal(result.status, 0, version + result.stdout + result.stderr);
+    assert.equal((await fixture.report()).provenance.tools.node, version);
+  }
 });
 
 test("Fast emits bounded provenance and stage timings without claiming Full evidence", async t => {

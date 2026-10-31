@@ -121,11 +121,12 @@ try {
         if ($script:validationReport.content.error) { throw 'Evaluated input fingerprint is unavailable; validation cannot bind this execution.' }
         Assert-DisplaySdk
         if (!(Get-Command node -ErrorAction SilentlyContinue)) {
-            throw 'Install Node.js 22 or newer and add node to PATH. No npm install is needed.'
+            throw 'Install Node.js 22.2.0 or newer and add node to PATH. No npm install is needed.'
         }
         $nodeVersion = & node --version
-        if ($LASTEXITCODE -ne 0 -or "$nodeVersion" -notmatch '^v(\d+)\.' -or [int]$Matches[1] -lt 22) {
-            throw 'Install Node.js 22 or newer. No npm install is needed.'
+        if ($LASTEXITCODE -ne 0 -or "$nodeVersion" -notmatch '^v\d+\.\d+\.\d+$' -or
+            [version]("$nodeVersion" -replace '^v', '') -lt [version]'22.2.0') {
+            throw 'Install Node.js 22.2.0 or newer. No npm install is needed.'
         }
         $script:validationReport.provenance.tools.node = "$nodeVersion"
         $script:validationReport.provenance.tools.dotnet = $script:DisplaySdkVersion

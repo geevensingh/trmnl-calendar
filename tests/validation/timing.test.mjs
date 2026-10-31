@@ -40,7 +40,7 @@ test("the public Node reporter retains nested fixture costs without inventing el
   assert.ok(!result.stdout.includes("elapsed_total"));
 });
 
-test("the public workbench reports Ruby spawn errors and deadline termination as failures, not supersession", async t => {
+async function workbenchFixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "agenda workbench timing "));
   t.after(() => rm(directory, { recursive: true, force: true }));
   for (const name of ["scripts", "display"])
@@ -71,8 +71,12 @@ test("the public workbench reports Ruby spawn errors and deadline termination as
     import { promisify } from "node:util";
     import { EventEmitter } from "node:events";
     import { PassThrough } from "node:stream";
+    import { mkdirSync, openSync, closeSync, ftruncateSync, rmSync } from "node:fs";
+    import { join } from "node:path";
     const execute = promisify(tools.execFile);
     const spawn = tools.spawn;
+    let timingFailed = false;
+    process.on("message", message => { if (message === "shutdown") process.emit("SIGTERM"); });
     tools.execFile = Object.assign(() => {}, {
       [promisify.custom]: (command, ...args) => command === "synthetic-ruby"
         ? Promise.resolve({ stdout: "4.0.0", stderr: "" }) : execute(command, ...args)
@@ -84,7 +88,23 @@ test("the public workbench reports Ruby spawn errors and deadline termination as
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
       child.kill = () => { queueMicrotask(() => child.emit("close", 1)); return true; };
-      if (!process.env.SYNTHETIC_RUBY_TIMEOUT) queueMicrotask(() => {
+      if (process.env.SYNTHETIC_TIMING_FAILURE) queueMicrotask(() => {
+        const journal = join(process.env.TRMNL_TIMING_DIRECTORY, "phases-node-" + process.pid + ".jsonl");
+        if (!timingFailed) {
+          timingFailed = true;
+          if (process.env.SYNTHETIC_TIMING_FAILURE === "unwritable") {
+            rmSync(journal, { force: true });
+            mkdirSync(journal);
+          } else {
+            const file = openSync(journal, "r+");
+            ftruncateSync(file, 20 * 1024 * 1024 + 1);
+            closeSync(file);
+          }
+        }
+        child.stdout.write("synthetic rendered HTML");
+        child.emit("close", 0);
+      });
+      else if (!process.env.SYNTHETIC_RUBY_TIMEOUT) queueMicrotask(() => {
         child.emit("error", Object.assign(new Error("synthetic missing executable"), { code: "ENOENT" }));
         child.emit("close", 1);
       });
@@ -92,6 +112,11 @@ test("the public workbench reports Ruby spawn errors and deadline termination as
     };
     syncBuiltinESMExports();
   `);
+  return { directory, environment, preload };
+}
+
+test("the public workbench reports Ruby spawn errors and deadline termination as failures, not supersession", async t => {
+  const { directory, environment, preload } = await workbenchFixture(t);
   for (const timeout of [false, true]) {
     const reports = join(directory, `reports-${timeout}`);
     await mkdir(reports);
@@ -103,6 +128,7 @@ test("the public workbench reports Ruby spawn errors and deadline termination as
         SYNTHETIC_RUBY_TIMEOUT: timeout ? "1" : "" },
       stdio: ["ignore", "pipe", "pipe"]
     });
+
     let diagnostics = "";
     child.stderr.on("data", chunk => { diagnostics += chunk; });
     try {
@@ -131,5 +157,50 @@ test("the public workbench reports Ruby spawn errors and deadline termination as
         await exited;
       }
     }
+  }
+});
+
+test("workbench timing end failures reject requests without crashing or bypassing child cleanup", async t => {
+  const { directory, environment, preload } = await workbenchFixture(t);
+  for (const failure of ["unwritable", "limit"]) {
+    const reports = join(directory, `reports-${failure}`);
+    await mkdir(reports);
+    const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href,
+      join(directory, "scripts", "agenda-workbench.mjs"), "--workspace", directory, "--port", "0"], {
+      cwd: directory,
+      env: { ...environment, TRMNL_RUBY: "synthetic-ruby", TRMNL_TIMING_DIRECTORY: reports,
+        SYNTHETIC_TIMING_FAILURE: failure },
+      stdio: ["ignore", "pipe", "pipe", "ipc"]
+    });
+    let diagnostics = "";
+    child.stderr.on("data", chunk => { diagnostics += chunk; });
+    const exited = once(child, "exit");
+    try {
+      const lines = createInterface({ input: child.stdout });
+      const signal = AbortSignal.timeout(15_000);
+      const line = await Promise.race([
+        once(lines, "line", { signal }).then(([value]) => value),
+        exited.then(() => { throw new Error(diagnostics); })
+      ]);
+      const { url } = JSON.parse(line);
+      const response = await fetch(new URL("/api/comparison?scenario=reference&target=og-full", url),
+        { signal: AbortSignal.timeout(10_000) }).catch(error => {
+        throw new Error(`Workbench request disconnected: ${diagnostics}`, { cause: error });
+      });
+      assert.equal(response.status, 500);
+      assert.match((await response.json()).error, /Could not record rendering timing/);
+      assert.equal(child.exitCode, null, diagnostics);
+      const journal = await readFile(join(reports, `phases-node-${child.pid}.jsonl`), "utf8")
+        .catch(error => { assert.equal(error.code, "EISDIR"); return ""; });
+      assert.ok(!journal.includes('"kind":"end"'), "Missing timing evidence must not be reported as complete.");
+    } finally {
+      if (child.exitCode === null && child.connected) {
+        child.send("shutdown");
+        child.disconnect();
+      }
+      await exited;
+    }
+    assert.deepEqual(await readdir(join(directory, "artifacts", "agenda-workbench")), [],
+      "Workbench shutdown must remove its owned render directories.");
   }
 });

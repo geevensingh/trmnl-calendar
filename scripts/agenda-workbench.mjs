@@ -305,14 +305,18 @@ async function main() {
         });
         child.on("error", () => { failure = new WorkbenchError("Could not start Ruby. Check TRMNL_RUBY and display setup.", 500); });
         child.on("close", code => {
-          recordRenderingTiming({
-            kind: "end", id: operationId, phase: "ruby.workbench_process",
-            duration_ms: performance.now() - started,
-            terminated: running.terminated || closing || generation !== revision,
-            result: closing || generation !== revision ? "cancelled" : code === 0 && !failure ? "passed" : "failed"
-          });
           clearTimeout(timer);
           children.delete(running);
+          try {
+            recordRenderingTiming({
+              kind: "end", id: operationId, phase: "ruby.workbench_process",
+              duration_ms: performance.now() - started,
+              terminated: running.terminated || closing || generation !== revision,
+              result: closing || generation !== revision ? "cancelled" : code === 0 && !failure ? "passed" : "failed"
+            });
+          } catch {
+            failure = new WorkbenchError("Could not record rendering timing. Check TRMNL_TIMING_DIRECTORY and restart the workbench.", 500);
+          }
           if (generation !== revision || closing) rejectRuby(superseded());
           else if (failure) rejectRuby(failure);
           else if (code !== 0) rejectRuby(new WorkbenchError(`Strict Liquid rendering failed: ${diagnostics.trim() || `Ruby exit ${code}`}`, 500));

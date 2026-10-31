@@ -290,6 +290,21 @@ test("public setup reports observed cache reuse, stage durations and failure wit
   }
 });
 
+test("public setup reports staging cleanup failures instead of successful preparation", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run({ DISPLAY_FAIL: "cleanup" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /Synthetic staging cleanup failure/);
+  assert.ok(!result.stdout.includes("Display setup PASSED"));
+  const reportPath = result.stdout.match(/Timing report: (.+)/)?.[1].trim();
+  assert.ok(reportPath, result.stdout + result.stderr);
+  const report = JSON.parse(await readFile(join(reportPath, "summary.json"), "utf8"));
+  assert.equal(report.outcome, "failed");
+  assert.equal(report.stages.at(-1).result, "failed");
+  const { before, after } = await fixture.environment();
+  assert.deepEqual(after, before);
+});
+
 test("display setup reports failed stages and stops before dependent commands", async t => {
   for (const [failure, message, completed] of [
     ["dotnet:--version", ".NET 10 SDK", 1],

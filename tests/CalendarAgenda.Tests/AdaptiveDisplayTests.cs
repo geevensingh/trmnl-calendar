@@ -22,6 +22,7 @@ public sealed class AdaptiveDisplayTests
     };
 
     public static IEnumerable<object[]> ScenarioCases => AgendaScenarios.Ids.Select(id => new object[] { id });
+    public static IEnumerable<object[]> CoverageViews(string family) => DisplayCoverage.FamilyCases(family);
 
     [Fact]
     public async Task Empty_primary_dense_secondary_uses_reclaimed_space_without_changing_event_geometry()
@@ -66,9 +67,10 @@ public sealed class AdaptiveDisplayTests
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
-    public async Task Empty_days_keep_date_and_message_on_one_line_without_a_zero_count(NativeView view)
+    [MemberData(nameof(CoverageViews), nameof(Empty_days_keep_date_and_message_on_one_line_without_a_zero_count))]
+    public async Task Empty_days_keep_date_and_message_on_one_line_without_a_zero_count(string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         using var playwright = await ValidationTiming.CreatePlaywright();
         await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
@@ -88,19 +90,20 @@ public sealed class AdaptiveDisplayTests
             Assert.DoesNotContain("0 event", await day.InnerTextAsync());
             Assert.DoesNotContain("eligible", await day.InnerTextAsync());
         }
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
     [MemberData(nameof(ScenarioCases))]
+    // Retain the canonical scenario method identity; the coverage policy selects its native views.
     public async Task Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views(
         string scenario)
     {
         using var playwright = await ValidationTiming.CreatePlaywright();
         await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { DeviceScaleFactor = 1 });
-        foreach (var values in Views.Cast<object[]>())
+        foreach (var view in DisplayCoverage.ScenarioViews(scenario))
         {
-            var view = Assert.IsType<NativeView>(values[0]);
             await page.SetViewportSizeAsync(view.PhysicalWidth, view.PhysicalHeight);
             var data = AgendaScenarios.Load(scenario);
             await DisplayTests.Show(page, data, view.Placement, view.Device);
@@ -132,6 +135,7 @@ public sealed class AdaptiveDisplayTests
                     """).AllAsync());
             Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
             Assert.Null(await page.EvaluateAsync<int?>("window.locationPwn"));
+            DisplayCoverage.CompleteScenario(scenario, view);
         }
     }
 
@@ -198,9 +202,10 @@ public sealed class AdaptiveDisplayTests
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
-    public async Task Emphasized_secondary_event_is_admitted_ahead_of_ordinary_primary_overflow(NativeView view)
+    [MemberData(nameof(CoverageViews), nameof(Emphasized_secondary_event_is_admitted_ahead_of_ordinary_primary_overflow))]
+    public async Task Emphasized_secondary_event_is_admitted_ahead_of_ordinary_primary_overflow(string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["schema_version"] = 2;
         var secondary = data["secondary"]!["occurrences"]!.AsArray()[0]!.DeepClone();
@@ -224,12 +229,14 @@ public sealed class AdaptiveDisplayTests
         await DayCount(page, "primary", 32);
         await DayCount(page, "secondary", 1);
         await NativeBounds(page, view);
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
-    public async Task Emphasized_overflow_is_admitted_in_chronological_order_before_ordinary_rows(NativeView view)
+    [MemberData(nameof(CoverageViews), nameof(Emphasized_overflow_is_admitted_in_chronological_order_before_ordinary_rows))]
+    public async Task Emphasized_overflow_is_admitted_in_chronological_order_before_ordinary_rows(string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 56, secondaryRows: 0);
         data["schema_version"] = 2;
         foreach (var occurrence in data["primary"]!["occurrences"]!.AsArray().Skip(32))
@@ -252,12 +259,14 @@ public sealed class AdaptiveDisplayTests
         Assert.Equal(Enumerable.Range(33, visibleCount).Select(index => $"primary-{index:D3}"), ids);
         await DayCount(page, "primary", 56);
         await NativeBounds(page, view);
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
-    public async Task Longer_working_day_labels_keep_partial_counts_inside_native_headers(NativeView view)
+    [MemberData(nameof(CoverageViews), nameof(Longer_working_day_labels_keep_partial_counts_inside_native_headers))]
+    public async Task Longer_working_day_labels_keep_partial_counts_inside_native_headers(string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["primary"]!["eligible_total"] = 47;
         data["generated_at"] = "2026-11-25T19:00:00Z";
@@ -293,12 +302,14 @@ public sealed class AdaptiveDisplayTests
         await DisplayTests.Show(page, data, view.Placement, view.Device);
         await VisibleInk(page, $"long-date-empty-{view.Device}-{view.Placement}", view,
             await page.Locator(".agenda-heading .title, .agenda-empty, [data-agenda-source]").AllAsync());
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
-    public async Task Counts_disclose_displayed_rows_and_complete_totals_even_without_occurrences(NativeView view)
+    [MemberData(nameof(CoverageViews), nameof(Counts_disclose_displayed_rows_and_complete_totals_even_without_occurrences))]
+    public async Task Counts_disclose_displayed_rows_and_complete_totals_even_without_occurrences(string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         using var playwright = await ValidationTiming.CreatePlaywright();
         await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
@@ -315,13 +326,15 @@ public sealed class AdaptiveDisplayTests
         Assert.Equal(0, await page.Locator(".agenda-overflow, .agenda-footer, .title_bar").CountAsync());
         await VisibleInk(page, $"zero-visible-{view.Device}-{view.Placement}", view,
             await page.Locator(".agenda-heading .title, .agenda-count, [data-agenda-source]").AllAsync());
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Essential_agenda_information_fits_each_native_physical_device_and_placement))]
     public async Task Essential_agenda_information_fits_each_native_physical_device_and_placement(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         using var playwright = await ValidationTiming.CreatePlaywright();
         await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
@@ -342,13 +355,15 @@ public sealed class AdaptiveDisplayTests
             "Monday, Oct 26", "0 of 3 events shown", "Oct 23, 2026, 11:00 AM PDT"
         })
             await VisibleInsideView(page.GetByText(text, new() { Exact = true }));
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Busy_primary_days_reserve_truthful_overflow_before_secondary_details))]
     public async Task Busy_primary_days_reserve_truthful_overflow_before_secondary_details(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["primary"]!["eligible_total"] = 47;
         data["secondary"]!["eligible_total"] = 19;
@@ -387,13 +402,15 @@ public sealed class AdaptiveDisplayTests
         Assert.Equal(5 + 2 * count, await required.CountAsync());
         await VisibleInk(page, $"busy-{(view.Device == "v2" ? "x" : view.Device)}-{view.Placement}",
             view, await required.AllAsync());
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Remaining_room_shows_secondary_details_and_their_truthful_overflow))]
     public async Task Remaining_room_shows_secondary_details_and_their_truthful_overflow(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 1, secondaryRows: 32);
         data["secondary"]!["eligible_total"] = 50;
         using var playwright = await ValidationTiming.CreatePlaywright();
@@ -418,13 +435,15 @@ public sealed class AdaptiveDisplayTests
             await VisibleInsideView(page.GetByText($"Secondary commitment {index + 1}", new() { Exact = true }));
         }
         await VisibleInsideView(page.Locator("[data-agenda-source]"));
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Optional_locations_use_only_space_left_after_essential_rows))]
     public async Task Optional_locations_use_only_space_left_after_essential_rows(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         foreach (var day in new[] { "primary", "secondary" })
             foreach (var occurrence in data[day]!["occurrences"]!.AsArray())
@@ -454,13 +473,15 @@ public sealed class AdaptiveDisplayTests
         await VisibleInsideView(page.Locator(".agenda-primary").GetByText("Studio A", new() { Exact = true }));
         await VisibleInsideView(page.GetByText("Primary commitment 1", new() { Exact = true }));
         await VisibleInsideView(page.Locator("[data-agenda-source]"));
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Dense_long_titles_use_one_title_line_and_keep_truthful_ordered_fitting))]
     public async Task Dense_long_titles_use_one_title_line_and_keep_truthful_ordered_fitting(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = DenseLongTitleAgenda();
         using var playwright = await ValidationTiming.CreatePlaywright();
         await using var browser = await ValidationTiming.Launch(playwright);
@@ -528,13 +549,15 @@ public sealed class AdaptiveDisplayTests
             """);
         Assert.Equal(5 + 2 * count, await required.CountAsync());
         await VisibleInk(page, $"title-density-{view.Device}-{view.Placement}", view, await required.AllAsync());
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Timed_and_all_day_titles_preserve_text_and_typography_with_visible_end_ellipsis))]
     public async Task Timed_and_all_day_titles_preserve_text_and_typography_with_visible_end_ellipsis(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         using var playwright = await ValidationTiming.CreatePlaywright();
         await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
@@ -551,6 +574,7 @@ public sealed class AdaptiveDisplayTests
         })
             foreach (var allDay in new[] { false, true })
             {
+                if (!DisplayCoverage.TitleVariant(view, $"{name}/{(allDay ? "all-day" : "timed")}")) continue;
                 var data = Agenda(primaryRows: 1, secondaryRows: 0);
                 var occurrence = data["primary"]!["occurrences"]![0]!.AsObject();
                 occurrence["title"] = text;
@@ -611,14 +635,16 @@ public sealed class AdaptiveDisplayTests
                 await TitleEndInk(page, title,
                     $"title-{view.Device}-{view.Placement}-{name}-{(allDay ? "all-day" : "timed")}",
                     view, overflowing: name != "short");
+                DisplayCoverage.Complete(view, $"{name}/{(allDay ? "all-day" : "timed")}");
             }
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Long_untrusted_calendar_strings_cannot_displace_essential_information_or_execute_markup))]
     public async Task Long_untrusted_calendar_strings_cannot_displace_essential_information_or_execute_markup(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["primary"]!["eligible_total"] = 47;
         foreach (var day in new[] { "primary", "secondary" })
@@ -663,13 +689,15 @@ public sealed class AdaptiveDisplayTests
         await VisibleInsideView(visibleLocation, textMayBeTruncated: true);
         Assert.Null(await page.EvaluateAsync<int?>("window.locationPwn"));
         Assert.Equal(0, await page.Locator(".agenda svg").CountAsync());
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(All_day_contract_entries_keep_their_label_and_weekend_Monday_priority))]
     public async Task All_day_contract_entries_keep_their_label_and_weekend_Monday_priority(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["generated_at"] = "2026-10-24T18:05:00Z";
         data["source_succeeded_at"] = "2026-10-24T18:00:00Z";
@@ -721,13 +749,15 @@ public sealed class AdaptiveDisplayTests
         Assert.Equal(0, await page.Locator(".agenda-secondary tbody tr:visible").CountAsync());
         Assert.DoesNotContain("tomorrow", await page.Locator("body").InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("12:00 AM", await rows.First.InnerTextAsync());
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Stale_contract_keeps_commitments_warning_and_original_source_success_visible))]
     public async Task Stale_contract_keeps_commitments_warning_and_original_source_success_visible(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = Agenda(primaryRows: 32, secondaryRows: 12);
         data["state"] = "stale";
         data["generated_at"] = "2026-10-23T18:45:00Z";
@@ -766,13 +796,15 @@ public sealed class AdaptiveDisplayTests
             .ToHaveAttributeAsync("datetime", "2026-10-23T18:00:00Z");
         Assert.DoesNotContain("11:45", await page.Locator("body").InnerTextAsync());
         Assert.DoesNotContain("Agenda unavailable", await page.Locator("body").InnerTextAsync());
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Configuration_source_compatibility_and_unknown_errors_are_readable_not_empty_agendas))]
     public async Task Configuration_source_compatibility_and_unknown_errors_are_readable_not_empty_agendas(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         using var playwright = await ValidationTiming.CreatePlaywright();
         await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
@@ -811,13 +843,15 @@ public sealed class AdaptiveDisplayTests
             Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
             Assert.Equal(0, await page.Locator(".agenda img").CountAsync());
         }
+        DisplayCoverage.Complete(view);
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Empty_primary_days_keep_selected_dates_instead_of_promoting_secondary_commitments))]
     public async Task Empty_primary_days_keep_selected_dates_instead_of_promoting_secondary_commitments(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         using var playwright = await ValidationTiming.CreatePlaywright();
         await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
@@ -849,6 +883,7 @@ public sealed class AdaptiveDisplayTests
             Assert.DoesNotContain("Stale agenda", text);
             Assert.DoesNotContain("tomorrow", text, StringComparison.OrdinalIgnoreCase);
         }
+        DisplayCoverage.Complete(view);
     }
 
     [Fact]
@@ -908,10 +943,11 @@ public sealed class AdaptiveDisplayTests
     }
 
     [Theory]
-    [MemberData(nameof(Views))]
+    [MemberData(nameof(CoverageViews), nameof(Native_capture_readiness_is_not_published_before_production_fitting_completes))]
     public async Task Native_capture_readiness_is_not_published_before_production_fitting_completes(
-        NativeView view)
+        string nativeView)
     {
+        var view = DisplayCoverage.View(nativeView);
         var data = DenseLongTitleAgenda();
         using var playwright = await ValidationTiming.CreatePlaywright();
         await using var browser = await ValidationTiming.Launch(playwright);
@@ -980,6 +1016,7 @@ public sealed class AdaptiveDisplayTests
             Assert.True(snapshot.GetProperty("timesInside").GetBoolean());
             Assert.True(snapshot.GetProperty("titlesCorrect").GetBoolean());
         }
+        DisplayCoverage.Complete(view);
     }
 
     private static JsonObject DenseLongTitleAgenda()

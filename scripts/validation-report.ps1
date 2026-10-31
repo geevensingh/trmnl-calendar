@@ -1,3 +1,103 @@
+function Get-DisplayCoverageInventory([string]$Root, [string]$Profile) {
+    if ($Profile -cnotin @('OgFirst', 'Exhaustive')) { throw 'Unknown display coverage profile.' }
+    $path = Join-Path $Root 'tests\display-coverage.json'
+    $policy = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if ($policy.version -ne 1 -or $policy.id -cne 'og-first-v1') { throw 'Invalid display coverage policy.' }
+    foreach ($name in @('scenarios', 'secondary_scenarios', 'title_variants', 'secondary_title_variants')) {
+        $values = @($policy.$name)
+        if (!$values.Count -or @($values | Where-Object { $_ -isnot [string] -or !$_ }).Count -or
+            @($values | Sort-Object -Unique -CaseSensitive).Count -ne $values.Count) {
+            throw 'Invalid or duplicate display coverage policy identities.'
+        }
+    }
+    if (@($policy.secondary_scenarios | Where-Object { $_ -cnotin $policy.scenarios }).Count -or
+        @($policy.secondary_title_variants | Where-Object { $_ -cnotin $policy.title_variants }).Count -or
+        !@($policy.adaptive_families.PSObject.Properties).Count) { throw 'Incomplete display coverage policy.' }
+    $expected = [Collections.Generic.List[object]]::new()
+    $omitted = [Collections.Generic.List[object]]::new()
+    $views = @('og/full', 'og/half_horizontal', 'og/half_vertical',
+        'v2/full', 'v2/half_horizontal', 'v2/half_vertical')
+    $scenarioMethod = 'Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views'
+    $titleMethod = 'Timed_and_all_day_titles_preserve_text_and_typography_with_visible_end_ellipsis'
+    foreach ($scenario in $policy.scenarios) {
+        foreach ($view in $views) {
+            $identity = [ordered]@{
+                policy = "$($policy.id)/$Profile"
+                method = "CalendarAgenda.Tests.AdaptiveDisplayTests.$scenarioMethod"
+                scenario = $scenario; view = $view; variant = 'default'
+            }
+            if ($Profile -ceq 'Exhaustive' -or $view -ceq 'og/full' -or $scenario -cin $policy.secondary_scenarios) {
+                $expected.Add($identity)
+            } else { $omitted.Add($identity) }
+        }
+    }
+    foreach ($family in $policy.adaptive_families.PSObject.Properties) {
+        if ($family.Value -cnotin @('all', 'og-full') -or !$family.Name) { throw 'Invalid display test family.' }
+        foreach ($view in $views) {
+            $included = $Profile -ceq 'Exhaustive' -or $family.Value -ceq 'all' -or $view -ceq 'og/full'
+            $variants = if ($family.Name -ceq $titleMethod) { @($policy.title_variants) } else { @('default') }
+            foreach ($variant in $variants) {
+                $identity = [ordered]@{
+                    policy = "$($policy.id)/$Profile"
+                    method = "CalendarAgenda.Tests.AdaptiveDisplayTests.$($family.Name)"
+                    scenario = $null; view = $view; variant = $variant
+                }
+                $titleIncluded = $family.Name -cne $titleMethod -or $Profile -ceq 'Exhaustive' -or
+                    $view -ceq 'og/full' -or $variant -cin $policy.secondary_title_variants
+                if ($included -and $titleIncluded) { $expected.Add($identity) } else { $omitted.Add($identity) }
+            }
+        }
+    }
+    return [ordered]@{
+        profile = $Profile; policy_id = $policy.id
+        policy_sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        expected = $expected.ToArray(); omitted = $omitted.ToArray()
+    }
+}
+
+function Get-DisplayCoverageKey($Identity) {
+    $names = @($Identity.PSObject.Properties.Name | Sort-Object)
+    if (@(Compare-Object @('method', 'policy', 'scenario', 'variant', 'view') $names -CaseSensitive).Count -or
+        $Identity.policy -isnot [string] -or $Identity.method -isnot [string] -or
+        $Identity.view -isnot [string] -or $Identity.variant -isnot [string] -or
+        ($null -ne $Identity.scenario -and $Identity.scenario -isnot [string])) {
+        throw 'Malformed display assertion completion.'
+    }
+    return @($Identity.policy, $Identity.method, $Identity.scenario, $Identity.view, $Identity.variant) |
+        ConvertTo-Json -Compress
+}
+
+function Assert-DisplayCoverageEvidence($Inventory) {
+    $coverage = $Inventory.coverage
+    $plan = $script:coveragePlan
+    if ($coverage.profile -cne $plan.profile -or $coverage.policy_id -cne $plan.policy_id -or
+        $coverage.policy_sha256 -cne $plan.policy_sha256) { throw 'Display coverage provenance mismatch.' }
+    $livePolicy = Join-Path $script:validationRoot 'tests\display-coverage.json'
+    if ((Get-FileHash -LiteralPath $livePolicy -Algorithm SHA256).Hash.ToLowerInvariant() -cne $plan.policy_sha256) {
+        throw 'Display coverage policy changed during validation.'
+    }
+    foreach ($name in @('expected', 'omitted')) {
+        $expected = @($plan[$name] | ForEach-Object { Get-DisplayCoverageKey ([pscustomobject]$_) })
+        $actual = @($coverage.$name | ForEach-Object { Get-DisplayCoverageKey $_ })
+        if ($actual.Count -ne $expected.Count -or
+            @($actual | Sort-Object -Unique -CaseSensitive).Count -ne $actual.Count -or
+            ($expected.Count -and @(Compare-Object $expected $actual -CaseSensitive).Count)) {
+            throw 'Display selected/omitted inventory mismatch.'
+        }
+    }
+    $files = @(Get-ChildItem -LiteralPath $script:validationDirectory -Filter 'coverage-*.jsonl' -File)
+    if ($files.Count -ne 1 -or $files[0].Length -gt 1MB) { throw 'Missing or oversized display assertion completions.' }
+    $completed = @(Get-Content -LiteralPath $files[0].FullName | ForEach-Object { $_ | ConvertFrom-Json })
+    $actual = @($completed | ForEach-Object { Get-DisplayCoverageKey $_ })
+    $expected = @($plan.expected | ForEach-Object { Get-DisplayCoverageKey ([pscustomobject]$_) })
+    if ($actual.Count -ne $expected.Count -or
+        @($actual | Sort-Object -Unique -CaseSensitive).Count -ne $actual.Count -or
+        @(Compare-Object $expected $actual -CaseSensitive).Count) {
+        throw 'Incomplete, duplicate or unexpected display assertion completions.'
+    }
+    return $completed | Sort-Object policy, method, scenario, view, variant -CaseSensitive
+}
+
 function Save-ValidationReport {
     $script:validationReport.duration_ms = [Math]::Round($script:validationClock.Elapsed.TotalMilliseconds, 3)
     $script:validationReport.stage_wall_ms = ($script:validationReport.stages |
@@ -384,6 +484,7 @@ function Read-ValidationEvidence([switch]$NodeOnly) {
                 throw 'Missing executed synthetic scenario.'
             }
         }
+        $evidence.phases.display_coverage = @(Assert-DisplayCoverageEvidence $inventory)
         $evidence.phases.inventory = $inventory
     }
     catch {
@@ -395,11 +496,13 @@ function Read-ValidationEvidence([switch]$NodeOnly) {
     }
     if ($reportedFailures) { $evidence.status = 'failed' }
     elseif ($missing.Count -eq 0 -and !$NodeOnly) { $evidence.status = 'complete' }
-    if (!$NodeOnly -and $evidence.dotnet -and $evidence.node -and $evidence.phases) {
+    if (!$NodeOnly -and $evidence.dotnet -and $evidence.node -and $evidence.phases -and
+        $evidence.phases.Contains('inventory') -and $evidence.phases.Contains('display_coverage')) {
         $evidence.inventory_sha256 = Get-ValidationDigest ([ordered]@{
             dotnet = @($evidence.dotnet.tests | Select-Object test_id, name, method | Sort-Object test_id, name, method)
             node = @($evidence.node.tests | Select-Object file, nesting, name, type | Sort-Object file, nesting, name, type)
             rendering = $evidence.phases.inventory
+            display_coverage = $evidence.phases.display_coverage
         })
         $evidence.content_sha256 = if ($script:validationReport.content.started) {
             $script:validationReport.content.started.sha256

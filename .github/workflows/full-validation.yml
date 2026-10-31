@@ -169,7 +169,8 @@ jobs:
         env:
           TRMNL_GEMS_CACHE_STATE: ${{ steps.cache_evidence.outputs.gems_state }}
           TRMNL_FRAMEWORK_CACHE_STATE: ${{ steps.cache_evidence.outputs.framework_state }}
-        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full
+          DISPLAY_COVERAGE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && 'Exhaustive' || 'OgFirst' }}
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full -DisplayCoverage "$env:DISPLAY_COVERAGE_PROFILE"
 
       - name: Retain compact timing and test results
         if: always()

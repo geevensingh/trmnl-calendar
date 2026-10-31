@@ -1,6 +1,9 @@
 #Requires -Version 7.0
 [CmdletBinding()]
-param([ValidateSet('Fast', 'Full')][string]$Scope = 'Fast')
+param(
+    [ValidateSet('Fast', 'Full')][string]$Scope = 'Fast',
+    [ValidateSet('OgFirst', 'Exhaustive', IgnoreCase = $false)][string]$DisplayCoverage = 'OgFirst'
+)
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -10,6 +13,7 @@ $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'validation-report.ps1')
 $savedEnvironment = Save-DisplayEnvironment
 $savedTimingDirectory = $env:TRMNL_TIMING_DIRECTORY
+$savedCoverageProfile = $env:TRMNL_DISPLAY_COVERAGE
 $location = Get-Location
 $project = Join-Path $root 'tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj'
 $results = [Collections.Generic.List[object]]::new()
@@ -20,7 +24,7 @@ $components = @(
     @{ id = 'syntax'; name = 'PowerShell and Node syntax'; requires = @('prerequisites') }
     if ($Scope -eq 'Full') {
         @{ id = 'browser'; name = 'Pinned Chromium readiness'; requires = @('prerequisites', 'build') }
-        @{ id = 'node'; name = 'Node delivery and guardrail tests'; requires = @('prerequisites', 'build', 'syntax') }
+        @{ id = 'node'; name = 'Node delivery and guardrail tests'; requires = @('prerequisites', 'build', 'syntax', 'browser') }
         @{ id = 'dotnet'; name = '.NET tests (production rendering)'; requires = @('prerequisites', 'format', 'build', 'syntax', 'browser', 'node') }
         @{ id = 'evidence'; name = 'Complete timing evidence'; requires = @() }
     }
@@ -29,6 +33,20 @@ $components = @(
         outcome = 'incomplete'; evidence_outcome = $null; blocked_by = @() }
 }
 New-ValidationReport $root $Scope $components
+if ($Scope -eq 'Full') {
+    $script:validationRoot = $root
+    $script:coveragePlan = Get-DisplayCoverageInventory $root $DisplayCoverage
+    $script:coveragePlan | ConvertTo-Json -Depth 10 |
+        Set-Content -LiteralPath (Join-Path $script:validationDirectory 'coverage-plan.json') -Encoding utf8
+    $script:validationReport.display_coverage = [ordered]@{
+        profile = $DisplayCoverage
+        policy_id = $script:coveragePlan.policy_id
+        policy_sha256 = $script:coveragePlan.policy_sha256
+        expected_assertions = $script:coveragePlan.expected.Count
+        intentionally_omitted_assertions = $script:coveragePlan.omitted.Count
+    }
+    Save-ValidationReport
+}
 
 function Invoke-Tool([string]$Command, [string[]]$Arguments, [string]$Hint) {
     $previousBicepCheck = $env:AZURE_BICEP_CHECK_VERSION
@@ -93,7 +111,11 @@ try {
     Set-Location -LiteralPath $root
     $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
     if ($Scope -eq 'Full') { Set-DisplayEnvironment $root }
-    if ($Scope -eq 'Full') { $env:TRMNL_TIMING_DIRECTORY = $script:validationDirectory }
+    if ($Scope -eq 'Full') {
+        $env:TRMNL_TIMING_DIRECTORY = $script:validationDirectory
+        $env:TRMNL_DISPLAY_COVERAGE = $DisplayCoverage
+        Write-Host "Display coverage: $DisplayCoverage (explicit selected policy; not necessarily exhaustive six-view coverage)."
+    }
 
     $null = Invoke-Check 'prerequisites' {
         if ($script:validationReport.content.error) { throw 'Evaluated input fingerprint is unavailable; validation cannot bind this execution.' }
@@ -223,6 +245,7 @@ catch {
 finally {
     Restore-DisplayEnvironment $savedEnvironment
     $env:TRMNL_TIMING_DIRECTORY = $savedTimingDirectory
+    $env:TRMNL_DISPLAY_COVERAGE = $savedCoverageProfile
     Set-Location -LiteralPath $location.Path
 }
 

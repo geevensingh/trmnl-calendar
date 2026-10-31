@@ -1,6 +1,6 @@
 ---
 name: Working-day agenda
-description: A private calendar agenda backed by an authenticated Azure Function.
+description: Private calendar agenda.
 strategy: polling
 polling_verb: post
 polling_url: "{{ agenda_endpoint }}"

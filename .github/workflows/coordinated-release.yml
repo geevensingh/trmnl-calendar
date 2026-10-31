@@ -17,10 +17,19 @@ on:
           - status
           - inspect-trmnl
           - activate
+          - repair-activation-trmnl
           - retry
           - skip
       reason:
-        description: Required attribution for activation, retry, or skip
+        description: Required attribution for activation, repair, retry, or skip
+        type: string
+        required: false
+      activation_commit:
+        description: Repair only - full original failed activation commit
+        type: string
+        required: false
+      corrected_commit:
+        description: Repair only - full reviewed corrected main commit (pin on first repair; reuse on recovery)
         type: string
         required: false
       previous_mutation_stopped:
@@ -91,6 +100,8 @@ jobs:
           RELEASE_OPERATION: ${{ github.event.inputs.operation || 'main' }}
           RELEASE_REASON: ${{ github.event.inputs.reason || '' }}
           PREVIOUS_MUTATION_STOPPED: ${{ github.event.inputs.previous_mutation_stopped || 'false' }}
+          ACTIVATION_COMMIT: ${{ github.event.inputs.activation_commit || '' }}
+          CORRECTED_COMMIT: ${{ github.event.inputs.corrected_commit || '' }}
           AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
           AZURE_RELEASE_CONTAINER: ${{ vars.AZURE_RELEASE_CONTAINER }}
           AZURE_ARTIFACT_CONTAINER: ${{ vars.AZURE_ARTIFACT_CONTAINER }}

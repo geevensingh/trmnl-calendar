@@ -11,6 +11,8 @@ import {
   runNextRelease,
   skipFailedRelease
 } from "../../scripts/release-controller.mjs";
+import * as controller from "../../scripts/release-controller.mjs";
+import { AzureBlobLedger } from "../../scripts/azure-blob-ledger.mjs";
 
 const commit = letter => letter.repeat(40);
 const releaseArtifact = (sha, references = { azure: `packages/${sha}.zip` }, metadata = {}) => {
@@ -68,6 +70,299 @@ async function activatedLedger() {
     }
   });
   return ledger;
+}
+
+test("explicit activation repair publishes the corrected TRMNL artifact without retargeting Azure or losing failure evidence", async () => {
+  const ledger = memoryLedger();
+  const original = commit("a");
+  const corrected = commit("c");
+  const invalidArchive = releaseArtifact(original, { azure: "azure/original", trmnl: "trmnl/invalid" });
+  const correctedArchive = releaseArtifact(corrected, {
+    trmnl: `releases/${corrected}/trmnl-${"c".repeat(64)}.tar`
+  });
+  correctedArchive.digests.trmnl = "c".repeat(64);
+  correctedArchive.identity = artifactIdentity(corrected, correctedArchive.references, correctedArchive.digests, {});
+  const publications = [];
+  let azureDeployments = 0;
+  const services = {
+    async prepare() { return invalidArchive; },
+    async deployAndVerifyAzure() { azureDeployments += 1; return { verified: true }; },
+    async publishAndVerifyTrmnl(source, artifact) {
+      publications.push({ source, artifact });
+      if (source === original) throw Object.assign(new Error(), { code: "trmnl_push_http_422" });
+      return { verified: true };
+    },
+    async verifyArtifact() { return true; },
+    async prepareTrmnlActivationRepair(artifact, source) {
+      assert.deepEqual(artifact, invalidArchive);
+      assert.equal(source, corrected);
+      return correctedArchive;
+    }
+  };
+  const options = {
+    ledger, commit: original, actor: "owner", reason: "Synthetic baseline",
+    azureBootstrapVerified: true, trmnlBackupRecoveryAccepted: true, services
+  };
+  assert.equal((await activateReleaseBaseline(options)).status, "failed");
+  const failed = await ledger.read();
+  assert.equal(typeof controller.repairActivationTrmnl, "function");
+  const result = await controller.repairActivationTrmnl({
+    ...options, correctedCommit: corrected, previousMutationStopped: true,
+    reason: "Previous publisher stopped; reviewed description correction"
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(azureDeployments, 1);
+  assert.deepEqual(publications, [
+    { source: original, artifact: invalidArchive },
+    { source: corrected, artifact: correctedArchive }
+  ]);
+  const state = await ledger.read();
+  assert.equal(state.activation.commit, original);
+  assert.deepEqual(state.activation.artifact, invalidArchive);
+  assert.deepEqual(state.activation.first_failure, failed.activation.first_failure);
+  assert.deepEqual(state.activation.trmnl_repair.original_failure, failed.activation.failure);
+  assert.deepEqual(state.activation.trmnl_repair.artifact, correctedArchive);
+  const status = await listReleaseStatus({ ledger });
+  assert.equal(status.checkpoint, original);
+  assert.deepEqual(status.baselines, { azure: original, trmnl: corrected });
+  assert.equal(status.activation.trmnl_repair.commit, corrected);
+  assert.equal(status.activation.trmnl_repair.artifact.identity, correctedArchive.identity);
+  assert.deepEqual(status.pending_reconciliation, { azure: false, trmnl: false });
+  assert.equal(status.activation.recovery_confirmation_required, false);
+  assert.doesNotMatch(JSON.stringify(status), /Previous publisher stopped; reviewed description correction/);
+});
+
+async function failedTrmnlActivation() {
+  const ledger = memoryLedger();
+  const original = commit("a");
+  const corrected = commit("c");
+  const options = {
+    ledger, commit: original, actor: "owner", reason: "Synthetic baseline",
+    azureBootstrapVerified: true, trmnlBackupRecoveryAccepted: true,
+    services: {
+      async prepare() { return releaseArtifact(original, { azure: "azure/original", trmnl: "trmnl/invalid" }); },
+      async deployAndVerifyAzure() { return { verified: true }; },
+      async publishAndVerifyTrmnl() { throw Object.assign(new Error(), { code: "trmnl_push_http_422" }); },
+      async verifyArtifact() { return true; }
+    }
+  };
+  await activateReleaseBaseline(options);
+  const artifact = releaseArtifact(corrected, {
+    trmnl: `releases/${corrected}/trmnl-${"b".repeat(64)}.tar`
+  });
+  artifact.digests.trmnl = "c".repeat(64);
+  artifact.references.trmnl = `releases/${corrected}/trmnl-${artifact.digests.trmnl}.tar`;
+  artifact.identity = artifactIdentity(corrected, artifact.references, artifact.digests, {});
+  options.services.prepareTrmnlActivationRepair = async () => artifact;
+  options.services.publishAndVerifyTrmnl = async () => ({ verified: true });
+  return { ...options, correctedCommit: corrected, previousMutationStopped: true, artifact };
+}
+
+test("repair rejects mismatched archive provenance without retaining or publishing the candidate", async () => {
+  for (const change of [
+    artifact => { artifact.commit = commit("d"); },
+    artifact => { artifact.references.trmnl = "trmnl/unbound"; },
+    artifact => { artifact.references.azure = "azure/unrequested"; artifact.digests.azure = "c".repeat(64); },
+    artifact => { artifact.digests.trmnl = "b".repeat(64); },
+    artifact => { artifact.identity = "sha256:forged"; }
+  ]) {
+    const options = await failedTrmnlActivation();
+    const original = await options.ledger.read();
+    const invalid = structuredClone(options.artifact);
+    change(invalid);
+    if (invalid.identity !== "sha256:forged") {
+      invalid.identity = artifactIdentity(invalid.commit, invalid.references, invalid.digests, invalid.metadata);
+    }
+    options.services.prepareTrmnlActivationRepair = async () => invalid;
+    options.services.publishAndVerifyTrmnl = async () => assert.fail("Invalid replacement must not publish");
+    const result = await controller.repairActivationTrmnl(options);
+    assert.equal(result.status, "failed");
+    assert.equal(result.code, "artifact_identity_invalid");
+    const state = await options.ledger.read();
+    assert.equal(state.activation.trmnl_repair.artifact, null);
+    assert.deepEqual(state.activation.artifact, original.activation.artifact);
+    assert.deepEqual(state.activation.first_failure, original.activation.first_failure);
+    assert.equal(state.active, false);
+  }
+});
+
+test("repair is restricted to the failed initial TRMNL validation target and requires explicit evidence", async () => {
+  for (const [change, error] of [
+    [options => { options.previousMutationStopped = false; }, "previous_mutation_stop_confirmation_required"],
+    [options => { options.actor = ""; }, "attribution_required"],
+    [options => { options.reason = ""; }, "attribution_required"],
+    [options => { options.azureBootstrapVerified = false; }, "activation_evidence_required"],
+    [options => { options.trmnlBackupRecoveryAccepted = false; }, "activation_evidence_required"],
+    [options => { options.commit = commit("d"); }, "activation_trmnl_repair_not_applicable"],
+    [options => { options.correctedCommit = options.commit; }, "activation_trmnl_repair_not_applicable"]
+  ]) {
+    const options = await failedTrmnlActivation();
+    const before = await options.ledger.read();
+    change(options);
+    await assert.rejects(controller.repairActivationTrmnl(options), { message: error });
+    assert.deepEqual(await options.ledger.read(), before);
+  }
+  for (const change of [
+    state => { delete state.activation; },
+    state => { state.active = true; },
+    state => { state.checkpoint = commit("a"); },
+    state => { state.baselines.azure = commit("a"); },
+    state => { state.activation.target_results.azure = "failed"; },
+    state => { state.pending_reconciliation.azure = true; },
+    state => { state.activation.target_results.trmnl = "verified"; },
+    state => { state.activation.failure.code = "trmnl_field_migration_required"; }
+  ]) {
+    const options = await failedTrmnlActivation();
+    const before = await options.ledger.read();
+    change(before);
+    await options.ledger.replace(before);
+    await assert.rejects(controller.repairActivationTrmnl(options));
+    assert.deepEqual(await options.ledger.read(), before);
+  }
+});
+
+for (const interruption of ["prepare", "artifact_saved", "publish", "verified_saved"]) {
+  test(`repair resumes the same corrected artifact after interruption at ${interruption}`, async () => {
+    const options = await failedTrmnlActivation();
+    const { ledger, services } = options;
+    const original = await ledger.read();
+    let prepares = 0;
+    let publications = 0;
+    const abort = new AbortController();
+    const withExclusive = ledger.withExclusive;
+    const write = ledger.write;
+    ledger.withExclusive = operation => withExclusive(() => operation(abort.signal));
+    ledger.write = async state => {
+      await write(state);
+      if ((interruption === "artifact_saved" && state.activation.trmnl_repair?.artifact) ||
+        (interruption === "verified_saved" && state.activation.target_results.trmnl === "verified")) {
+        abort.abort(new Error("synthetic_lease_lost"));
+      }
+    };
+    services.prepareTrmnlActivationRepair = async () => {
+      prepares += 1;
+      if (interruption === "prepare") abort.abort(new Error("synthetic_lease_lost"));
+      return options.artifact;
+    };
+    services.deployAndVerifyAzure = async () => assert.fail("Azure was already verified");
+    services.publishAndVerifyTrmnl = async (commit, artifact, { signal }) => {
+      assert.equal(commit, options.correctedCommit);
+      assert.deepEqual(artifact, options.artifact);
+      assert.equal(signal, abort.signal);
+      publications += 1;
+      if (interruption === "publish") abort.abort(new Error("synthetic_lease_lost"));
+      return { verified: true };
+    };
+    await assert.rejects(controller.repairActivationTrmnl(options), { message: "synthetic_lease_lost" });
+    ledger.withExclusive = withExclusive;
+    ledger.write = write;
+    const interrupted = await ledger.read();
+    assert.equal(interrupted.activation.status, "running");
+    assert.equal(interrupted.active, false);
+    await assert.rejects(activateReleaseBaseline(options), { message: "activation_repair_operation_required" });
+    await assert.rejects(controller.repairActivationTrmnl({
+      ...options, correctedCommit: commit("d")
+    }), { message: "activation_repair_commit_conflict" });
+    await assert.rejects(controller.repairActivationTrmnl({
+      ...options, previousMutationStopped: false
+    }), { message: "previous_mutation_stop_confirmation_required" });
+    assert.deepEqual(await ledger.read(), interrupted, "rejected recovery cannot clear the barrier");
+    const detected = await controller.repairActivationTrmnl(options);
+    assert.equal(detected.code, "interrupted_uncertain");
+    assert.equal(publications, ["publish", "verified_saved"].includes(interruption) ? 1 : 0);
+    services.prepareTrmnlActivationRepair = async () => { prepares += 1; return options.artifact; };
+    services.publishAndVerifyTrmnl = async (commit, artifact) => {
+      assert.equal(commit, options.correctedCommit);
+      assert.deepEqual(artifact, options.artifact);
+      publications += 1;
+      return { verified: true };
+    };
+    assert.equal((await controller.repairActivationTrmnl(options)).status, "succeeded");
+    assert.equal(prepares, interruption === "prepare" ? 2 : 1);
+    assert.equal(publications, interruption === "publish" ? 2 : 1);
+    const state = await ledger.read();
+    assert.deepEqual(state.activation.artifact, original.activation.artifact);
+    assert.deepEqual(state.activation.first_failure, original.activation.first_failure);
+    assert.deepEqual(state.activation.trmnl_repair.original_failure, original.activation.failure);
+    assert.equal(state.activation.trmnl_repair.attempts.length, 2);
+    assert.equal(state.activation.trmnl_repair.attempts[0].failure.code, "interrupted_uncertain");
+    assert.equal(state.activation.trmnl_repair.attempts[1].result, "succeeded");
+    assert.deepEqual(state.baselines, { azure: options.commit, trmnl: options.correctedCommit });
+  });
+}
+
+test("repair cannot publish when its mutation barrier fails the leased conditional write", async () => {
+  const options = await failedTrmnlActivation();
+  let state = await options.ledger.read();
+  let etag = 1;
+  const calls = [];
+  const ledger = new AzureBlobLedger({
+    account: "syntheticrepair", container: "release-control",
+    getToken: async () => "synthetic-token",
+    fetchImpl: async (_url, request) => {
+      const action = request.headers["x-ms-lease-action"];
+      calls.push(action ?? request.method);
+      if (action === "acquire") {
+        return new Response("", { status: 201, headers: { "x-ms-lease-id": "repair-lease" } });
+      }
+      if (action === "release") return new Response("", { status: 200 });
+      if (request.method === "GET") return Response.json(state, { headers: { etag: `"${etag}"` } });
+      assert.equal(request.headers["x-ms-lease-id"], "repair-lease");
+      assert.equal(request.headers["If-Match"], `"${etag}"`);
+      const candidate = JSON.parse(request.body);
+      if (candidate.activation.stage === "trmnl_deploy") return new Response("", { status: 412 });
+      state = candidate;
+      etag += 1;
+      return new Response("", { status: 201, headers: { etag: `"${etag}"` } });
+    }
+  });
+  options.services.publishAndVerifyTrmnl = async () => assert.fail("Unpersisted mutation cannot start");
+  await assert.rejects(controller.repairActivationTrmnl({ ...options, ledger }), { code: "storage_http_412" });
+  assert.equal(state.activation.status, "running");
+  assert.deepEqual(state.activation.trmnl_repair.artifact, options.artifact);
+  assert.equal(state.activation.target_results.azure, "verified");
+  assert.equal(state.active, false);
+  assert.ok(calls.includes("acquire"));
+  assert.equal(calls.at(-1), "release");
+});
+
+for (const mode of ["repair", "activation"]) {
+  test(`${mode} final-save failure stays readable and resumes without repeating verified targets`, async () => {
+    const options = await failedTrmnlActivation();
+    const { ledger, services } = options;
+    const original = await ledger.read();
+    const operation = mode === "repair" ? controller.repairActivationTrmnl : activateReleaseBaseline;
+    const write = ledger.write;
+    let failCompletion = true;
+    ledger.write = async state => {
+      if (failCompletion && state.active && state.activation.status === "succeeded") {
+        failCompletion = false;
+        throw Object.assign(new Error(), { code: "synthetic_completion_write_failed" });
+      }
+      await write(state);
+    };
+    services.deployAndVerifyAzure = async () => assert.fail("Azure was already verified");
+    const failed = await operation(options);
+    assert.equal(failed.code, "synthetic_completion_write_failed");
+    const status = await listReleaseStatus({ ledger });
+    assert.equal(status.active, false);
+    assert.equal(status.checkpoint, null);
+    assert.deepEqual(status.baselines, { azure: null, trmnl: null });
+    assert.deepEqual(status.activation.target_results, { azure: "verified", trmnl: "verified" });
+    assert.deepEqual(status.pending_reconciliation, { azure: false, trmnl: false });
+    assert.equal(status.activation.recovery_confirmation_required, false);
+    assert.deepEqual(status.activation.first_failure, original.activation.first_failure);
+    services.publishAndVerifyTrmnl = async () => assert.fail("TRMNL was durably verified before completion failed");
+    services.prepareTrmnlActivationRepair = async () => assert.fail("Reuse the persisted corrected archive");
+    assert.equal((await operation(options)).status, "succeeded");
+    const recovered = await listReleaseStatus({ ledger });
+    assert.equal(recovered.active, true);
+    assert.equal(recovered.checkpoint, options.commit);
+    assert.deepEqual(recovered.baselines, {
+      azure: options.commit, trmnl: mode === "repair" ? options.correctedCommit : options.commit
+    });
+    assert.deepEqual((await ledger.read()).activation.artifact, original.activation.artifact);
+  });
 }
 
 test("classification selects only affected production targets and defaults unknown paths to both", () => {

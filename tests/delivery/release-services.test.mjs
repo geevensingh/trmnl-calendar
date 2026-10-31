@@ -3,13 +3,121 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import test from "node:test";
 import { createReleaseServices, createTrmnlArchive, unpackTrmnlArchive } from "../../scripts/release-services.mjs";
 import { AzureBlobArtifacts } from "../../scripts/azure-blob-ledger.mjs";
+import { artifactIdentity } from "../../scripts/release-controller.mjs";
+import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const pluginFiles = [
   "settings.yml", "shared.liquid", "full.liquid", "half_horizontal.liquid", "half_vertical.liquid"
 ];
+
+test("activation repair retains the invalid archive and packages only the reviewed corrected TRMNL source", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "calendar-trmnl-repair-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const repository = join(directory, "repository");
+  const source = join(repository, "display", "src");
+  await mkdir(source, { recursive: true });
+  const git = async (...args) => (await execFileAsync("git", ["-C", repository, ...args], {
+    env: isolatedGitEnvironment({
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+      GIT_TEMPLATE_DIR: ""
+    })
+  })).stdout.trim();
+  await git("init", "--quiet");
+  await git("config", "core.autocrlf", "false");
+  await git("config", "user.name", "Synthetic repair");
+  await git("config", "user.email", "repair@example.invalid");
+  const settings = "name: Synthetic agenda\ndescription: A deliberately long synthetic description.\nstrategy: polling\n";
+  for (const file of pluginFiles) await writeFile(join(source, file), file === "settings.yml" ? settings : `original:${file}`);
+  await git("add", ".");
+  await git("commit", "--quiet", "-m", "Original invalid description");
+  const original = await git("rev-parse", "HEAD");
+  const invalid = await createTrmnlArchive(source, join(directory, "original.tar"));
+  const originalReference = `releases/${original}/trmnl-${invalid.sha256}.tar`;
+  const references = { trmnl: originalReference };
+  const digests = { trmnl: invalid.sha256 };
+  const originalArtifact = {
+    commit: original, references, digests, metadata: {},
+    identity: artifactIdentity(original, references, digests, {})
+  };
+  const stored = new Map([[originalReference, invalid.bytes]]);
+  t.mock.method(AzureBlobArtifacts.prototype, "get", async reference => {
+    const bytes = stored.get(reference);
+    assert.ok(bytes, "only synthetic retained artifacts may be read");
+    return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+  });
+  t.mock.method(AzureBlobArtifacts.prototype, "put", async (reference, bytes) => {
+    assert.equal(stored.has(reference), false, "never replace an immutable artifact");
+    stored.set(reference, bytes);
+    return { reference, sha256: createHash("sha256").update(bytes).digest("hex") };
+  });
+  const variables = {
+    AZURE_STORAGE_ACCOUNT: "syntheticrepair",
+    AZURE_RELEASE_CONTAINER: "release-control",
+    AZURE_ARTIFACT_CONTAINER: "release-artifacts"
+  };
+  const previous = Object.fromEntries(Object.keys(variables).map(key => [key, process.env[key]]));
+  Object.assign(process.env, variables);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const correctedSettings = "name: Synthetic agenda\ndescription: Private agenda.\nstrategy: polling\n";
+  await writeFile(join(source, "settings.yml"), correctedSettings);
+  await writeFile(join(source, "shared.liquid"), "reviewed template styling");
+  await git("add", ".");
+  await git("commit", "--quiet", "-m", "Correct definition");
+  const corrected = await git("rev-parse", "HEAD");
+  const services = createReleaseServices({ repository });
+  assert.equal(typeof services.prepareTrmnlActivationRepair, "function");
+  const repaired = await services.prepareTrmnlActivationRepair(originalArtifact, corrected);
+  assert.equal(repaired.commit, corrected);
+  assert.deepEqual(Object.keys(repaired.references), ["trmnl"]);
+  assert.notEqual(repaired.digests.trmnl, invalid.sha256);
+  assert.deepEqual(stored.get(originalReference), invalid.bytes);
+  const recovered = join(directory, "recovered");
+  await writeFile(join(directory, "corrected.tar"), stored.get(repaired.references.trmnl));
+  await unpackTrmnlArchive(join(directory, "corrected.tar"), recovered);
+  assert.equal(await readFile(join(recovered, "settings.yml"), "utf8"), correctedSettings);
+  assert.equal(await readFile(join(recovered, "shared.liquid"), "utf8"), "reviewed template styling");
+  for (const invalid of [
+    settings,
+    correctedSettings.replace("Private agenda.", "A much longer description than the original invalid description was."),
+    correctedSettings.replace("strategy: polling", "strategy: webhook"),
+    `${correctedSettings}custom_fields: []\n`,
+    `${correctedSettings}description: Duplicate.\n`,
+    correctedSettings.replace("Private agenda.", " ")
+  ]) {
+    await writeFile(join(source, "settings.yml"), invalid);
+    await git("add", ".");
+    await git("commit", "--quiet", "--allow-empty", "-m", "Unsafe synthetic correction");
+    const unsafe = await git("rev-parse", "HEAD");
+    await assert.rejects(services.prepareTrmnlActivationRepair(originalArtifact, unsafe), {
+      code: "trmnl_repair_description_only_required"
+    });
+    assert.equal(stored.size, 2, "rejected definitions cannot create replacement artifacts");
+  }
+  await writeFile(join(source, "settings.yml"), correctedSettings);
+  await mkdir(join(repository, "docs"), { recursive: true });
+  await writeFile(join(repository, "docs", "agenda-contract.md"), "changed shared contract");
+  await git("add", ".");
+  await git("commit", "--quiet", "-m", "Unsafe contract change");
+  await assert.rejects(services.prepareTrmnlActivationRepair(
+    originalArtifact, await git("rev-parse", "HEAD")
+  ), { code: "trmnl_repair_contract_changed" });
+  await assert.rejects(services.prepareTrmnlActivationRepair({
+    ...originalArtifact, digests: { trmnl: "0".repeat(64) }
+  }, corrected), { code: "recovery_artifact_unavailable" });
+});
 
 test("release services reject mismatched or runtime-shared release storage before reconciliation", async t => {
   const commit = "a".repeat(40);
@@ -141,6 +249,7 @@ test("release services refuse cancelled work before launching tools or contactin
   for (const operation of [
     () => services.changedPaths(commit, commit, { signal }),
     () => services.prepare(commit, ["azure", "trmnl"], { signal }),
+    () => services.prepareTrmnlActivationRepair({ commit }, commit, { signal }),
     () => services.deployAndVerifyAzure(commit, {}, { signal }),
     () => services.inspectTrmnl(commit, { signal }),
     () => services.publishAndVerifyTrmnl(commit, {}, { signal })

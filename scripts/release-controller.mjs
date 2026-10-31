@@ -118,7 +118,18 @@ function assertArtifact(artifact, commit) {
       artifact.metadata.azure_manifest.archive_bytes < 1
     )) ||
     artifact.identity !== artifactIdentity(commit, artifact.references, artifact.digests, artifact.metadata)
-  ) throw new Error("artifact_identity_invalid");
+  ) throw Object.assign(new Error("artifact_identity_invalid"), { code: "artifact_identity_invalid" });
+  return artifact;
+}
+
+function assertTrmnlRepairArtifact(artifact, commit, original) {
+  assertArtifact(artifact, commit);
+  if (Object.keys(artifact.references).length !== 1 ||
+    artifact.references.trmnl !== `releases/${commit}/trmnl-${artifact.digests.trmnl}.tar` ||
+    artifact.digests.trmnl === original.digests.trmnl ||
+    Object.keys(artifact.metadata).length !== 0) {
+    throw Object.assign(new Error("artifact_identity_invalid"), { code: "artifact_identity_invalid" });
+  }
   return artifact;
 }
 
@@ -150,6 +161,24 @@ function validateState(state) {
   if (state.checkpoint !== null) assertCommit(state.checkpoint);
   for (const target of TARGETS) {
     if (state.baselines[target] !== null) assertCommit(state.baselines[target]);
+  }
+  const repair = state.activation?.trmnl_repair;
+  if (repair) {
+    assertCommit(state.activation.commit);
+    assertCommit(repair.commit);
+    assertArtifact(state.activation.artifact, state.activation.commit);
+    if (repair.commit === state.activation.commit ||
+      !Array.isArray(repair.attempts) || repair.attempts.length === 0 ||
+      repair.attempts.some(attempt => !["running", "failed", "succeeded"].includes(attempt.result) ||
+        attempt.previous_mutation_stopped !== true) ||
+      (state.active && (state.activation.status !== "succeeded" ||
+        TARGETS.some(target => state.activation.target_results?.[target] !== "verified") ||
+        repair.artifact === null))) {
+      throw new Error("ledger_invalid");
+    }
+    if (repair.artifact !== null) {
+      assertTrmnlRepairArtifact(repair.artifact, repair.commit, state.activation.artifact);
+    }
   }
   const seen = new Set();
   for (const release of state.queue) {
@@ -216,7 +245,16 @@ function confirmRecovery(entry, previousMutationStopped) {
   }
 }
 
-export async function activateReleaseBaseline({
+export function activateReleaseBaseline(options) {
+  return activateBaseline({ ...options, correctedCommit: null });
+}
+
+export function repairActivationTrmnl(options) {
+  assertCommit(options.correctedCommit);
+  return activateBaseline(options);
+}
+
+async function activateBaseline({
   ledger,
   commit,
   actor,
@@ -224,7 +262,8 @@ export async function activateReleaseBaseline({
   azureBootstrapVerified,
   trmnlBackupRecoveryAccepted,
   previousMutationStopped = false,
-  services
+  services,
+  correctedCommit = null
 }) {
   assertCommit(commit);
   assertAttribution(actor, reason);
@@ -237,6 +276,29 @@ export async function activateReleaseBaseline({
     if (state.active || state.checkpoint !== null || state.queue.length !== 0) {
       throw new Error("already_initialized");
     }
+    const existing = state.activation;
+    if (existing?.trmnl_repair && !correctedCommit) {
+      throw new Error("activation_repair_operation_required");
+    }
+    if (correctedCommit) {
+      if (!existing || existing.commit !== commit || correctedCommit === commit ||
+        existing.target_results?.azure !== "verified" ||
+        state.pending_reconciliation.azure ||
+        !["failed", "running"].includes(existing.status) ||
+        (!existing.trmnl_repair && (existing.target_results?.trmnl !== "failed" ||
+          existing.failure?.stage !== "trmnl_deploy" ||
+          existing.failure?.code !== "trmnl_push_http_422")) ||
+        TARGETS.some(target => state.baselines[target] !== null)) {
+        throw new Error("activation_trmnl_repair_not_applicable");
+      }
+      if (existing.trmnl_repair && existing.trmnl_repair.commit !== correctedCommit) {
+        throw new Error("activation_repair_commit_conflict");
+      }
+      if (previousMutationStopped !== true) {
+        throw new Error("previous_mutation_stop_confirmation_required");
+      }
+      assertArtifact(existing.artifact, commit);
+    }
     if (state.activation?.status === "running") {
       state.activation.status = "failed";
       state.activation.failure = {
@@ -244,6 +306,11 @@ export async function activateReleaseBaseline({
         code: "interrupted_uncertain"
       };
       state.activation.first_failure ??= state.activation.failure;
+      const interruptedRepair = state.activation.trmnl_repair?.attempts.at(-1);
+      if (interruptedRepair) {
+        interruptedRepair.result = "failed";
+        interruptedRepair.failure = { ...state.activation.failure };
+      }
       state.activation.target_results ??= {};
       for (const target of TARGETS) {
         if (state.activation.target_results[target] === "in_progress") {
@@ -270,6 +337,20 @@ export async function activateReleaseBaseline({
       };
     } else {
       confirmRecovery(state.activation, previousMutationStopped);
+      if (correctedCommit) {
+        state.activation.trmnl_repair ??= {
+          commit: correctedCommit,
+          original_failure: { ...state.activation.failure },
+          artifact: null,
+          attempts: []
+        };
+        state.activation.trmnl_repair.attempts.push({
+          actor: actor.trim(), reason: reason.trim(),
+          previous_mutation_stopped: true,
+          started_at: new Date().toISOString(), result: "running"
+        });
+        state.activation.stage = "trmnl_repair_prepare";
+      }
       state.activation.recovery = {
         actor: actor.trim(), reason: reason.trim(),
         previous_mutation_stopped: previousMutationStopped,
@@ -281,6 +362,7 @@ export async function activateReleaseBaseline({
       state.activation.reason = reason.trim();
     }
     const activation = state.activation;
+    const repair = activation.trmnl_repair;
     activation.trmnl_backup_recovery_accepted = true;
     const save = async () => {
       signal?.throwIfAborted();
@@ -289,7 +371,9 @@ export async function activateReleaseBaseline({
     };
     await save();
     try {
-      if (!services?.prepare || !services?.deployAndVerifyAzure || !services?.publishAndVerifyTrmnl) {
+      if (!services?.publishAndVerifyTrmnl ||
+        (repair ? !services?.prepareTrmnlActivationRepair :
+          !services?.prepare || !services?.deployAndVerifyAzure)) {
         throw Object.assign(new Error(), { code: "release_services_unavailable" });
       }
       if (!activation.artifact) {
@@ -302,6 +386,18 @@ export async function activateReleaseBaseline({
         !activation.artifact.digests[target])) {
         throw Object.assign(new Error(), { code: "artifact_identity_invalid" });
       }
+      if (repair) {
+        if (!repair.artifact) {
+          repair.artifact = assertTrmnlRepairArtifact(
+            await services.prepareTrmnlActivationRepair(activation.artifact, repair.commit, { signal }),
+            repair.commit, activation.artifact);
+        } else if (typeof services.verifyArtifact !== "function" ||
+          !(await services.verifyArtifact(repair.artifact, repair.commit, { signal }))) {
+          throw Object.assign(new Error(), { code: "recovery_artifact_unavailable" });
+        }
+        assertTrmnlRepairArtifact(repair.artifact, repair.commit, activation.artifact);
+        await save();
+      }
       for (const target of TARGETS) {
         if (activation.target_results[target] === "verified") continue;
         activation.target_results[target] = "in_progress";
@@ -311,7 +407,8 @@ export async function activateReleaseBaseline({
         await save();
         const outcome = target === "azure"
           ? await services.deployAndVerifyAzure(commit, activation.artifact, { signal })
-          : await services.publishAndVerifyTrmnl(commit, activation.artifact, { signal });
+          : await services.publishAndVerifyTrmnl(
+            repair?.commit ?? commit, repair?.artifact ?? activation.artifact, { signal });
         signal?.throwIfAborted();
         if (outcome?.verified !== true) {
           throw Object.assign(new Error(), { code: `${target}_verification_failed` });
@@ -323,21 +420,35 @@ export async function activateReleaseBaseline({
       }
       activation.status = "succeeded";
       activation.stage = "complete";
+      if (repair) repair.attempts.at(-1).result = "succeeded";
       state.active = true;
       state.checkpoint = commit;
-      state.baselines = { azure: commit, trmnl: commit };
+      state.baselines = { azure: commit, trmnl: repair?.commit ?? commit };
       await save();
+      if (repair) {
+        return {
+          active: true, checkpoint: commit, baselines: { ...state.baselines },
+          targets: ["trmnl"], status: "succeeded", trmnl_backup_recovery_accepted: true
+        };
+      }
       return {
         active: true, baseline: commit, targets: [...TARGETS], status: "succeeded",
         trmnl_backup_recovery_accepted: true
       };
     } catch (error) {
+      state.active = false;
+      state.checkpoint = null;
+      state.baselines = { azure: null, trmnl: null };
       activation.status = "failed";
       activation.failure = {
         stage: activation.stage,
         code: safeFailure(error)
       };
       activation.first_failure ??= activation.failure;
+      if (repair) {
+        repair.attempts.at(-1).result = "failed";
+        repair.attempts.at(-1).failure = { ...activation.failure };
+      }
       const target = activation.stage.split("_")[0];
       if (TARGETS.includes(target) && activation.target_results[target] === "in_progress") {
         activation.target_results[target] = "failed";
@@ -472,7 +583,7 @@ function safeFailure(error) {
   return code;
 }
 
-export async function runNextRelease({ ledger, services }) {
+export async function runNextRelease({ ledger, services, isAncestor }) {
   return ledger.withExclusive(async signal => {
     const state = validateState((await ledger.read()) ?? newState());
     const barrier = state.queue.find(item => ["running", "failed"].includes(item.status));
@@ -494,9 +605,24 @@ export async function runNextRelease({ ledger, services }) {
 
     try {
       const targets = [];
+      release.covered_targets = {};
       for (const target of TARGETS) {
         const baseline = state.baselines[target];
         if (baseline === null) throw Object.assign(new Error(), { code: "target_baseline_missing" });
+        const repair = state.activation?.trmnl_repair;
+        // TRMNL repair is ahead of Azure's FIFO frontier; never replay its older invalid archives.
+        if (target === "trmnl" && repair && baseline === repair.commit &&
+          !state.pending_reconciliation.trmnl) {
+          if (typeof isAncestor !== "function") {
+            throw Object.assign(new Error(), { code: "git_ancestry_check_required" });
+          }
+          if (await isAncestor(release.commit, repair.commit)) {
+            release.covered_targets.trmnl = {
+              commit: repair.commit, artifact_identity: repair.artifact.identity
+            };
+            continue;
+          }
+        }
         const paths = await services.changedPaths(baseline, release.commit, { signal });
         if (state.pending_reconciliation[target] || classifyPaths(paths).includes(target)) targets.push(target);
       }
@@ -578,6 +704,11 @@ export async function runNextRelease({ ledger, services }) {
 export async function listReleaseStatus({ ledger }) {
   return ledger.withExclusive(async () => {
     const state = validateState((await ledger.read()) ?? newState());
+    const artifactEvidence = artifact => artifact ? {
+      commit: artifact.commit, identity: artifact.identity,
+      references: { ...artifact.references }, digests: { ...artifact.digests }
+    } : null;
+    const repair = state.activation?.trmnl_repair;
     return {
       active: state.active,
       checkpoint: state.checkpoint,
@@ -590,12 +721,23 @@ export async function listReleaseStatus({ ledger }) {
         trmnl_backup_recovery_accepted: state.activation.trmnl_backup_recovery_accepted ?? null,
         target_results: { ...state.activation.target_results },
         recovery_confirmation_required: requiresRecoveryConfirmation(state.activation),
-        failure: state.activation.failure ?? null
+        failure: state.activation.failure ?? null,
+        first_failure: state.activation.first_failure ?? null,
+        artifact: artifactEvidence(state.activation.artifact),
+        trmnl_repair: repair ? {
+          commit: repair.commit,
+          original_failure: repair.original_failure,
+          artifact: artifactEvidence(repair.artifact),
+          attempts: repair.attempts.map(({ actor, started_at, previous_mutation_stopped, result, failure }) => ({
+            actor, started_at, previous_mutation_stopped, result, failure: failure ?? null
+          }))
+        } : null
       } : null,
-      queue: state.queue.map(({ id, commit, status, targets, target_results, first_failure, skip,
+      queue: state.queue.map(({ id, commit, status, targets, target_results, covered_targets, first_failure, skip,
         recovery_confirmation_required }) => ({
         id, commit, status, targets: targets ?? null,
         target_results: target_results ?? {},
+        covered_targets: covered_targets ?? {},
         recovery_confirmation_required: requiresRecoveryConfirmation({ recovery_confirmation_required, target_results }),
         first_failure: first_failure ?? null,
         skip: skip ? { actor: skip.actor, at: skip.at } : null

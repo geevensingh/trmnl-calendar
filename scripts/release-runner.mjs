@@ -8,6 +8,7 @@ import {
   admitMainCommits,
   listReleaseStatus,
   recoverInterruptedRelease,
+  repairActivationTrmnl,
   retryFailedRelease,
   runNextRelease,
   skipFailedRelease
@@ -50,7 +51,10 @@ export async function runReleaseBatch({ ledger, services, cwd, through }) {
   }
 
   while (true) {
-    const outcome = await runNextRelease({ ledger, services });
+    const outcome = await runNextRelease({
+      ledger, services,
+      isAncestor: (ancestor, descendant) => isGitAncestor(cwd, ancestor, descendant)
+    });
     if (!outcome.started) {
       if (outcome.blocked_by) {
         return {
@@ -109,10 +113,42 @@ export async function activateFromMain({ ledger, services, cwd, through, ...opti
   return activateReleaseBaseline({ ...options, ledger, services, commit });
 }
 
+export async function repairActivationTrmnlFromMain({
+  ledger, services, cwd, through, commit, correctedCommit, ...options
+}) {
+  const status = await listReleaseStatus({ ledger });
+  if (!status.activation || status.activation.commit !== commit) {
+    throw new Error("activation_commit_conflict");
+  }
+  if (status.activation.trmnl_repair) {
+    if (status.activation.trmnl_repair.commit !== correctedCommit) {
+      throw new Error("activation_repair_commit_conflict");
+    }
+  } else {
+    const main = await runGit(cwd, ["rev-parse", "refs/remotes/origin/main"]);
+    if (main !== through || correctedCommit !== through) {
+      throw new Error("repair_commit_must_be_current_main");
+    }
+  }
+  const history = await mainCommitsAfter(cwd, commit, through);
+  if (!history.some(item => item.commit === correctedCommit)) {
+    throw new Error("repair_commit_not_on_main");
+  }
+  return repairActivationTrmnl({
+    ...options, ledger, services, commit, correctedCommit
+  });
+}
+
 export async function inspectTrmnlFromMain({ ledger, services, cwd, through }) {
   const status = await listReleaseStatus({ ledger });
   const blocked = status.queue.find(release => ["failed", "running"].includes(release.status));
-  const commit = status.active ? blocked?.commit ?? through : status.activation?.commit ?? through;
+  let commit = status.active ? blocked?.commit ?? through :
+    status.activation?.trmnl_repair?.commit ?? status.activation?.commit ?? through;
+  const repairCommit = status.activation?.trmnl_repair?.commit;
+  if (status.active && blocked && repairCommit && status.baselines.trmnl === repairCommit &&
+    await isGitAncestor(cwd, blocked.commit, repairCommit)) {
+    commit = repairCommit;
+  }
   if (!(await isGitAncestor(cwd, commit, through))) throw new Error("inspection_commit_not_on_main");
   return { commit, ...await services.inspectTrmnl(commit) };
 }
@@ -122,13 +158,15 @@ async function runCli() {
     options: {
       operation: { type: "string", default: "main" },
       reason: { type: "string", default: "" },
+      "activation-commit": { type: "string", default: process.env.ACTIVATION_COMMIT ?? "" },
+      "corrected-commit": { type: "string", default: process.env.CORRECTED_COMMIT ?? "" },
       "previous-mutation-stopped": {
         type: "boolean", default: process.env.PREVIOUS_MUTATION_STOPPED === "true"
       }
     }
   });
   const operation = values.operation;
-  if (!["main", "status", "inspect-trmnl", "activate", "retry", "skip"].includes(operation)) {
+  if (!["main", "status", "inspect-trmnl", "activate", "repair-activation-trmnl", "retry", "skip"].includes(operation)) {
     throw new Error("release_operation_invalid");
   }
   if (process.env.GITHUB_REF !== "refs/heads/main") throw new Error("main_only_release_operation");
@@ -146,11 +184,15 @@ async function runCli() {
     return inspectTrmnlFromMain({ ledger, services, cwd, through });
   }
   const previousMutationStopped = values["previous-mutation-stopped"];
-  if (operation === "activate") {
-    return activateFromMain({
+  if (operation === "activate" || operation === "repair-activation-trmnl") {
+    const activate = operation === "activate" ? activateFromMain : repairActivationTrmnlFromMain;
+    return activate({
       ledger,
       cwd,
       through,
+      ...(operation === "repair-activation-trmnl" ? {
+        commit: values["activation-commit"], correctedCommit: values["corrected-commit"]
+      } : {}),
       actor: process.env.GITHUB_ACTOR ?? "",
       reason: values.reason,
       azureBootstrapVerified: process.env.AZURE_BOOTSTRAP_VERIFIED === "true",

@@ -6,18 +6,31 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'display-toolchain.ps1')
+. (Join-Path $PSScriptRoot 'validation-report.ps1')
 $savedEnvironment = Save-DisplayEnvironment
 $location = Get-Location
 $stage = Join-Path $root ".tools\display-setup-$([Guid]::NewGuid().ToString('N'))"
+New-ValidationReport $root 'Setup'
+$setupPassed = $false
+$setupTimingStage = $null
+function Start-SetupTimingStage([string]$Name) {
+    if ($script:setupTimingStage) { Stop-ValidationStage $script:setupTimingStage 'passed' }
+    $script:setupTimingStage = Start-ValidationStage $Name
+}
 try {
     Set-Location -LiteralPath $root
     $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
     Set-DisplayEnvironment $root
+    Start-SetupTimingStage 'Toolchain and native readiness'
     $toolchain = Get-DisplayToolchain $root
+    $script:validationReport.provenance.tools.ruby = $script:DisplayRubyVersion
+    $script:validationReport.provenance.tools.bundler = $toolchain.BundlerVersion
     $env:TRMNL_RUBY = $toolchain.Ruby
     Test-DisplayNativeTools $root $toolchain
     Assert-DisplaySdk
+    $script:validationReport.provenance.tools.dotnet = $script:DisplaySdkVersion
 
+    Start-SetupTimingStage 'Locked worktree gems'
     $lockfile = Join-Path $root 'Gemfile.lock'
     $lockHash = (Get-FileHash -LiteralPath $lockfile -Algorithm SHA256).Hash
     # Config writes must retain earlier local settings; restores still ignore inherited config.
@@ -31,16 +44,21 @@ try {
     }
     finally { $env:BUNDLE_IGNORE_CONFIG = 'true' }
     if ((Invoke-DisplayBundle $toolchain @('check')) -eq 0) {
+        $script:validationReport.provenance.cache.bundler_reused = $true
         Write-Host 'Reusing locked worktree-local gems.'
     }
-    elseif ((Invoke-DisplayBundle $toolchain @('install', '--quiet')) -ne 0) {
-        throw 'Locked worktree-local gem restore failed. Check network access and the selected Ruby/Devkit, then rerun .\scripts\setup-display.ps1. Do not update Gemfile.lock.'
+    else {
+        $script:validationReport.provenance.cache.bundler_reused = $false
+        if ((Invoke-DisplayBundle $toolchain @('install', '--quiet')) -ne 0) {
+            throw 'Locked worktree-local gem restore failed. Check network access and the selected Ruby/Devkit, then rerun .\scripts\setup-display.ps1. Do not update Gemfile.lock.'
+        }
     }
     if ((Get-FileHash -LiteralPath $lockfile -Algorithm SHA256).Hash -ne $lockHash) {
         throw 'Gemfile.lock changed unexpectedly during frozen restore. Restore the tracked lockfile before retrying.'
     }
     Assert-DisplayGems $toolchain
 
+    Start-SetupTimingStage 'Pinned framework assets and fonts'
     New-Item -ItemType Directory -Path $stage | Out-Null
     $assets = Join-Path $root '.tools\framework'
     foreach ($asset in @('css/3.4.3/plugins.css', 'js/3.4.3/plugins.js')) {
@@ -62,9 +80,11 @@ try {
     }
     $fonts = Join-Path $assets 'fonts'
     if (Test-DisplayFonts $assets $fonts) {
+        $script:validationReport.provenance.cache.fonts_reused = $true
         Write-Host 'Reusing pinned framework fonts.'
     }
     else {
+        $script:validationReport.provenance.cache.fonts_reused = $false
         $stagedFonts = Join-Path $stage 'fonts'
         New-Item -ItemType Directory -Path $stagedFonts | Out-Null
         try {
@@ -91,11 +111,15 @@ try {
     }
 
     $project = Join-Path $root 'tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj'
+    Start-SetupTimingStage '.NET dependency restore'
     & dotnet restore $project --nologo --verbosity quiet
     if ($LASTEXITCODE -ne 0) { throw 'Display harness dependency restore failed. Rerun .\scripts\setup-display.ps1 after fixing the reported restore error.' }
+    Start-SetupTimingStage '.NET harness build'
     & dotnet build $project --no-restore --nologo --verbosity quiet
     if ($LASTEXITCODE -ne 0) { throw 'Display harness build failed. Fix the reported compiler error and rerun .\scripts\setup-display.ps1.' }
-    if (!(Test-DisplayBrowser $root)) {
+    Start-SetupTimingStage 'Pinned Chromium readiness and setup'
+    $script:validationReport.provenance.cache.browser_reused = Test-DisplayBrowser $root
+    if (!$script:validationReport.provenance.cache.browser_reused) {
         try {
             & (Join-Path (Split-Path $project) 'bin\Debug\net10.0\playwright.ps1') install chromium
         }
@@ -106,14 +130,23 @@ try {
             throw 'Pinned Chromium setup failed. Check the selected PLAYWRIGHT_BROWSERS_PATH, browser dependencies and network access, then rerun .\scripts\setup-display.ps1.'
         }
     }
+    $setupPassed = $true
 }
 finally {
     try {
         if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     }
+    catch {
+        $setupPassed = $false
+        throw
+    }
     finally {
         Restore-DisplayEnvironment $savedEnvironment
         Set-Location -LiteralPath $location.Path
+        if ($setupTimingStage) {
+            Stop-ValidationStage $setupTimingStage $(if ($setupPassed) { 'passed' } else { 'failed' })
+        }
+        Complete-ValidationReport $setupPassed
     }
 }
 Write-Host 'Display setup PASSED. Shared tools were not installed or upgraded.'

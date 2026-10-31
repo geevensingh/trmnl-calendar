@@ -277,8 +277,8 @@ public sealed partial class AgendaHttpTests
             "DTSTART:20261019T183500Z\nDTEND:20261019T190000Z\nSUMMARY:Reselected meeting",
             "DTSTART:20261020T180000Z\nDTEND:20261020T190000Z\nSUMMARY:Secondary meeting"));
         const string rules = """{"rules_json":"[{\"field\":\"title\",\"mode\":\"whole_word\",\"value\":\"OOO\"}]"}""";
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
@@ -323,8 +323,8 @@ public sealed partial class AgendaHttpTests
     public async Task Http_response_pressure_retains_both_card_states_over_ordinary_and_all_day_competition_in_native_views(
         NativeView view)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
@@ -376,8 +376,8 @@ public sealed partial class AgendaHttpTests
     public async Task Http_tied_and_overlapping_emphasized_overflow_reaches_native_fitting_before_ordinary_rows(
         NativeView view)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new()
         {
             ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },

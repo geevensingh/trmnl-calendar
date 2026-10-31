@@ -10,7 +10,7 @@ import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
-async function repository(t) {
+async function repository(t, { gateOnBaseOnly = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "agenda CI revision "));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const checkout = join(directory, "checkout with spaces");
@@ -33,6 +33,7 @@ async function repository(t) {
   checked("config", "commit.gpgSign", "false");
   checked("config", "core.autocrlf", "false");
   await cp(join(root, "scripts"), join(checkout, "scripts"), { recursive: true });
+  if (gateOnBaseOnly) await rm(join(checkout, "scripts", "check-required-validation.mjs"));
   await writeFile(join(checkout, "shared.txt"), "original content\n");
   checked("add", ".");
   checked("commit", "--quiet", "-m", "Synthetic initial base");
@@ -47,6 +48,9 @@ async function repository(t) {
   const staleMerge = checked("rev-parse", "HEAD");
   checked("update-ref", "refs/pull/51/merge", staleMerge);
   checked("switch", "--quiet", "-c", "retarget-base", originalBase);
+  if (gateOnBaseOnly)
+    await cp(join(root, "scripts", "check-required-validation.mjs"),
+      join(checkout, "scripts", "check-required-validation.mjs"));
   await writeFile(join(checkout, "base-only.txt"), "new base content\n");
   checked("add", ".");
   checked("commit", "--quiet", "-m", "Synthetic retarget base");
@@ -83,6 +87,48 @@ test("PR preparation evaluates the pinned new base and head even when the advert
   const repeat = fixture.prepare();
   assert.equal(repeat.status, 0, repeat.stdout + repeat.stderr);
   assert.deepEqual(JSON.parse(repeat.stdout), report);
+});
+
+test("Required validation certifies only Full prepared for the exact event-pinned PR revision", async t => {
+  const fixture = await repository(t, { gateOnBaseOnly: true });
+  await assert.rejects(readFile(join(fixture.checkout, "scripts", "check-required-validation.mjs")), { code: "ENOENT" });
+  const prepared = fixture.prepare();
+  assert.equal(prepared.status, 0, prepared.stdout + prepared.stderr);
+  const revision = JSON.parse(prepared.stdout);
+  const gate = (preparation, head = fixture.head, base = fixture.base) =>
+    spawnSync(process.execPath, [
+      join(fixture.checkout, "scripts", "check-required-validation.mjs"),
+      "--full-result", "success", "--event-name", "pull_request",
+      "--head-commit", head, "--base-commit", base, "--preparation", preparation
+    ], { cwd: fixture.checkout, env: fixture.environment, encoding: "utf8", timeout: 10_000 });
+  const accepted = gate(prepared.stdout);
+  assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+  const report = JSON.parse(accepted.stdout);
+  assert.equal(report.required_validation_succeeded, true);
+  assert.equal(report.head_commit, fixture.head);
+  assert.equal(report.base_commit, fixture.base);
+  assert.equal(report.evaluated_commit, fixture.checked("rev-parse", "HEAD"));
+  assert.equal(report.evaluated_tree, fixture.checked("rev-parse", "HEAD^{tree}"));
+
+  for (const [preparation, head, base] of [
+    ["", fixture.head, fixture.base],
+    ["not JSON", fixture.head, fixture.base],
+    [JSON.stringify({ ...revision, preparation_succeeded: false }), fixture.head, fixture.base],
+    [JSON.stringify({ ...revision, evaluated_commit: null }), fixture.head, fixture.base],
+    [JSON.stringify({ ...revision, evaluated_commit: [revision.evaluated_commit] }), fixture.head, fixture.base],
+    [JSON.stringify({ ...revision, evaluated_tree: null }), fixture.head, fixture.base],
+    [JSON.stringify({ ...revision, evaluated_parents: [fixture.originalBase, fixture.head] }), fixture.head, fixture.base],
+    [JSON.stringify({ ...revision, checkout_state: { status_nonempty: true, index_visibility_restricted: false } }),
+      fixture.head, fixture.base],
+    [JSON.stringify({ ...revision, errors: ["prepared_checkout_failed"] }), fixture.head, fixture.base],
+    [prepared.stdout, fixture.originalBase, fixture.base],
+    [prepared.stdout, fixture.head, fixture.originalBase]
+  ]) {
+    const rejected = gate(preparation, head, base);
+    assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
+    assert.equal(JSON.parse(rejected.stderr).required_validation_succeeded, false);
+    assert.equal(rejected.stdout, "");
+  }
 });
 
 test("PR preparation refuses attached, dirty or hidden-index checkouts without replacing their content", async t => {

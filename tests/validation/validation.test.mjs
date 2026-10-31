@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -18,6 +19,11 @@ async function checkout(t) {
   for (const name of ["delivery", "validation"]) {
     await cp(join(root, "tests", name), join(directory, "tests", name), { recursive: true });
   }
+  await writeFile(join(directory, "tests", "display-coverage.json"), JSON.stringify({
+    version: 1, id: "og-first-v1", scenarios: ["reference"], secondary_scenarios: ["reference"],
+    adaptive_families: { All_views: "all" }, title_variants: ["short/timed"],
+    secondary_title_variants: ["short/timed"]
+  }));
   for (const project of [["src", "CalendarAgenda"], ["tests", "CalendarAgenda.Tests"]]) {
     await mkdir(join(directory, ...project, "obj"), { recursive: true });
     await writeFile(join(directory, ...project, "obj", "project.assets.json"), "{}");
@@ -41,8 +47,11 @@ if ($env:VALIDATION_BROWSER_THROW) { throw 'Synthetic unusable Playwright driver
 exit 0
 `);
   const calls = join(directory, "calls.jsonl");
-  const run = (scope = "Fast", environment = {}) => spawnSync("pwsh", [
+  let reportDirectory;
+  const run = (scope = "Fast", environment = {}) => {
+    const result = spawnSync("pwsh", [
     "-NoProfile", "-NonInteractive", "-Command", `
+      $ErrorActionPreference = 'Stop'
       function global:Get-Command {
         [CmdletBinding()]
         param([Parameter(Position = 0)][string]$Name)
@@ -54,9 +63,19 @@ exit 0
       }
       function global:dotnet {
         @{ tool = 'dotnet'; arguments = @($args); certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE;
-           ruby = $env:TRMNL_RUBY; bundlePath = $env:BUNDLE_PATH } | ConvertTo-Json -Compress |
+           ruby = $env:TRMNL_RUBY; bundlePath = $env:BUNDLE_PATH; coverage = $env:TRMNL_DISPLAY_COVERAGE } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
         if ($env:VALIDATION_FAIL -eq 'dotnet:throw') { throw 'Synthetic unusable SDK executable' }
+        if ($env:VALIDATION_CANCEL_TOOL -eq "dotnet:$($args[0])") {
+          throw [OperationCanceledException]::new('Synthetic cancelled tool')
+        }
+        if ($args[0] -eq 'format' -and $env:VALIDATION_PAUSE) { Start-Sleep -Seconds 30 }
+        if ($args[0] -eq 'build' -and $env:VALIDATION_MUTATE_INPUT) {
+          'changed during validation' | Set-Content -LiteralPath 'content.txt'
+        }
+        if ($args[0] -eq 'test' -and $env:VALIDATION_RENDER_DELAY_MS) {
+          Start-Sleep -Milliseconds ([int]$env:VALIDATION_RENDER_DELAY_MS)
+        }
         if ($args[0] -eq '--version') {
           if ($env:VALIDATION_SDK_VERSION) { $env:VALIDATION_SDK_VERSION } else { '10.0.100' }
         }
@@ -64,13 +83,126 @@ exit 0
           'Microsoft.NETCore.App 10.0.0 [synthetic]'
           'Microsoft.AspNetCore.App 10.0.0 [synthetic]'
         }
+        if ($args[0] -eq 'test' -and !$env:VALIDATION_MISSING_EVIDENCE) {
+          @'
+<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+<TestDefinitions><UnitTest id="one"><TestMethod className="Synthetic.Display" name="All_views"/></UnitTest>
+<UnitTest id="two"><TestMethod className="Synthetic.Display" name="All_scenarios"/></UnitTest></TestDefinitions>
+<Results><UnitTestResult testId="one" testName="All views" duration="00:00:00.125" outcome="Passed"/>
+<UnitTestResult testId="two" testName="All scenarios" duration="00:00:00.075" outcome="Passed"/></Results>
+<ResultSummary outcome="Completed"><Counters total="2" executed="2"/></ResultSummary>
+</TestRun>
+'@ | Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
+          if ($env:VALIDATION_REPORTED_FAILURE -eq 'dotnet') {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')) -replace 'outcome="Passed"','outcome="Failed"' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
+          }
+          if ($env:VALIDATION_ABORTED_DOTNET) {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')) -replace 'outcome="Completed"','outcome="Aborted"' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
+          }
+          if ($env:VALIDATION_FAILED_TRX_SUMMARY) {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')) -replace 'outcome="Completed"','outcome="Failed"' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
+          }
+          $phases = @('browser.create', 'browser.launch', 'ruby.startup', 'ruby.render', 'screenshot', 'png.decode', 'png.inspect')
+          foreach ($phase in $phases) {
+            @{ kind = 'start'; id = $phase; phase = $phase } | ConvertTo-Json -Compress |
+              Add-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'phases-fixture.jsonl')
+            if ($env:VALIDATION_UNFINISHED_PHASE -eq $phase) { continue }
+            @{ kind = 'end'; id = $phase; phase = $phase; result = 'passed'; duration_ms = 5 } | ConvertTo-Json -Compress |
+              Add-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'phases-fixture.jsonl')
+          }
+          foreach ($scenario in @('reference', 'matrix/og/full', 'matrix/og/half_horizontal', 'matrix/og/half_vertical',
+            'matrix/v2/full', 'matrix/v2/half_horizontal', 'matrix/v2/half_vertical')) {
+            $phase = if ($scenario -eq 'reference') { 'scenario.load' } else { 'render.view' }
+            @{ kind='start';id=$scenario;phase=$phase;scenario=$scenario } | ConvertTo-Json -Compress |
+              Add-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'phases-fixture.jsonl')
+            @{ kind='end';id=$scenario;phase=$phase;scenario=$scenario;result='passed';duration_ms=1 } | ConvertTo-Json -Compress |
+              Add-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'phases-fixture.jsonl')
+          }
+          if ($env:VALIDATION_EXPECTED_RENDER_FAILURE) {
+            @(
+              @{kind='start';id='expected-error';phase='ruby.render'}
+              @{kind='end';id='expected-error';phase='ruby.render';result='failed';duration_ms=1}
+              @{kind='start';id='superseded';phase='ruby.workbench_process'}
+              @{kind='start';id='killed-child';phase='ruby.render';operation_id='superseded'}
+              @{kind='end';id='superseded';phase='ruby.workbench_process';result='cancelled';duration_ms=1}
+            ) | ForEach-Object { $_ | ConvertTo-Json -Compress } |
+              Add-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'phases-fixture.jsonl')
+          }
+          $views = @('og/full', 'og/half_horizontal', 'og/half_vertical',
+            'v2/full', 'v2/half_horizontal', 'v2/half_vertical')
+          $identities = @(
+            foreach ($view in $views) {
+              [ordered]@{ policy = "og-first-v1/$env:TRMNL_DISPLAY_COVERAGE"
+                method = 'CalendarAgenda.Tests.AdaptiveDisplayTests.Shared_workbench_scenarios_obey_display_invariants_in_all_six_native_views'
+                scenario = 'reference'; view = $view; variant = 'default' }
+              [ordered]@{ policy = "og-first-v1/$env:TRMNL_DISPLAY_COVERAGE"
+                method = 'CalendarAgenda.Tests.AdaptiveDisplayTests.All_views'
+                scenario = $null; view = $view; variant = 'default' }
+            }
+          )
+          $coverage = [ordered]@{
+            profile = $env:TRMNL_DISPLAY_COVERAGE; policy_id = 'og-first-v1'
+            policy_sha256 = (Get-FileHash -LiteralPath 'tests\\display-coverage.json' -Algorithm SHA256).Hash.ToLowerInvariant()
+            expected = $identities; omitted = @()
+          }
+          [ordered]@{ scenarios = @('reference'); views = $views; coverage = $coverage } | ConvertTo-Json -Depth 10 |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'inventory-fixture.json')
+          if (!$env:VALIDATION_MISSING_COVERAGE) {
+            $completed = @($identities | ForEach-Object { [pscustomobject]$_ })
+            switch ($env:VALIDATION_COVERAGE_FAULT) {
+              'missing-pair' { $completed = @($completed | Select-Object -Skip 1) }
+              'duplicate' { $completed += $completed[0] }
+              'unexpected' { $completed[0].scenario = 'not-selected' }
+              'wrong-profile' { $completed[0].policy = 'og-first-v1/unknown' }
+              'wrong-variant' { $completed[0].variant = 'not-selected' }
+              'skipped' { $completed[0] | Add-Member result 'skipped' }
+              'failed' { $completed[0] | Add-Member result 'failed' }
+              'policy-changed' { Add-Content -LiteralPath 'tests\\display-coverage.json' -Value ' ' }
+              'forged-manifest' {
+                $completed = @($completed | Select-Object -Skip 1)
+                $coverage.expected = $completed
+                [ordered]@{ scenarios = @('reference'); views = $views; coverage = $coverage } |
+                  ConvertTo-Json -Depth 10 |
+                  Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'inventory-fixture.json')
+              }
+            }
+            $completed | ForEach-Object { $_ | ConvertTo-Json -Compress } |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'coverage-fixture.jsonl')
+          }
+        }
         $global:LASTEXITCODE = if ($env:VALIDATION_FAIL -eq "dotnet:$($args[0])") { 23 } else { 0 }
       }
       function global:node {
         @{ tool = 'node'; arguments = @($args); bicepCheck = $env:AZURE_BICEP_CHECK_VERSION;
            certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
-        if ($args[0] -eq '--version') { 'v24.0.0' }
+        if ($args[0] -eq '--version') {
+          if ($env:VALIDATION_NODE_VERSION) { $env:VALIDATION_NODE_VERSION } else { 'v24.0.0' }
+        }
+        if ($args[0] -eq '--test' -and !$env:VALIDATION_MISSING_EVIDENCE) {
+          @(
+            @{kind='test';name='matrix';type='test';nesting=0;duration_ms=100;result='passed'}
+            @{kind='test';name='selector';type='test';nesting=1;duration_ms=60;result='passed'}
+            @{kind='summary';tests=2;passed=2;failed=0;cancelled=0;skipped=0;todo=0;duration_ms=110;
+              files=@($args | Where-Object { $_ -like '*.test.mjs' } | ForEach-Object { [IO.Path]::GetRelativePath((Get-Location).Path, $_) })}
+          ) | ForEach-Object { $_ | ConvertTo-Json -Compress } |
+            Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')
+          if ($env:VALIDATION_CANCELLED_NODE) {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')) -replace '"cancelled":0','"cancelled":1' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')
+          }
+          if ($env:VALIDATION_REPORTED_FAILURE -eq 'node') {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')) -replace '"failed":0','"failed":1' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')
+          }
+          if ($env:VALIDATION_FAILED_NODE_EVENT) {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')) -replace '"result":"passed"','"result":"failed"' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'node.jsonl')
+          }
+        }
         $global:LASTEXITCODE = if ($env:VALIDATION_FAIL -eq "node:$($args[0])") { 29 } else { 0 }
       }
       function global:ruby {
@@ -98,30 +230,53 @@ exit 0
       if ($env:VALIDATION_SELECTED_RUBY) {
         Set-Alias -Name $env:VALIDATION_SELECTED_RUBY -Value ruby -Scope Global
       }
-      $before = @{}
-      Get-ChildItem Env: | Where-Object {
-        $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE')
-      } | ForEach-Object { $before[$_.Name] = $_.Value }
-      & $env:VALIDATION_SCRIPT -Scope $env:VALIDATION_SCOPE
+      function global:Move-Item {
+        [CmdletBinding()]
+        param($LiteralPath, $Destination, [switch]$Force)
+        if ($env:VALIDATION_FINAL_STAGE_SAVE_FAIL -and !$global:failedStageSave -and
+            $LiteralPath -like '*summary.tmp') {
+          $report = Get-Content -LiteralPath $LiteralPath -Raw | ConvertFrom-Json
+          if ($report.components[-1].outcome -eq 'success' -and
+              $report.stages[-1].result -eq 'passed' -and $null -eq $report.finished_at) {
+            $global:failedStageSave = $true
+            throw 'Synthetic final-stage report write failure'
+          }
+        }
+        Microsoft.PowerShell.Management\\Move-Item @PSBoundParameters
+      }
+      $global:failedStageSave = $false
+      function Get-CallerEnvironment {
+        $snapshot = @{}
+        Get-ChildItem Env: | Where-Object {
+          $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE',
+            'TRMNL_TIMING_DIRECTORY', 'AZURE_BICEP_CHECK_VERSION', 'TRMNL_DISPLAY_COVERAGE')
+        } | ForEach-Object { $snapshot[$_.Name] = $_.Value }
+        return $snapshot
+      }
+      $before = Get-CallerEnvironment
+      $selection = @{}
+      if ($env:VALIDATION_DISPLAY_PROFILE) { $selection.DisplayCoverage = $env:VALIDATION_DISPLAY_PROFILE }
+      & $env:VALIDATION_SCRIPT -Scope $env:VALIDATION_SCOPE @selection
       $code = $LASTEXITCODE
-      $after = @{}
-      Get-ChildItem Env: | Where-Object {
-        $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE')
-      } | ForEach-Object { $after[$_.Name] = $_.Value }
+      $after = Get-CallerEnvironment
       @{ before = $before; after = $after } | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath $env:VALIDATION_ENVIRONMENT
       exit $code
     `
   ], {
-    cwd: directory, encoding: "utf8", timeout: 30_000,
+    cwd: directory, encoding: "utf8", timeout: Number(environment.VALIDATION_TIMEOUT_MS ?? 30_000),
     env: {
       ...process.env, VALIDATION_SCRIPT: join(directory, "scripts", "validate.ps1"),
       VALIDATION_SCOPE: scope, VALIDATION_CALLS: calls, TRMNL_RUBY: "ruby",
       VALIDATION_ENVIRONMENT: join(directory, "environment.json"), ...environment
     }
-  });
+    });
+    reportDirectory = result.stdout.match(/Timing report: (.+)/)?.[1].trim();
+    return result;
+  };
   return {
     directory, run,
+    report: async () => JSON.parse(await readFile(join(reportDirectory, "summary.json"), "utf8")),
     environment: async () => JSON.parse(await readFile(join(directory, "environment.json"), "utf8")),
     calls: async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/).map(JSON.parse)
   };
@@ -143,6 +298,312 @@ test("fast validation reports success, checks formatting without edits, and comp
   for (const name of ["app.mjs", "preview.mjs", "layout-checks.mjs"])
     assert.ok(calls.some(call => call.tool === "node" && call.arguments[0] === "--check"
       && call.arguments[1].endsWith(name)), `Missing browser syntax check: ${name}`);
+});
+
+test("validation rejects Node releases without test summary events before dependent checks", async t => {
+  for (const version of ["v22.0.0", "v22.1.0", "v21.7.3", "invalid"]) {
+    const fixture = await checkout(t);
+    const result = fixture.run("Full", { VALIDATION_NODE_VERSION: version });
+    assert.equal(result.status, 1, version + result.stdout + result.stderr);
+    assert.match(result.stdout, /Install Node\.js 22\.2\.0 or newer/);
+    assert.ok(!(await fixture.calls()).some(call =>
+      ["format", "build", "test", "--check", "--test"].includes(call.arguments[0])));
+    assert.equal((await fixture.report()).components[0].outcome, "failure");
+  }
+  for (const version of ["v22.2.0", "v22.23.4", "v23.0.0", "v24.0.0"]) {
+    const fixture = await checkout(t);
+    const result = fixture.run("Full", { VALIDATION_NODE_VERSION: version });
+    assert.equal(result.status, 0, version + result.stdout + result.stderr);
+    assert.equal((await fixture.report()).provenance.tools.node, version);
+  }
+});
+
+test("Fast emits bounded provenance and stage timings without claiming Full evidence", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Fast", { CONFIDENTIAL_INPUT: "must-not-appear-in-report" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const report = await fixture.report();
+  assert.equal(report.scope, "Fast");
+  assert.equal(report.outcome, "passed");
+  assert.equal(report.evidence.status, "not-requested");
+  assert.equal(report.provenance.evaluated_commit, null);
+  assert.ok(report.unavailable.includes("git identity"));
+  assert.equal(report.stages.length, 4);
+  assert.ok(report.stages.every(stage => stage.result === "passed" && stage.duration_ms >= 0));
+  assert.ok(report.duration_ms >= Math.max(...report.stages.map(stage => stage.duration_ms)));
+  assert.ok(JSON.stringify(report).length < 100_000);
+  assert.ok(!JSON.stringify(report).includes("must-not-appear-in-report"));
+});
+
+test("public reports bind exact event/evaluated identities and reject hidden working-tree identity", async t => {
+  const fixture = await checkout(t);
+  const git = (...args) => {
+    const result = spawnSync("git", args, {
+      cwd: fixture.directory, encoding: "utf8", timeout: 10_000,
+      env: isolatedGitEnvironment({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(fixture.directory, "empty.gitconfig") })
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  await writeFile(join(fixture.directory, ".gitignore"), "artifacts/\ncalls.jsonl\nenvironment.json\n");
+  await writeFile(join(fixture.directory, "empty.gitconfig"), "");
+  await writeFile(join(fixture.directory, "content.txt"), "synthetic evaluated input\n");
+  git("init", "--quiet", "--template=");
+  git("add", ".");
+  git("-c", "user.name=Synthetic", "-c", "user.email=synthetic@invalid",
+    "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Synthetic baseline");
+  const commit = git("rev-parse", "HEAD");
+  const tree = git("rev-parse", "HEAD^{tree}");
+  const pins = { PR_HEAD_COMMIT: commit, PR_BASE_COMMIT: commit, GIT_DIR: join(fixture.directory, "foreign-git") };
+  assert.equal(fixture.run("Fast", pins).status, 0);
+  const report = await fixture.report();
+  assert.equal(report.provenance.head_commit, commit);
+  assert.equal(report.provenance.base_commit, commit);
+  assert.equal(report.provenance.evaluated_commit, commit);
+  assert.equal(report.provenance.evaluated_tree, tree);
+  assert.equal(report.provenance.working_tree_clean, true);
+  assert.match(report.content.started.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(report.content.unchanged, true);
+  assert.deepEqual(report.content.finished, report.content.started);
+  assert.match(report.component_contract_sha256, /^[a-f0-9]{64}$/);
+  assert.ok(report.provenance.tools.git.startsWith("git version"));
+  git("update-index", "--assume-unchanged", "content.txt");
+  await writeFile(join(fixture.directory, "content.txt"), "hidden modification\n");
+  assert.equal(fixture.run("Fast", pins).status, 0);
+  const hidden = await fixture.report();
+  assert.equal(hidden.provenance.working_tree_clean, null);
+  assert.ok(hidden.unavailable.includes("clean evaluated content identity"));
+  assert.notEqual(hidden.content.started.sha256, report.content.started.sha256);
+  assert.equal(fixture.run("Fast", { ...pins, VALIDATION_MUTATE_INPUT: "1" }).status, 1);
+  const changed = await fixture.report();
+  assert.equal(changed.outcome, "failed");
+  assert.equal(changed.content.unchanged, false);
+});
+
+test("Full fails closed when successful tools leave missing timing evidence", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", { VALIDATION_MISSING_EVIDENCE: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const report = await fixture.report();
+  assert.equal(report.outcome, "failed");
+  assert.equal(report.evidence.status, "incomplete");
+  for (const name of ["complete .NET TRX results", "complete Node results", "complete rendering phase results"])
+    assert.ok(report.unavailable.includes(name), name);
+});
+
+test("a Git checkout without resolvable evaluated identity cannot pass unbound validation", async t => {
+  const fixture = await checkout(t);
+  const initialized = spawnSync("git", ["init", "--quiet", "--template="], {
+    cwd: fixture.directory, encoding: "utf8", timeout: 10_000,
+    env: isolatedGitEnvironment({
+      GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(fixture.directory, "empty.gitconfig")
+    })
+  });
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const result = fixture.run("Fast");
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const report = await fixture.report();
+  assert.equal(report.outcome, "failed");
+  assert.equal(report.content.error, "Git evaluated identity unavailable");
+  assert.equal(report.components.find(component => component.id === "prerequisites").outcome, "failure");
+  assert.equal(report.components.find(component => component.id === "build").outcome, "blocked");
+});
+
+test("Full reports a tooling failure before the rendering tail and records every unexecuted component", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", {
+    VALIDATION_FAIL: "node:--test", VALIDATION_RENDER_DELAY_MS: "10000"
+  });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const calls = await fixture.calls();
+  assert.ok(calls.some(call => call.tool === "node" && call.arguments[0] === "--test"));
+  assert.ok(!calls.some(call => call.tool === "dotnet" && call.arguments[0] === "test"),
+    "An inexpensive tooling failure must not wait for production rendering");
+  const report = await fixture.report();
+  assert.deepEqual(report.components.map(component => component.id), [
+    "prerequisites", "format", "build", "syntax", "browser", "node", "dotnet", "evidence"
+  ]);
+  assert.equal(report.components.find(component => component.id === "node").outcome, "failure");
+  const rendering = report.components.find(component => component.id === "dotnet");
+  assert.equal(rendering.outcome, "blocked");
+  assert.deepEqual(rendering.blocked_by, ["node"]);
+  assert.ok(report.first_failure_ms < report.duration_ms);
+  assert.ok(report.first_failure_ms < 10000, "Useful failure feedback must precede the controlled rendering tail");
+  assert.ok(report.components.every(component =>
+    ["success", "failure", "blocked", "cancelled", "incomplete"].includes(component.outcome)));
+});
+
+test("Full reports per-test/class work and excludes nested Node costs from top-level work", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full");
+  const report = await fixture.report();
+  assert.equal(result.status, 0, result.stdout + result.stderr + JSON.stringify(report));
+  assert.equal(report.evidence.status, "complete");
+  assert.equal(report.evidence.dotnet.count, 2);
+  assert.deepEqual(report.evidence.dotnet.classes, [
+    { name: "Synthetic.Display", tests: 2, work_ms: 200 }
+  ]);
+  assert.equal(report.evidence.node.top_level_work_ms, 100);
+  assert.equal(report.evidence.node.tests.length, 2);
+  assert.deepEqual(report.evidence.dotnet.tests.map(test => [test.test_id, test.name]), [
+    ["one", "All views"], ["two", "All scenarios"]
+  ]);
+  assert.match(report.evidence.inventory_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(report.evidence.component_contract_sha256, report.component_contract_sha256);
+  assert.equal(report.evidence.phases.display_coverage.length, 12);
+  assert.deepEqual(report.evidence.phases.display_coverage.map(item => JSON.stringify(item)).sort(),
+    report.evidence.phases.inventory.coverage.expected.map(item => JSON.stringify(item)).sort());
+  assert.ok(report.components.every(component => component.outcome === "success"));
+  const calls = await fixture.calls();
+  assert.ok(calls.findIndex(call => call.tool === "node" && call.arguments[0] === "--test")
+    < calls.findIndex(call => call.tool === "dotnet" && call.arguments[0] === "test"));
+  assert.ok(report.duration_ms >= Math.max(...report.stages.map(stage => stage.duration_ms)));
+});
+
+test("Full explicitly selects OG-first or exhaustive coverage and restores the inherited diagnostic profile", async t => {
+  const fixture = await checkout(t);
+  const inventories = [];
+  for (const profile of ["", "OgFirst", "Exhaustive"]) {
+    const result = fixture.run("Full", {
+      VALIDATION_DISPLAY_PROFILE: profile, TRMNL_DISPLAY_COVERAGE: "Exhaustive"
+    });
+
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Full validation PASSED/, result.stderr);
+    const report = await fixture.report();
+    inventories.push(report.evidence.inventory_sha256);
+    assert.equal(report.display_coverage.profile, profile || "OgFirst");
+    assert.equal((await fixture.calls()).filter(call => call.tool === "dotnet" && call.arguments[0] === "test")
+      .at(-1).coverage, profile || "OgFirst");
+    const environment = await fixture.environment();
+    assert.deepEqual(environment.after, environment.before);
+  }
+  assert.equal(inventories[0], inventories[1], "The explicit and default OG-first inventories must agree");
+  assert.notEqual(inventories[1], inventories[2], "The inventory digest must bind the chosen coverage profile");
+});
+
+test("Full cannot certify successful tests whose selected assertion completions are missing", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", { VALIDATION_MISSING_COVERAGE: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal((await fixture.report()).outcome, "failed");
+});
+
+test("Full rejects missing duplicate unexpected skipped failed or forged selected coverage", async t => {
+  const fixture = await checkout(t);
+  for (const fault of [
+    "missing-pair", "duplicate", "unexpected", "wrong-profile", "wrong-variant",
+    "skipped", "failed", "policy-changed", "forged-manifest"
+  ]) {
+    await t.test(fault, async () => {
+      const result = fixture.run("Full", { VALIDATION_COVERAGE_FAULT: fault });
+      assert.equal(result.status, 1, `${fault}: ${result.stdout}${result.stderr}`);
+      const report = await fixture.report();
+      assert.equal(report.outcome, "failed");
+      assert.ok(report.unavailable.includes("complete rendering phase results"));
+    });
+  }
+});
+
+test("cancelled Node evidence and unfinished rendering phases cannot certify complete Full", async t => {
+  const fixture = await checkout(t);
+  for (const environment of [
+    { VALIDATION_CANCELLED_NODE: "1" },
+    { VALIDATION_CANCELLED_NODE: "1", VALIDATION_FAIL: "node:--test" },
+    { VALIDATION_ABORTED_DOTNET: "1", VALIDATION_FAIL: "dotnet:test" },
+    { VALIDATION_UNFINISHED_PHASE: "png.inspect" }
+  ]) {
+    const result = fixture.run("Full", environment);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    const report = await fixture.report();
+    assert.equal(report.outcome, "failed");
+    assert.equal(report.evidence.status, "incomplete");
+    const component = report.components.find(component =>
+      component.id === (environment.VALIDATION_CANCELLED_NODE ? "node" : "dotnet"));
+    assert.equal(component.outcome,
+      environment.VALIDATION_CANCELLED_NODE || environment.VALIDATION_ABORTED_DOTNET ? "cancelled" : "incomplete");
+    if (environment.VALIDATION_CANCELLED_NODE)
+      assert.equal(report.components.find(component => component.id === "dotnet").outcome, "blocked");
+  }
+});
+
+test("reported test failures cannot become success even if a test tool exits zero", async t => {
+  const fixture = await checkout(t);
+  for (const tool of ["dotnet", "node"]) {
+    const result = fixture.run("Full", { VALIDATION_REPORTED_FAILURE: tool });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    const report = await fixture.report();
+    assert.equal(report.outcome, "failed");
+    assert.equal(report.evidence.status, "failed");
+  }
+});
+
+test("failed run summaries and individual Node events cannot be overridden by passing peers", async t => {
+  for (const [environment, component] of [
+    [{ VALIDATION_FAILED_TRX_SUMMARY: "1" }, "dotnet"],
+    [{ VALIDATION_FAILED_NODE_EVENT: "1" }, "node"]
+  ]) {
+    await t.test(component, async t => {
+      const fixture = await checkout(t);
+      const result = fixture.run("Full", environment);
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      const report = await fixture.report();
+      assert.equal(report.outcome, "failed");
+      assert.equal(report.components.find(item => item.id === component).outcome, "failure");
+      assert.equal(report.evidence.status, "failed");
+      if (component === "node") {
+        assert.equal(report.components.find(item => item.id === "dotnet").outcome, "blocked");
+        assert.ok(!(await fixture.calls()).some(call => call.arguments[0] === "test"));
+      }
+    });
+  }
+});
+
+test("an interruption after successful evidence cannot become successful Full on a later report write", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", { VALIDATION_FINAL_STAGE_SAVE_FAIL: "1" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /Validation interrupted: Synthetic final-stage report write failure/);
+  assert.equal((await fixture.report()).outcome, "failed");
+  const { before, after } = await fixture.environment();
+  assert.deepEqual(after, before);
+});
+
+test("expected rendering errors and owned supersession stay visible without failing passing tests", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", { VALIDATION_EXPECTED_RENDER_FAILURE: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const report = await fixture.report();
+  assert.equal(report.evidence.status, "complete");
+  assert.equal(report.evidence.phases.interrupted_child_phases, 1);
+  assert.ok(report.evidence.phases.totals.some(phase => phase.failed === 1));
+});
+
+test("a terminated public validation leaves an incomplete report with its active stage", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Fast", { VALIDATION_PAUSE: "1", VALIDATION_TIMEOUT_MS: "5000" });
+  assert.ok(result.error || result.status !== 0);
+  const report = await fixture.report();
+  assert.equal(report.outcome, "incomplete");
+  assert.equal(report.finished_at, null);
+  assert.ok(report.stages.some(stage => stage.name === "C# formatting (read-only)" && stage.result === "running"));
+  assert.equal(report.components.find(component => component.id === "format").outcome, "incomplete");
+  assert.equal(report.components.find(component => component.id === "build").outcome, "incomplete");
+});
+
+test("a cooperatively cancelled component stays cancelled, blocks rendering and restores its caller environment", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run("Full", {
+    VALIDATION_CANCEL_TOOL: "dotnet:build", TRMNL_TIMING_DIRECTORY: "caller-timing",
+    AZURE_BICEP_CHECK_VERSION: "true"
+  });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const report = await fixture.report();
+  assert.equal(report.components.find(component => component.id === "build").outcome, "cancelled");
+  assert.equal(report.components.find(component => component.id === "dotnet").outcome, "blocked");
+  assert.equal(report.stages.find(stage => stage.name === ".NET build (warnings as errors)").result, "cancelled");
+  const { before, after } = await fixture.environment();
+  assert.deepEqual(after, before);
 });
 
 test("a failed component cannot become overall success when later commands pass", async t => {
@@ -208,9 +669,13 @@ test("full validation propagates test failures and blocks .NET execution after a
     const result = fixture.run("Full", { VALIDATION_FAIL: failure });
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.stdout, /Full validation FAILED/);
-    if (failure === "dotnet:build")
+    if (failure === "dotnet:build") {
       assert.match(result.stdout, /\.NET tests \(production rendering\)\s+BLOCKED/);
-    if (failure !== "node:--test")
+      assert.match(result.stdout, /Node delivery and guardrail tests\s+BLOCKED/);
+      const report = await fixture.report();
+      assert.deepEqual(report.components.find(component => component.id === "node").blocked_by, ["build", "browser"]);
+    }
+    if (failure === "dotnet:test")
       assert.match(result.stdout, /Node delivery and guardrail tests\s+PASSED/);
   }
 });
@@ -255,9 +720,13 @@ test("Full diagnoses missing or unusable pinned Chromium before running producti
     assert.match(result.stdout, /Chromium.*FAILED/s);
     assert.match(result.stdout, /Chromium.*setup-display/s);
     assert.match(result.stdout, /\.NET tests \(production rendering\)\s+BLOCKED/);
+    const report = await fixture.report();
+    assert.equal(report.components.find(component => component.id === "node").outcome, "blocked");
+    assert.deepEqual(report.components.find(component => component.id === "node").blocked_by, ["browser"]);
   }
   const calls = await fixture.calls();
   assert.ok(!calls.some(call => call.tool === "dotnet" && call.arguments[0] === "test"));
+  assert.ok(!calls.some(call => call.tool === "node" && call.arguments[0] === "--test"));
   assert.ok(!calls.some(call => call.arguments.includes("install") || call.arguments.includes("restore")));
 });
 

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, execFile } from "node:child_process";
-import { watch } from "node:fs";
+import { appendFileSync, existsSync, statSync, watch } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, extname, join, resolve } from "node:path";
@@ -19,6 +19,14 @@ const targets = [
   { id: "v2-half_horizontal", name: "X / v2 Half-horizontal", device: "v2", placement: "half_horizontal", width: 1872, height: 1404 },
   { id: "v2-half_vertical", name: "X / v2 Half-vertical", device: "v2", placement: "half_vertical", width: 1872, height: 1404 }
 ];
+
+function recordRenderingTiming(event) {
+  if (!process.env.TRMNL_TIMING_DIRECTORY) return;
+  const path = join(process.env.TRMNL_TIMING_DIRECTORY, `phases-node-${process.pid}.jsonl`);
+  if (existsSync(path) && statSync(path).size > 20 * 1024 * 1024)
+    throw new Error("Workbench timing report exceeds diagnostic limit.");
+  appendFileSync(path, JSON.stringify(event) + "\n");
+}
 
 class WorkbenchError extends Error {
   constructor(message, status = 400) {
@@ -263,22 +271,31 @@ async function main() {
     if (closing || generation !== revision) return Promise.reject(superseded());
     return new Promise((resolveRender, reject) => {
       queue.push({ revision: generation, priority, resolve: resolveRender, reject, run: () => new Promise((resolveRuby, rejectRuby) => {
+        const operationId = randomUUID();
+        const started = performance.now();
+        const startedAt = new Date().toISOString();
+        recordRenderingTiming({ kind: "start", id: operationId, phase: "ruby.workbench_process", started_at: startedAt });
         const child = spawn(ruby, [
           join(toolRoot, "display", "render.rb"), target.placement, target.device, "--template-root", templateRoot
-        ], { cwd: toolRoot, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-        const running = { child, revision: generation };
+        ], {
+          cwd: toolRoot, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+          env: { ...process.env, TRMNL_TIMING_OPERATION_ID: operationId, TRMNL_RUBY_STARTED_AT: startedAt }
+        });
+        const running = { child, revision: generation, terminated: false };
         children.add(running);
         let output = "";
         let diagnostics = "";
         let failure;
         const timer = setTimeout(() => {
           failure = new WorkbenchError("The strict Liquid renderer timed out.", 500);
+          running.terminated = true;
           child.kill();
         }, 15_000);
         child.stdout.setEncoding("utf8").on("data", chunk => {
           output += chunk;
           if (Buffer.byteLength(output) > 2 * 1024 * 1024) {
             failure = new WorkbenchError("Rendered HTML exceeds the local preview budget.", 500);
+            running.terminated = true;
             child.kill();
           }
         });
@@ -290,6 +307,16 @@ async function main() {
         child.on("close", code => {
           clearTimeout(timer);
           children.delete(running);
+          try {
+            recordRenderingTiming({
+              kind: "end", id: operationId, phase: "ruby.workbench_process",
+              duration_ms: performance.now() - started,
+              terminated: running.terminated || closing || generation !== revision,
+              result: closing || generation !== revision ? "cancelled" : code === 0 && !failure ? "passed" : "failed"
+            });
+          } catch {
+            failure = new WorkbenchError("Could not record rendering timing. Check TRMNL_TIMING_DIRECTORY and restart the workbench.", 500);
+          }
           if (generation !== revision || closing) rejectRuby(superseded());
           else if (failure) rejectRuby(failure);
           else if (code !== 0) rejectRuby(new WorkbenchError(`Strict Liquid rendering failed: ${diagnostics.trim() || `Ruby exit ${code}`}`, 500));

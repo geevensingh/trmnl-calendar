@@ -32,8 +32,8 @@ public sealed partial class AgendaHttpTests
         Assert.Equal(DateTimeOffset.Parse("2026-10-21T03:00:00Z"), occurrence.GetProperty("end_at").GetDateTimeOffset());
         Assert.DoesNotContain("Future all-day commitment", body.GetRawText());
 
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, body);
 
@@ -105,8 +105,8 @@ public sealed partial class AgendaHttpTests
         Assert.Equal(DateTimeOffset.Parse("2026-10-21T02:00:00Z"), occurrences[1].GetProperty("start_at").GetDateTimeOffset());
         Assert.Equal(DateTimeOffset.Parse("2026-10-21T03:00:00Z"), occurrences[1].GetProperty("end_at").GetDateTimeOffset());
 
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, body);
 
@@ -168,8 +168,8 @@ public sealed partial class AgendaHttpTests
         Assert.Equal("Moved Wednesday planning", retained.GetProperty("title").GetString());
         Assert.DoesNotContain("OOF", body.GetRawText());
         Assert.DoesNotContain("OOO", body.GetRawText());
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, body);
 
@@ -230,8 +230,8 @@ public sealed partial class AgendaHttpTests
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", Fixture(fixture));
         using var result = await agenda.Poll();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, result.RootElement);
 
@@ -365,8 +365,8 @@ public sealed partial class AgendaHttpTests
         }
         Assert.DoesNotContain("synthetic.invalid", body.GetRawText());
         Assert.DoesNotContain("Synthetic future shift", body.GetRawText());
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, body);
 
@@ -404,8 +404,8 @@ public sealed partial class AgendaHttpTests
             Assert.All(occurrences, item =>
                 Assert.Equal(DateTimeOffset.Parse(expectedStart), item.GetProperty("start_at").GetDateTimeOffset()));
         }
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, body);
 
@@ -480,8 +480,8 @@ public sealed partial class AgendaHttpTests
     {
         using var agenda = new AgendaHttp("2026-10-20T02:00:00Z", Fixture("all-day.ics"));
         using var result = await agenda.Poll();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         await DisplayTests.Show(page, result.RootElement);
 

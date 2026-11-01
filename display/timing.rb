@@ -8,7 +8,7 @@ module ValidationTiming
   SCRIPT_ENTRY = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
   def self.enabled?
-    ENV.key?("TRMNL_TIMING_DIRECTORY")
+    !ENV.fetch("TRMNL_TIMING_DIRECTORY", "").empty?
   end
 
   def self.write(event)

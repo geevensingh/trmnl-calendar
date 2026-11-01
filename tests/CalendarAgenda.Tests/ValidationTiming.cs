@@ -90,25 +90,43 @@ internal static class ValidationTiming
         Write(new { kind = "start", id, phase, scenario, started_at = DateTimeOffset.UtcNow });
         var passed = false;
         string? toolVersion = null;
+        T? value = default;
         try
         {
-            var value = await operation();
+            value = await operation();
             if (value is IBrowser browser) toolVersion = browser.Version;
             passed = true;
             return value;
         }
         finally
         {
-            Write(new
+            try
             {
-                kind = "end",
-                id,
-                phase,
-                scenario,
-                tool_version = toolVersion,
-                duration_ms = timer.Elapsed.TotalMilliseconds,
-                result = passed ? "passed" : "failed"
-            });
+                Write(new
+                {
+                    kind = "end",
+                    id,
+                    phase,
+                    scenario,
+                    tool_version = toolVersion,
+                    duration_ms = timer.Elapsed.TotalMilliseconds,
+                    result = passed ? "passed" : "failed"
+                });
+            }
+            catch (Exception timingFailure)
+            {
+                try
+                {
+                    if (value is IAsyncDisposable asyncResource) await asyncResource.DisposeAsync();
+                    else if (value is IDisposable resource) resource.Dispose();
+                }
+                catch (Exception disposalFailure)
+                {
+                    throw new AggregateException("Timing finalization and resource disposal failed.",
+                        timingFailure, disposalFailure);
+                }
+                throw;
+            }
         }
     }
 

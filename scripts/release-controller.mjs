@@ -16,6 +16,10 @@ function changedTargets(path) {
     normalized === "scripts/agenda-workbench.mjs" ||
     normalized === "scripts/setup-display.ps1" ||
     normalized === "scripts/display-toolchain.ps1" ||
+    normalized === "scripts/validation-report.ps1" ||
+    normalized === "scripts/plan-dependency-cache.ps1" ||
+    normalized === "scripts/node-timing-reporter.mjs" ||
+    normalized === "scripts/check-required-validation.mjs" ||
     normalized === "display/render.rb" ||
     normalized === "display/timing.rb"
   ) return targetSets.none;

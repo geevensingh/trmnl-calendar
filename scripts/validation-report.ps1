@@ -149,8 +149,12 @@ function Read-ValidationGit([string]$Root, [string[]]$Arguments) {
 
 function Get-ValidationDigest($Value) {
     $json = ConvertTo-Json -InputObject $Value -Depth 20 -Compress
-    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
-        [Text.Encoding]::UTF8.GetBytes($json))).ToLowerInvariant()
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [BitConverter]::ToString($hash.ComputeHash(
+            [Text.Encoding]::UTF8.GetBytes($json))).Replace('-', '').ToLowerInvariant()
+    }
+    finally { $hash.Dispose() }
 }
 
 function Get-ValidationInputFingerprint([string]$Root) {

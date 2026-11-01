@@ -10,7 +10,9 @@ $savedEnvironment = Save-DisplayEnvironment
 
 function Get-CacheDigest($Identity) {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($Identity | ConvertTo-Json -Depth 10 -Compress))
-    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($hash.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+    finally { $hash.Dispose() }
 }
 
 function Test-CacheDestination([string]$RelativePath) {

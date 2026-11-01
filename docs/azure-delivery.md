@@ -290,7 +290,9 @@ Use **Actions > Coordinated production release > Run workflow** on `main` for `s
 
 For a TRMNL failure, run `inspect-trmnl` on the same manual workflow before retrying publication. It pulls the existing production plugin once, compares its non-secret definition/templates with the blocked activation/release commit (or the dispatch commit when nothing is blocked), and reports boolean readability, field-schema compatibility and content equality plus the bounded comparison below. A pinned activation repair, including an older queued release whose TRMNL target it covers, compares against the corrected source instead. It never pushes, creates a deployment record, writes the ledger, clears a recovery barrier, or implies that configured values were preserved. Inspection needs the existing publishing key but not backup approval because it makes no plugin changes.
 
-Inspection adds `content_comparison` without changing the existing result fields.
+Inspection adds `content_comparison` and `definition_readback` without removing
+the existing result fields. It performs one archive pull and one direct,
+read-only details request.
 It reports `file_set_matches` and one fixed result for each of `settings.yml`,
 `shared.liquid`, `full.liquid`, `half_horizontal.liquid`, and `half_vertical.liquid`.
 Results are `match`, `different`, `source_missing`, `deployed_missing`, or
@@ -329,6 +331,57 @@ configured-value preservation or a verified target. Read the bounded evidence
 before choosing a fix; do not strip unknown remote fields or retry blindly.
 Read-only inspection does not retarget a pinned repair source/archive or clear
 its mutation-confirmation barrier.
+
+#### Direct polling-definition read-back
+
+The owner-supplied public [TRMNL OpenAPI](https://trmnl.com/api-docs/openapi.json),
+read on 2026-11-01, documents `getPluginSettingDetails` as
+`GET /api/plugin_settings/{id}/details`. Its `data.settings` description says
+**sensitive values are removed**; it does not guarantee raw polling templates
+will be returned. The verifier reads only explicitly returned, flat
+`polling_headers` and `polling_body` settings. It does not guess nested paths,
+use configured custom-field values, or interpret sanitized details as proof.
+
+`definition_readback` reports the fixed operation name, response availability,
+and those two fixed field names with source/deployed type, `observable` and
+`matches` booleans. Null, missing, structured or `[set]` values are not observable
+template strings. Rendered literals, masked values and any different string
+cannot match the pinned, unrendered source. No field text, account/plugin names,
+custom-field names/values, URLs, error response bodies or hashes are emitted.
+
+The exact archive comparator may resolve **only** a null/missing exported polling
+field for which this direct endpoint returns the exact nonempty source string.
+Every other setting, custom-field definition, unknown field and template byte
+remains compared. Archive differences stay visible in `content_comparison`;
+`content_matches` can reflect the combined archive-and-direct proof. A direct
+string disagreement remains a failure even if the archive agrees. Publisher
+success output remains unchanged; it requests direct details only after the
+post-upload pull needs this exact omission check, and records a bounded
+`trmnl_definition_readback` event. Neither inspection nor this GET uploads,
+updates configured values, retargets the immutable archive, or clears the ledger.
+
+The request uses only the existing publishing key, a fixed HTTPS service/path,
+GET, no redirects, a 15-second request/body deadline, a 1 MiB body bound and the
+operation's cancellation signal. HTTP 401/403/404 and malformed/oversized bodies
+fail explicitly with fixed `trmnl_details_*` codes. A details response or archive
+visibility does **not** establish ownership or authorize a different target.
+The public schema's archive documentation explicitly warns that another
+author's recipe omits polling headers/body. The instance PATCH endpoint changes
+name/description/refresh options, not polling definitions; no guessed PATCH,
+typed-configuration value path, new identity or permission is used here.
+
+After human review/landing, run the existing **`inspect-trmnl`** operation before
+any further publication. It still selects the ledger's pinned corrected source.
+The necessary live fact is whether the details endpoint actually exposes the
+two exact strings with the existing token. The entire observed export shape
+(two null polling fields, four additional static/serverless/OAuth fields and one
+extra field) must still fail when those other differences remain unresolved,
+even if details prove both polling strings. The fixed comparison-name set now
+includes all remaining `PluginSetting` properties from the supplied schema
+(`sync`, `plugin_id`, `health_notification_enabled`, `icon_url`,
+`icon_content_type`, `read_only?`) for classification only, not ignored metadata
+or accepted defaults. Arbitrary unknown names remain hidden and blocking.
+This conditional verifier is not a claim that production activation is fixed.
 
 #### Definition representation evidence (2026-10-31)
 

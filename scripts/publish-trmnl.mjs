@@ -18,6 +18,14 @@ const definitionFields = [
   "name", "description", "strategy", "polling_url", "polling_verb", "polling_headers",
   "polling_body", "refresh_interval", "framework_version", "no_screen_padding", "dark_mode", "custom_fields"
 ];
+const comparisonFields = [
+  ...definitionFields, "static_data", "serverless_language",
+  "oauth_auth_params", "oauth_authorization_method", "oauth_authorize_url", "oauth_body_format",
+  "oauth_enabled", "oauth_expiry_field_name", "oauth_expiry_strategy", "oauth_fixed_expiry_ms",
+  "oauth_pkce_enabled", "oauth_refresh_params", "oauth_refresh_url", "oauth_scope_separator",
+  "oauth_scopes", "oauth_token_field_name", "oauth_token_headers", "oauth_token_params",
+  "oauth_token_request_auth_method", "oauth_token_response_metadata", "oauth_token_site", "oauth_token_url"
+];
 
 function fail(code) {
   const error = new Error(code);
@@ -235,18 +243,25 @@ async function compareContent(source, deployed, sourceFiles, signal) {
   ]);
   const before = JSON.parse(sourceSettings);
   const after = JSON.parse(deployedSettings);
-  const valueType = value => value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-  const fields = definitionFields.flatMap(field => {
+  const valueType = value => value === undefined ? "missing" : value === null ? "null" :
+    Array.isArray(value) ? "array" : typeof value;
+  const empty = value => typeof value === "string" || Array.isArray(value) ? value.length === 0 :
+    value !== null && typeof value === "object" ? Object.keys(value).length === 0 : null;
+  const fields = comparisonFields.flatMap(field => {
     const sourcePresent = Object.hasOwn(before, field);
     const deployedPresent = Object.hasOwn(after, field);
     const reason = !sourcePresent && deployedPresent ? "source_missing" :
       sourcePresent && !deployedPresent ? "deployed_missing" :
         valueType(before[field]) !== valueType(after[field]) ? "type_mismatch" :
           JSON.stringify(before[field]) !== JSON.stringify(after[field]) ? "value_mismatch" : null;
-    return reason ? [{ field, reason }] : [];
+    return reason ? [{
+      field, reason,
+      source_type: valueType(before[field]), deployed_type: valueType(after[field]),
+      source_empty: empty(before[field]), deployed_empty: empty(after[field])
+    }] : [];
   });
-  const unknownBefore = Object.fromEntries(Object.entries(before).filter(([field]) => !definitionFields.includes(field)));
-  const unknownAfter = Object.fromEntries(Object.entries(after).filter(([field]) => !definitionFields.includes(field)));
+  const unknownBefore = Object.fromEntries(Object.entries(before).filter(([field]) => !comparisonFields.includes(field)));
+  const unknownAfter = Object.fromEntries(Object.entries(after).filter(([field]) => !comparisonFields.includes(field)));
   comparison.files[0].result = sourceSettings === deployedSettings ? "match" : "different";
   comparison.definition = {
     compared: true,

@@ -398,7 +398,8 @@ test("read-only TRMNL inspection reports mismatches without mutating the plugin"
     operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: false, content_matches: false
   });
   assert.deepEqual(content_comparison.definition.fields, [
-    { field: "custom_fields", reason: "value_mismatch" }
+    { field: "custom_fields", reason: "value_mismatch",
+      source_type: "array", deployed_type: "array", source_empty: false, deployed_empty: false }
   ]);
   assert.equal(content_comparison.files.find(item => item.file === "full.liquid").result, "different");
   assert.deepEqual(calls, ["pull"]);
@@ -436,8 +437,10 @@ test("read-only comparison identifies fixed fields and files without exposing re
     definition: {
       compared: true,
       fields: [
-        { field: "name", reason: "value_mismatch" },
-        { field: "custom_fields", reason: "value_mismatch" }
+        { field: "name", reason: "value_mismatch",
+          source_type: "string", deployed_type: "string", source_empty: false, deployed_empty: false },
+        { field: "custom_fields", reason: "value_mismatch",
+          source_type: "array", deployed_type: "array", source_empty: false, deployed_empty: false }
       ],
       unknown_fields: { source_count: 0, deployed_count: 1, matches: false }
     }
@@ -462,15 +465,149 @@ test("comparison distinguishes missing definitions and value types without emitt
     }
   });
   assert.deepEqual(inspected.content_comparison.definition.fields, [
-    { field: "description", reason: "deployed_missing" },
-    { field: "refresh_interval", reason: "type_mismatch" },
-    { field: "dark_mode", reason: "source_missing" }
+    { field: "description", reason: "deployed_missing",
+      source_type: "string", deployed_type: "missing", source_empty: false, deployed_empty: null },
+    { field: "refresh_interval", reason: "type_mismatch",
+      source_type: "number", deployed_type: "string", source_empty: null, deployed_empty: false },
+    { field: "dark_mode", reason: "source_missing",
+      source_type: "missing", deployed_type: "string", source_empty: null, deployed_empty: false }
   ]);
   assert.deepEqual(inspected.content_comparison.definition.unknown_fields, {
     source_count: 0, deployed_count: 0, matches: true
   });
   assert.equal(inspected.content_matches, false);
   assert.doesNotMatch(JSON.stringify(inspected), /Private synthetic|98765|15/);
+});
+
+test("inspection distinguishes dropped polling settings and source-established extra settings without accepting them", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const marker = "SYNTHETIC_PRIVATE_REPRESENTATION";
+  await writeFile(join(sourceDirectory, "settings.yml"),
+    (await readFile(join(sourceDirectory, "settings.yml"), "utf8")) +
+    `polling_headers: |\n  x-functions-key: {{ function_key }}\npolling_body: |\n  {"rules_json": {{ rules_json | json }}}\n`);
+  const result = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => {
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      const settings = await readFile(join(cwd, "src", "settings.yml"), "utf8");
+      await writeFile(join(cwd, "src", "settings.yml"), settings.replace(
+        /polling_headers: \|[\s\S]*$/,
+        `polling_headers:\npolling_body: {}\nstatic_data: ''\nserverless_language:\noauth_enabled: false\n${marker}: ${marker}\n`
+      ));
+    }
+  });
+  assert.equal(result.content_matches, false);
+  assert.deepEqual(result.content_comparison.definition.fields, [
+    { field: "polling_headers", reason: "type_mismatch",
+      source_type: "string", deployed_type: "null", source_empty: false, deployed_empty: null },
+    { field: "polling_body", reason: "type_mismatch",
+      source_type: "string", deployed_type: "object", source_empty: false, deployed_empty: true },
+    { field: "static_data", reason: "source_missing",
+      source_type: "missing", deployed_type: "string", source_empty: null, deployed_empty: true },
+    { field: "serverless_language", reason: "source_missing",
+      source_type: "missing", deployed_type: "null", source_empty: null, deployed_empty: null },
+    { field: "oauth_enabled", reason: "source_missing",
+      source_type: "missing", deployed_type: "boolean", source_empty: null, deployed_empty: null }
+  ]);
+  assert.deepEqual(result.content_comparison.definition.unknown_fields, {
+    source_count: 0, deployed_count: 1, matches: false
+  });
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(
+    `${marker}|function_key|rules_json|x-functions-key|[a-f0-9]{64}`
+  ));
+});
+
+test("comparison exposes only fixed type and structural-emptiness enums and never equates represented polling settings", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const base = await readFile(join(sourceDirectory, "settings.yml"), "utf8");
+  const original = '  {"rules_json": {{ rules_json | json }}}';
+  await writeFile(join(sourceDirectory, "settings.yml"), `${base}polling_body: |\n${original}\n`);
+  const markers = {
+    object: '{"SYNTHETIC_PRIVATE_KEY": "SYNTHETIC_PRIVATE_VALUE"}',
+    array: '["SYNTHETIC_PRIVATE_VALUE"]'
+  };
+  for (const [yaml, type, empty] of [
+    ["", "missing", null], ["polling_body: null\n", "null", null],
+    ["polling_body: false\n", "boolean", null], ["polling_body: 0\n", "number", null],
+    ['polling_body: ""\n', "string", true], ['polling_body: " "\n', "string", false],
+    ["polling_body: {}\n", "object", true], ["polling_body: []\n", "array", true],
+    [`polling_body: ${markers.object}\n`, "object", false],
+    [`polling_body: ${markers.array}\n`, "array", false],
+    ['polling_body: {rules_json: "{{ rules_json | json }}"}\n', "object", false]
+  ]) {
+    const result = await publisher.inspectTrmnl({
+      sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async (_command, _args, { cwd }) => {
+        await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+        await writeFile(join(cwd, "src", "settings.yml"), base + yaml);
+      }
+    });
+    assert.equal(result.content_matches, false, "No type/representation difference is normalized away.");
+    assert.deepEqual(result.content_comparison.definition.fields, [{
+      field: "polling_body", reason: type === "missing" ? "deployed_missing" :
+        type === "string" ? "value_mismatch" : "type_mismatch",
+      source_type: "string", deployed_type: type, source_empty: false, deployed_empty: empty
+    }]);
+    assert.doesNotMatch(JSON.stringify(result), /SYNTHETIC_PRIVATE|rules_json|[a-f0-9]{64}/);
+  }
+});
+
+test("known OAuth setting identifiers retain presence, types and mismatches rather than being ignored as metadata", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const fields = [
+    "oauth_auth_params", "oauth_authorization_method", "oauth_authorize_url", "oauth_body_format",
+    "oauth_enabled", "oauth_expiry_field_name", "oauth_expiry_strategy", "oauth_fixed_expiry_ms",
+    "oauth_pkce_enabled", "oauth_refresh_params", "oauth_refresh_url", "oauth_scope_separator",
+    "oauth_scopes", "oauth_token_field_name", "oauth_token_headers", "oauth_token_params",
+    "oauth_token_request_auth_method", "oauth_token_response_metadata", "oauth_token_site", "oauth_token_url"
+  ];
+  const marker = "SYNTHETIC_PRIVATE_OAUTH_VALUE";
+  const result = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => {
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      const path = join(cwd, "src", "settings.yml");
+      await writeFile(path, (await readFile(path, "utf8")) + fields.map(field => `${field}: ${marker}\n`).join(""));
+    }
+  });
+  assert.equal(result.content_matches, false);
+  assert.deepEqual(result.content_comparison.definition.fields, fields.map(field => ({
+    field, reason: "source_missing", source_type: "missing", deployed_type: "string",
+    source_empty: null, deployed_empty: false
+  })));
+  assert.deepEqual(result.content_comparison.definition.unknown_fields, {
+    source_count: 0, deployed_count: 0, matches: true
+  });
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(`${marker}|[a-f0-9]{64}`));
+});
+
+test("publisher type evidence never logs static data, OAuth values or nested names", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const marker = "SYNTHETIC_PRIVATE_NESTED_VALUE";
+  const events = [];
+  t.mock.method(console, "error", message => events.push(JSON.parse(message)));
+  await assert.rejects(publishTrmnl({
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      if (args[0] !== "pull") return;
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      const path = join(cwd, "src", "settings.yml");
+      await writeFile(path, (await readFile(path, "utf8")) +
+        `static_data:\n  ${marker}_key: [${marker}]\n` +
+        `oauth_token_headers:\n  ${marker}_header: ${marker}\n`);
+    }
+  }), { code: "trmnl_deployed_content_mismatch" });
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0].definition.fields, [
+    { field: "static_data", reason: "source_missing",
+      source_type: "missing", deployed_type: "object", source_empty: null, deployed_empty: false },
+    { field: "oauth_token_headers", reason: "source_missing",
+      source_type: "missing", deployed_type: "object", source_empty: null, deployed_empty: false }
+  ]);
+  assert.deepEqual(events[0].definition.unknown_fields, {
+    source_count: 0, deployed_count: 0, matches: true
+  });
+  assert.doesNotMatch(JSON.stringify(events), new RegExp(`${marker}|[a-f0-9]{64}`));
 });
 
 test("file-set comparison reports fixed missing files and only counts for arbitrary filenames", async t => {

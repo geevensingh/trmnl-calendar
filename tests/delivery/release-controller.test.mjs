@@ -15,6 +15,13 @@ import * as controller from "../../scripts/release-controller.mjs";
 import { AzureBlobLedger } from "../../scripts/azure-blob-ledger.mjs";
 
 const commit = letter => letter.repeat(40);
+const functionalVerification = {
+  scope: "trmnl_functional_v1", observable_content_matches: true,
+  hidden_polling_templates_proven: false, native_refresh_succeeded: true,
+  agenda_current: true, agenda_fresh: true, returned_samples_validated: true,
+  full_native_payload_validated: false, native_payload_size_proven: false
+};
+const trmnlOutcome = () => ({ verified: true, verification: { ...functionalVerification } });
 const releaseArtifact = (sha, references = { azure: `packages/${sha}.zip` }, metadata = {}) => {
   const digests = Object.fromEntries(Object.keys(references).map(target => [target, "b".repeat(64)]));
   return {
@@ -66,7 +73,7 @@ async function activatedLedger() {
           [target, `${target}/${head}`])));
       },
       async deployAndVerifyAzure() { return { verified: true }; },
-      async publishAndVerifyTrmnl() { return { verified: true }; }
+      async publishAndVerifyTrmnl() { return trmnlOutcome(); }
     }
   });
   return ledger;
@@ -90,7 +97,7 @@ test("explicit activation repair publishes the corrected TRMNL artifact without 
     async publishAndVerifyTrmnl(source, artifact) {
       publications.push({ source, artifact });
       if (source === original) throw Object.assign(new Error(), { code: "trmnl_push_http_422" });
-      return { verified: true };
+      return trmnlOutcome();
     },
     async verifyArtifact() { return true; },
     async prepareTrmnlActivationRepair(artifact, source) {
@@ -129,6 +136,15 @@ test("explicit activation repair publishes the corrected TRMNL artifact without 
   assert.equal(status.activation.trmnl_repair.artifact.identity, correctedArchive.identity);
   assert.deepEqual(status.pending_reconciliation, { azure: false, trmnl: false });
   assert.equal(status.activation.recovery_confirmation_required, false);
+  const evidence = status.activation.target_verification.trmnl;
+  assert.deepEqual(evidence, {
+    ...functionalVerification, source_commit: corrected, artifact_identity: correctedArchive.identity,
+    checked_at: evidence.checked_at
+  });
+  assert.ok(Number.isFinite(Date.parse(evidence.checked_at)));
+  assert.deepEqual(state.activation.trmnl_repair.attempts.at(-1).trmnl_verification, evidence);
+  assert.deepEqual(status.activation.trmnl_repair.attempts.at(-1).trmnl_verification, evidence);
+  assert.deepEqual(result.trmnl_verification, evidence);
   assert.doesNotMatch(JSON.stringify(status), /Previous publisher stopped; reviewed description correction/);
 });
 
@@ -154,9 +170,57 @@ async function failedTrmnlActivation() {
   artifact.references.trmnl = `releases/${corrected}/trmnl-${artifact.digests.trmnl}.tar`;
   artifact.identity = artifactIdentity(corrected, artifact.references, artifact.digests, {});
   options.services.prepareTrmnlActivationRepair = async () => artifact;
-  options.services.publishAndVerifyTrmnl = async () => ({ verified: true });
+  options.services.publishAndVerifyTrmnl = async () => trmnlOutcome();
   return { ...options, correctedCommit: corrected, previousMutationStopped: true, artifact };
 }
+
+test("repair cannot mark a target verified without the complete honest functional evidence", async () => {
+  for (const outcome of [
+    { verified: true },
+    { verified: true, verification: { ...functionalVerification, scope: "legacy" } },
+    ...Object.keys(functionalVerification).filter(key => key !== "scope").map(key => ({
+      verified: true, verification: { ...functionalVerification, [key]: !functionalVerification[key] }
+    })),
+    { verified: true, verification: { ...functionalVerification, private_payload: "SYNTHETIC_PRIVATE" } }
+  ]) {
+    const options = await failedTrmnlActivation();
+    const before = await options.ledger.read();
+    options.services.publishAndVerifyTrmnl = async () => outcome;
+    const result = await controller.repairActivationTrmnl(options);
+    assert.equal(result.status, "failed");
+    assert.equal(result.code, "trmnl_verification_failed");
+    const state = await options.ledger.read();
+    assert.deepEqual(state.activation.artifact, before.activation.artifact);
+    assert.deepEqual(state.activation.first_failure, before.activation.first_failure);
+    assert.equal(state.activation.target_results.azure, "verified");
+    assert.equal(state.activation.recovery_confirmation_required, true);
+    assert.equal(state.pending_reconciliation.trmnl, true);
+    assert.equal(state.activation.target_verification?.trmnl, undefined);
+    assert.doesNotMatch(JSON.stringify(state), /SYNTHETIC_PRIVATE/);
+  }
+});
+
+test("ordinary releases also block boolean-only TRMNL success and preserve the verified Azure frontier", async () => {
+  const ledger = await activatedLedger();
+  await admitMainCommits({
+    ledger, commits: [{ commit: commit("b"), parent: commit("a"), paths: ["scripts/publish-trmnl.mjs"] }],
+    through: commit("b"), isAncestor: async () => false
+  });
+  const services = {
+    async changedPaths() { return ["scripts/publish-trmnl.mjs"]; },
+    async prepare(head) { return releaseArtifact(head, { azure: "azure/b", trmnl: "trmnl/b" }); },
+    async deployAndVerifyAzure() { return { verified: true }; },
+    async publishAndVerifyTrmnl() { return { verified: true }; }
+  };
+  const result = await runNextRelease({ ledger, services });
+  assert.equal(result.status, "failed");
+  assert.equal(result.code, "trmnl_verification_failed");
+  const state = await ledger.read();
+  assert.deepEqual(state.baselines, { azure: commit("b"), trmnl: commit("a") });
+  assert.equal(state.queue[0].recovery_confirmation_required, true);
+  assert.equal(state.queue[0].target_verification?.trmnl, undefined);
+  assert.deepEqual((await runNextRelease({ ledger, services })).status, "failed");
+});
 
 test("repair rejects mismatched archive provenance without retaining or publishing the candidate", async () => {
   for (const change of [
@@ -251,7 +315,7 @@ for (const interruption of ["prepare", "artifact_saved", "publish", "verified_sa
       assert.equal(signal, abort.signal);
       publications += 1;
       if (interruption === "publish") abort.abort(new Error("synthetic_lease_lost"));
-      return { verified: true };
+      return trmnlOutcome();
     };
     await assert.rejects(controller.repairActivationTrmnl(options), { message: "synthetic_lease_lost" });
     ledger.withExclusive = withExclusive;
@@ -275,7 +339,7 @@ for (const interruption of ["prepare", "artifact_saved", "publish", "verified_sa
       assert.equal(commit, options.correctedCommit);
       assert.deepEqual(artifact, options.artifact);
       publications += 1;
-      return { verified: true };
+      return trmnlOutcome();
     };
     assert.equal((await controller.repairActivationTrmnl(options)).status, "succeeded");
     assert.equal(prepares, interruption === "prepare" ? 2 : 1);
@@ -416,7 +480,7 @@ for (const target of ["azure", "trmnl"]) {
         return releaseArtifact(head, Object.fromEntries(targets.map(name => [name, `${name}/${head}`])));
       },
       async deployAndVerifyAzure() { mutations.push("azure"); return { verified: true }; },
-      async publishAndVerifyTrmnl() { mutations.push("trmnl"); return { verified: true }; },
+      async publishAndVerifyTrmnl() { mutations.push("trmnl"); return trmnlOutcome(); },
       async verifyArtifact() { return true; }
     };
     await assert.rejects(runNextRelease({ ledger, services }), {
@@ -460,7 +524,7 @@ for (const target of ["azure", "trmnl"]) {
     const mutations = [];
     const mutate = async head => {
       mutations.push(head);
-      return { verified: head === commit("c") };
+      return { ...trmnlOutcome(), verified: head === commit("c") };
     };
     const services = {
       async changedPaths(_base, head) { return head === commit("b") ? [path] : []; },
@@ -483,8 +547,12 @@ for (const target of ["azure", "trmnl"]) {
     delete legacy.pending_reconciliation;
     await ledger.replace(legacy);
     assert.equal((await listReleaseStatus({ ledger })).pending_reconciliation[target], true);
-    assert.deepEqual(await runNextRelease({ ledger, services }), {
-      started: true, release: commit("c"), targets: [target], status: "succeeded"
+    const outcome = await runNextRelease({ ledger, services });
+    assert.deepEqual(outcome, {
+      started: true, release: commit("c"), targets: [target], status: "succeeded",
+      ...(target === "trmnl" ? {
+        trmnl_verification: (await ledger.read()).queue.at(-1).target_verification.trmnl
+      } : {})
     });
     assert.deepEqual(mutations, [commit("b"), commit("c")]);
     assert.equal((await listReleaseStatus({ ledger })).pending_reconciliation[target], false);
@@ -515,7 +583,7 @@ test("target selection uses only the corresponding target baseline after alterna
       return releaseArtifact(head, Object.fromEntries(targets.map(target => [target, `${target}/${head}`])));
     },
     async deployAndVerifyAzure(head) { deployed.push(["azure", head]); return { verified: true }; },
-    async publishAndVerifyTrmnl(head) { deployed.push(["trmnl", head]); return { verified: true }; }
+    async publishAndVerifyTrmnl(head) { deployed.push(["trmnl", head]); return trmnlOutcome(); }
   };
   assert.deepEqual((await runNextRelease({ ledger, services })).targets, ["trmnl"]);
   assert.deepEqual((await runNextRelease({ ledger, services })).targets, ["azure"]);
@@ -588,7 +656,7 @@ test("initial activation deploys both targets in order and only then sets the ba
     async publishAndVerifyTrmnl() {
       assert.deepEqual(stages, ["azure"]);
       stages.push("trmnl");
-      return { verified: true };
+      return trmnlOutcome();
     }
   };
   const result = await activateReleaseBaseline({
@@ -597,7 +665,8 @@ test("initial activation deploys both targets in order and only then sets the ba
   });
   assert.deepEqual(result, {
     active: true, baseline: commit("b"), targets: ["azure", "trmnl"], status: "succeeded",
-    trmnl_backup_recovery_accepted: true
+    trmnl_backup_recovery_accepted: true,
+    trmnl_verification: (await ledger.read()).activation.target_verification.trmnl
   });
   assert.deepEqual(stages, ["azure", "trmnl"]);
   const activation = (await ledger.read()).activation;
@@ -616,8 +685,10 @@ test("legacy activation status does not invent backup approval and rejects inval
   const state = await ledger.read();
   assert.equal(state.activation.trmnl_backup_recovery_accepted, true);
   delete state.activation.trmnl_backup_recovery_accepted;
+  delete state.activation.target_verification;
   await ledger.replace(state);
   assert.equal((await listReleaseStatus({ ledger })).activation.trmnl_backup_recovery_accepted, null);
+  assert.deepEqual((await listReleaseStatus({ ledger })).activation.target_verification, {});
   for (const invalid of ["true", false]) {
     state.activation.trmnl_backup_recovery_accepted = invalid;
     await ledger.replace(state);
@@ -672,7 +743,7 @@ test("activation retains its first interruption after successful explicit recove
       }
     }
   };
-  options.services.publishAndVerifyTrmnl = async () => ({ verified: true });
+  options.services.publishAndVerifyTrmnl = async () => trmnlOutcome();
   await assert.rejects(activateReleaseBaseline(options), { message: "runner_stopped" });
   ledger.withExclusive = withExclusive;
   assert.equal((await ledger.read()).activation.status, "running");
@@ -739,12 +810,21 @@ test("combined release deploys and verifies Azure before TRMNL, then advances bo
     async publishAndVerifyTrmnl() {
       assert.deepEqual(stages, ["azure"]);
       stages.push("trmnl");
-      return { verified: true };
+      return trmnlOutcome();
     }
   };
-  assert.deepEqual(await runNextRelease({ ledger, services }), {
-    started: true, release: commit("b"), targets: ["azure", "trmnl"], status: "succeeded"
+  const result = await runNextRelease({ ledger, services });
+  const evidence = (await ledger.read()).queue[0].target_verification.trmnl;
+  assert.deepEqual(result, {
+    started: true, release: commit("b"), targets: ["azure", "trmnl"], status: "succeeded",
+    trmnl_verification: evidence
   });
+  assert.deepEqual(evidence, {
+    ...functionalVerification, source_commit: commit("b"),
+    artifact_identity: (await ledger.read()).queue[0].artifact.identity, checked_at: evidence.checked_at
+  });
+  assert.deepEqual((await ledger.read()).queue[0].attempts.at(-1).trmnl_verification, evidence);
+  assert.deepEqual((await listReleaseStatus({ ledger })).queue[0].target_verification.trmnl, evidence);
   assert.deepEqual(stages, ["azure", "trmnl"]);
   assert.deepEqual((await listReleaseStatus({ ledger })).baselines, {
     azure: commit("b"), trmnl: commit("b")
@@ -788,7 +868,7 @@ test("Azure failure blocks TRMNL and successors; retry keeps the original commit
       assert.equal(head, commit("b"));
       assert.equal(artifact.identity, firstArtifact.identity);
       stages.push("trmnl");
-      return { verified: true };
+      return trmnlOutcome();
     },
     async verifyArtifact(artifact, head) {
       return artifact.identity === firstArtifact.identity && head === commit("b");

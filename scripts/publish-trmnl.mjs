@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
+import { validateAgenda } from "./agenda-contract.mjs";
 
 const pluginIdPattern = /^[1-9][0-9]{0,18}$/;
 const execFileAsync = promisify(execFile);
@@ -19,7 +21,7 @@ const definitionFields = [
   "polling_body", "refresh_interval", "framework_version", "no_screen_padding", "dark_mode", "custom_fields"
 ];
 const comparisonFields = [
-  ...definitionFields, "static_data", "serverless_language",
+  ...definitionFields, "static_data", "serverless_language", "refresh_interval_floor",
   "oauth_auth_params", "oauth_authorization_method", "oauth_authorize_url", "oauth_body_format",
   "oauth_enabled", "oauth_expiry_field_name", "oauth_expiry_strategy", "oauth_fixed_expiry_ms",
   "oauth_pkce_enabled", "oauth_refresh_params", "oauth_refresh_url", "oauth_scope_separator",
@@ -28,8 +30,29 @@ const comparisonFields = [
   "sync", "plugin_id", "health_notification_enabled", "icon_url", "icon_content_type", "read_only?"
 ];
 const pollingFields = ["polling_headers", "polling_body"];
+export const trmnlFunctionalVerification = Object.freeze({
+  scope: "trmnl_functional_v1", observable_content_matches: true,
+  hidden_polling_templates_proven: false, native_refresh_succeeded: true,
+  agenda_current: true, agenda_fresh: true, returned_samples_validated: true,
+  full_native_payload_validated: false, native_payload_size_proven: false
+});
+const exportBaseline = {
+  static_data: "", serverless_language: "", oauth_enabled: "false",
+  oauth_pkce_enabled: "no", refresh_interval_floor: "15"
+};
 const valueType = value => value === undefined ? "missing" : value === null ? "null" :
   Array.isArray(value) ? "array" : typeof value;
+
+function verificationEvidence(matches, native = null) {
+  return {
+    ...trmnlFunctionalVerification,
+    observable_content_matches: matches,
+    native_refresh_succeeded: native,
+    agenda_current: native,
+    agenda_fresh: native,
+    returned_samples_validated: native,
+  };
+}
 
 function fail(code) {
   const error = new Error(code);
@@ -75,7 +98,12 @@ async function canonicalSettings(path, signal, code, omittedFields = []) {
         "value = YAML.safe_load_file(ARGV.fetch(0))",
         "abort unless value.is_a?(Hash)",
         "value.delete('id')",
-        "ARGV.drop(1).each { |field| value.delete(field) }",
+        "baseline_context = value['strategy'] == 'polling' &&",
+        "  value['refresh_interval'].is_a?(Integer) && value['refresh_interval'] == 15",
+        "ARGV.drop(1).each do |field|",
+        `  next if ${JSON.stringify(Object.keys(exportBaseline))}.include?(field) && !baseline_context`,
+        "  value.delete(field)",
+        "end",
         "STDOUT.write(JSON.generate(canonical(value)))"
       ].join("\n"),
       path, ...omittedFields
@@ -210,31 +238,31 @@ function publisherEnvironment(apiKey) {
   return env;
 }
 
-async function readDefinitionDetails(pluginId, apiKey, signal) {
-  signal?.throwIfAborted();
+async function requestJson(pluginId, route, method, apiKey, signal, stage, statuses) {
+  if (signal?.aborted) fail(`trmnl_${stage}_cancelled`);
   const deadline = AbortSignal.timeout(15_000);
   const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
   let response;
   try {
-    response = await fetch(`https://trmnl.com/api/plugin_settings/${pluginId}/details`, {
-      method: "GET", redirect: "error",
+    response = await fetch(`https://trmnl.com/api/plugin_settings/${pluginId}${route}`, {
+      method, redirect: "error",
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
       signal: requestSignal
     });
   } catch {
-    fail(signal?.aborted ? "trmnl_details_cancelled" :
-      deadline.aborted ? "trmnl_details_timeout" : "trmnl_details_request_failed");
+    fail(signal?.aborted ? `trmnl_${stage}_cancelled` :
+      deadline.aborted ? `trmnl_${stage}_timeout` : `trmnl_${stage}_request_failed`);
   }
-  if (response.status !== 200) {
+  if (!statuses.includes(response.status)) {
     try {
       await response.body?.cancel();
     } finally {
       // Cleanup must not replace the redacted HTTP rejection with a raw stream error.
-      fail(`trmnl_details_http_${response.status}`);
+      fail(`trmnl_${stage}_http_${response.status}`);
     }
   }
   const reader = response.body?.getReader();
-  if (!reader) fail("trmnl_details_response_invalid");
+  if (!reader) fail(`trmnl_${stage}_response_invalid`);
   const chunks = [];
   let bytes = 0;
   try {
@@ -245,29 +273,120 @@ async function readDefinitionDetails(pluginId, apiKey, signal) {
       bytes += chunk.value.length;
       if (bytes > 1024 * 1024) {
         await reader.cancel();
-        fail("trmnl_details_output_limit");
+        fail(`trmnl_${stage}_output_limit`);
       }
       chunks.push(Buffer.from(chunk.value));
     }
   } catch (error) {
-    if (error?.code === "trmnl_details_output_limit") throw error;
-    fail(signal?.aborted ? "trmnl_details_cancelled" :
-      deadline.aborted ? "trmnl_details_timeout" : "trmnl_details_request_failed");
+    if (error?.code === `trmnl_${stage}_output_limit`) throw error;
+    fail(signal?.aborted ? `trmnl_${stage}_cancelled` :
+      deadline.aborted ? `trmnl_${stage}_timeout` : `trmnl_${stage}_request_failed`);
   } finally {
     reader.releaseLock();
   }
-  let details;
+  let payload;
   try {
-    details = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
   } catch {
-    fail("trmnl_details_response_invalid");
+    fail(`trmnl_${stage}_response_invalid`);
   }
+  if (stage === "refresh" &&
+    response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") {
+    fail("trmnl_refresh_response_invalid");
+  }
+  if (requestSignal.aborted) {
+    fail(signal?.aborted ? `trmnl_${stage}_cancelled` : `trmnl_${stage}_timeout`);
+  }
+  return { status: response.status, payload };
+}
+
+async function readDefinitionDetails(pluginId, apiKey, signal) {
+  const { payload: details } = await requestJson(pluginId, "/details", "GET", apiKey, signal, "details", [200]);
   if (!details?.data || typeof details.data !== "object" || Array.isArray(details.data) ||
     (details.data.settings !== undefined && details.data.settings !== null &&
       (typeof details.data.settings !== "object" || Array.isArray(details.data.settings)))) {
     fail("trmnl_details_response_invalid");
   }
   return details.data.settings;
+}
+
+function validateNativeAgenda(variables, startedAt) {
+  if (!variables || typeof variables !== "object" || Array.isArray(variables)) {
+    fail("trmnl_refresh_agenda_invalid");
+  }
+  const sampled = { ...variables };
+  for (const name of ["primary", "secondary"]) {
+    const day = variables[name];
+    if (!day || typeof day !== "object" || Array.isArray(day)) fail("trmnl_refresh_agenda_invalid");
+    const occurrences = day.occurrences;
+    if (Array.isArray(occurrences)) continue;
+    if (!occurrences || typeof occurrences !== "object" ||
+      !Number.isSafeInteger(occurrences.count) || occurrences.count < 0 ||
+      !Array.isArray(occurrences.sample) || occurrences.sample.length > occurrences.count ||
+      (occurrences.count > 0 && occurrences.sample.length === 0) ||
+      !Number.isSafeInteger(day.eligible_total) || occurrences.count > day.eligible_total) {
+      fail("trmnl_refresh_agenda_invalid");
+    }
+    // Validate only returned samples, never reconstruct or certify omitted occurrences.
+    sampled[name] = { ...day, occurrences: occurrences.sample };
+  }
+  try {
+    validateAgenda(sampled);
+  } catch {
+    // Contract paths/messages can contain private payload structure; publish only a fixed code.
+    fail("trmnl_refresh_agenda_invalid");
+  }
+  if (sampled.state !== "current") fail("trmnl_refresh_agenda_not_current");
+  // The validated agenda can carry .NET's seven fractional digits; do not round freshness.
+  const ticks = value => BigInt(Date.parse(value)) * 10_000n +
+    BigInt((/\.(\d{1,7})/.exec(value)?.[1] ?? "").padEnd(7, "0").slice(3));
+  const now = BigInt(Date.now()) * 10_000n;
+  const generated = ticks(sampled.generated_at);
+  const source = ticks(sampled.source_succeeded_at);
+  if (generated < BigInt(startedAt - 1000) * 10_000n ||
+    generated > now || source > now || now - source >= 9_000_000_000n) {
+    fail("trmnl_refresh_agenda_not_fresh");
+  }
+}
+
+async function verifyNativeRefresh(pluginId, apiKey, signal) {
+  const deadline = AbortSignal.timeout(60_000);
+  const refreshSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const startedAt = Date.now();
+  try {
+    const { payload: started } = await requestJson(
+      pluginId, "/refreshes", "POST", apiKey, refreshSignal, "refresh", [202]);
+    const job = started?.data;
+    if (!job || !["pending", "queued"].includes(job.status) ||
+      typeof job.job_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(job.job_id) ||
+      job.render_in_progress !== undefined) fail("trmnl_refresh_response_invalid");
+    for (let attempt = 0; attempt < 60; attempt++) {
+      refreshSignal.throwIfAborted();
+      const { status, payload } = await requestJson(
+        pluginId, `/refreshes/${job.job_id}`, "GET", apiKey, refreshSignal, "refresh", [200, 202]);
+      const result = payload?.data;
+      if (!result || result.job_id !== job.job_id) fail("trmnl_refresh_response_invalid");
+      if (status === 202) {
+        if (result.status !== "pending" || result.success !== undefined || result.variables !== undefined ||
+          (result.warning !== undefined && result.warning !== null)) fail("trmnl_refresh_response_invalid");
+        await delay(1000, undefined, { signal: refreshSignal });
+        continue;
+      }
+      if (result.status !== "complete" || typeof result.success !== "boolean") {
+        fail("trmnl_refresh_response_invalid");
+      }
+      if (!result.success) fail("trmnl_refresh_failed");
+      if (result.warning !== undefined && result.warning !== null) fail("trmnl_refresh_warning");
+      validateNativeAgenda(result.variables, startedAt);
+      refreshSignal.throwIfAborted();
+      return;
+    }
+    fail("trmnl_refresh_timeout");
+  } catch (error) {
+    if (signal?.aborted) fail("trmnl_refresh_cancelled");
+    if (deadline.aborted) fail("trmnl_refresh_timeout");
+    throw error;
+  }
 }
 
 function definitionEvidence(source, details) {
@@ -354,11 +473,15 @@ async function compareContent(source, deployed, sourceFiles, signal, readback) {
   for (const field of pollingFields) {
     const proof = readback?.fields.find(item => item.field === field);
     if (proof?.observable && !proof.matches) directMismatch = true;
-    if (typeof before[field] !== "string" || !before[field]) continue;
-    // Omitted export content needs independent exact proof, not null normalization.
-    if (proof?.matches && (after[field] === null || after[field] === undefined)) {
+    // Hidden strings are outside functional proof; visible contradictions still block.
+    if (typeof before[field] === "string" &&
+      (after[field] === null || after[field] === undefined)) {
       omittedFields.push(field);
     }
+  }
+  // Ruby retains the YAML integer type when deciding whether this context is proven.
+  for (const [field, value] of Object.entries(exportBaseline)) {
+    if (!Object.hasOwn(before, field) && after[field] === value) omittedFields.push(field);
   }
   // Keep Ruby's lossless canonical JSON rather than rounding integers through JavaScript.
   const [expectedSettings, effectiveSettings] = omittedFields.length ? await Promise.all([
@@ -371,8 +494,6 @@ async function compareContent(source, deployed, sourceFiles, signal, readback) {
     fileSetMatches: true,
     matches,
     comparison,
-    identity: matches ? `sha256:${createHash("sha256")
-      .update(deployedTemplatesHash).update("\0").update(sourceSettings).digest("hex")}` : null
   };
 }
 
@@ -395,6 +516,7 @@ async function operateTrmnl({
   const temporaryRoot = await mkdtemp(join(tmpdir(), "trmnl-release-"));
   const workingDirectory = join(temporaryRoot, "plugin");
   const stagedSource = join(workingDirectory, "src");
+  let sourceDefinition;
   try {
     await mkdir(stagedSource, { recursive: true });
     await writeFile(join(workingDirectory, ".trmnlp.yml"),
@@ -403,7 +525,9 @@ async function operateTrmnl({
     try {
       const sourceSettings = await canonicalSettings(join(source, "settings.yml"), signal,
         "trmnl_source_settings_invalid");
-      const expectedSchema = fieldSchema(JSON.parse(sourceSettings));
+      sourceDefinition = JSON.parse(sourceSettings);
+      if (!inspecting && sourceDefinition.strategy !== "polling") fail("trmnl_refresh_strategy_unsupported");
+      const expectedSchema = fieldSchema(sourceDefinition);
       await runCli("trmnlp", ["pull", "--force", "--id", pluginId],
         childEnvironment, workingDirectory, runCommand, signal, "preflight_pull");
       const deployedSchema = fieldSchema(JSON.parse(
@@ -418,7 +542,8 @@ async function operateTrmnl({
           operation: "inspect-trmnl", remote_readable: true,
           field_schema_compatible: compatible, content_matches: content.matches,
           content_comparison: content.comparison,
-          definition_readback: readback
+          definition_readback: readback,
+          verification: verificationEvidence(content.matches)
         };
       }
       if (!compatible) fail("trmnl_field_migration_required");
@@ -435,7 +560,7 @@ async function operateTrmnl({
     }
     const preliminary = await compareContent(source, stagedSource, sourceFiles, signal);
     let content = preliminary;
-    if (!preliminary.matches && preliminary.comparison.definition.fields.some(item =>
+    if (preliminary.matches || preliminary.comparison.definition.fields.some(item =>
       pollingFields.includes(item.field) && item.source_type === "string" &&
       ["null", "missing"].includes(item.deployed_type))) {
       let details;
@@ -447,11 +572,12 @@ async function operateTrmnl({
         }));
         throw error;
       }
-      const readback = definitionEvidence(
-        JSON.parse(await canonicalSettings(join(source, "settings.yml"), signal, "trmnl_source_settings_invalid")),
-        details);
-      content = await compareContent(source, stagedSource, sourceFiles, signal, readback);
-      console.error(JSON.stringify({ event: "trmnl_definition_readback", ...readback }));
+      const readback = definitionEvidence(sourceDefinition, details);
+      content = { ...preliminary,
+        matches: preliminary.matches && !readback.fields.some(field => field.observable && !field.matches) };
+      if (pollingFields.some(field => Object.hasOwn(sourceDefinition, field))) {
+        console.error(JSON.stringify({ event: "trmnl_definition_readback", ...readback }));
+      }
     }
     if (!content.matches) {
       console.error(JSON.stringify({
@@ -460,10 +586,11 @@ async function operateTrmnl({
     }
     if (!content.fileSetMatches) fail("trmnl_deployed_file_set_mismatch");
     if (!content.matches) fail("trmnl_deployed_content_mismatch");
+    await verifyNativeRefresh(pluginId, apiKey, signal);
     return {
       verified: true,
-      identity: content.identity,
-      pluginId
+      pluginId,
+      verification: verificationEvidence(true, true)
     };
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });

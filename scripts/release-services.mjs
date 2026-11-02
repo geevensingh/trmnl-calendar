@@ -245,7 +245,7 @@ export async function unpackTrmnlArchive(archive, destination, { signal } = {}) 
   }
 }
 
-export function createReleaseServices({ repository = process.cwd() } = {}) {
+export function createReleaseServices({ repository = process.cwd(), runTrmnlCommand, getStorageToken } = {}) {
   const account = readRequiredEnv("AZURE_STORAGE_ACCOUNT", /^[a-z0-9]{3,24}$/, "azure_release_configuration_invalid");
   const container = readRequiredEnv("AZURE_RELEASE_CONTAINER", /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/, "azure_release_configuration_invalid");
   const artifactContainer = readRequiredEnv(
@@ -253,7 +253,7 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
     /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/,
     "azure_release_configuration_invalid"
   );
-  const artifactStore = new AzureBlobArtifacts({ account, container: artifactContainer });
+  const artifactStore = new AzureBlobArtifacts({ account, container: artifactContainer, getToken: getStorageToken });
 
   const prepareTrmnl = async (checkout, commit, signal) => {
     const bundle = await createTrmnlArchive(join(checkout, "display", "src"),
@@ -442,6 +442,7 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
         sourceDirectory: join(checkout, "display", "src"),
         pluginId: process.env.TRMNL_PLUGIN_ID,
         apiKey: process.env.TRMNL_API_KEY,
+        runCommand: runTrmnlCommand,
         signal
       }), signal);
     },
@@ -461,9 +462,10 @@ export function createReleaseServices({ repository = process.cwd() } = {}) {
             pluginId: process.env.TRMNL_PLUGIN_ID,
             backupRecoveryAcceptedPluginId: process.env.TRMNL_BACKUP_RECOVERY_ACCEPTED_PLUGIN_ID,
             apiKey: process.env.TRMNL_API_KEY,
+            runCommand: runTrmnlCommand,
             signal
           });
-          return { verified: result.verified };
+          return { verified: result.verified, verification: result.verification };
         } finally {
           await rm(directory, { recursive: true, force: true });
         }

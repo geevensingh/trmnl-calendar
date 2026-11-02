@@ -131,6 +131,16 @@ An accepted upload is not sufficient to declare a release successful.
 | Azure | Expected deployed functions/bindings and the existing redacted HTTP checks against the released service |
 | TRMNL | The intended non-secret definition and templates reached the established plugin target |
 
+**Subsequent owner decision (2026-11-02):** TRMNL now uses the runbook's
+[functional verification contract](azure-delivery.md#approved-functional-verification-contract-2026-11-02):
+exact returned Liquid/settings checks, five explicitly typed export baselines,
+and completed native current/fresh polling with validated returned occurrence
+samples. This deliberately does **not** prove hidden polling-template bytes,
+omitted native occurrences or the full native payload's byte size. Persisted
+verification records carry that scope and those limits; source/artifact identities
+remain immutable input identities, not proof of every hidden deployed byte.
+Earlier release history is not relabeled.
+
 Verification must not log calendar contents, credentials, private configuration
 values, or raw responses containing them. Existing privacy and bounded-request
 requirements still apply. Deployment verification is distinct from pre-merge

@@ -13,6 +13,15 @@ import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
 const { activateFromMain, runReleaseBatch } = runner;
 const execFileAsync = promisify(execFile);
+const trmnlOutcome = () => ({
+  verified: true,
+  verification: {
+    scope: "trmnl_functional_v1", observable_content_matches: true,
+    hidden_polling_templates_proven: false, native_refresh_succeeded: true,
+    agenda_current: true, agenda_fresh: true, returned_samples_validated: true,
+    full_native_payload_validated: false, native_payload_size_proven: false
+  }
+});
 
 function memoryLedger() {
   let state = null;
@@ -96,7 +105,7 @@ test("release runner admits first-parent main commits and drains their FIFO queu
           };
         },
         async deployAndVerifyAzure() { return { verified: true }; },
-        async publishAndVerifyTrmnl() { return { verified: true }; }
+        async publishAndVerifyTrmnl() { return trmnlOutcome(); }
       }
     });
 
@@ -194,7 +203,7 @@ test("activation recovery resumes the recorded commit and retained artifacts aft
       assert.equal(commit, baseline);
       assert.deepEqual(artifact, originalArtifact);
       if (publications === 1) throw Object.assign(new Error(), { code: "trmnl_verification_failed" });
-      return { verified: true };
+      return trmnlOutcome();
     },
     async verifyArtifact(artifact, commit) {
       assert.equal(commit, baseline);
@@ -293,7 +302,7 @@ test("reviewed activation repair keeps Azure backlog FIFO without replaying olde
       publications.push({ commit, source: artifact.commit });
       if (commit === original) throw Object.assign(new Error(), { code: "trmnl_push_http_422" });
       if (repairFails) throw Object.assign(new Error(), { code: "trmnl_verification_failed" });
-      return { verified: true };
+      return trmnlOutcome();
     },
     async inspectTrmnl(commit) {
       return { operation: "inspect-trmnl", inspected_commit: commit, content_matches: false };
@@ -377,8 +386,15 @@ test("reviewed activation repair keeps Azure backlog FIFO without replaying olde
   await git(cwd, "add", ".");
   await git(cwd, "commit", "--quiet", "-m", "post-repair template");
   const later = await git(cwd, "rev-parse", "HEAD");
-  assert.deepEqual((await runReleaseBatch({ ledger, services, cwd, through: later })).releases, [
-    { commit: later, status: "succeeded", targets: ["trmnl"] }
+  const laterBatch = await runReleaseBatch({ ledger, services, cwd, through: later });
+  const evidence = (await listReleaseStatus({ ledger })).queue.at(-1).target_verification.trmnl;
+  assert.deepEqual(laterBatch.releases, [
+    { commit: later, status: "succeeded", targets: ["trmnl"], trmnl_verification: evidence }
   ]);
+  assert.equal(evidence.scope, "trmnl_functional_v1");
+  assert.equal(evidence.source_commit, later);
+  assert.equal(evidence.hidden_polling_templates_proven, false);
+  assert.equal(evidence.full_native_payload_validated, false);
+  assert.equal(evidence.native_payload_size_proven, false);
   assert.equal(publications.at(-1).commit, later);
 });

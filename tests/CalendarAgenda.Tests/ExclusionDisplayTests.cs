@@ -81,8 +81,8 @@ public sealed class ExclusionDisplayTests
         var source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "basic.ics"))
             .Replace("Secondary day meeting", "Design follow-up");
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", source);
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
 
         using var original = await agenda.Poll(DisplayTests.Render("polling-body", new { rules_json = "[]" }));

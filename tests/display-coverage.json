@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "og-first-v1",
+  "scenarios": [
+    "all-day-multiday", "autumn-offset", "dense-primary", "dense-secondary",
+    "emphasis-in-progress", "emphasis-upcoming", "empty-both", "empty-primary",
+    "empty-secondary", "error-compatibility", "error-configuration",
+    "error-known-success", "error-source", "error-unknown", "long-text", "midnight",
+    "normal-mixed", "reference", "spring-offset", "stale-empty", "stale", "weekend-labels"
+  ],
+  "secondary_scenarios": [
+    "normal-mixed", "dense-primary", "dense-secondary", "empty-both", "empty-primary",
+    "emphasis-in-progress", "emphasis-upcoming", "long-text", "error-unknown"
+  ],
+  "adaptive_families": {
+    "Ordinary_title_lowercase_s_keeps_readable_native_raster_ink": "all",
+    "Empty_days_keep_date_and_message_on_one_line_without_a_zero_count": "og-full",
+    "Emphasized_secondary_event_is_admitted_ahead_of_ordinary_primary_overflow": "og-full",
+    "Emphasized_overflow_is_admitted_in_chronological_order_before_ordinary_rows": "og-full",
+    "Longer_working_day_labels_keep_partial_counts_inside_native_headers": "og-full",
+    "Counts_disclose_displayed_rows_and_complete_totals_even_without_occurrences": "og-full",
+    "Essential_agenda_information_fits_each_native_physical_device_and_placement": "all",
+    "Busy_primary_days_reserve_truthful_overflow_before_secondary_details": "og-full",
+    "Remaining_room_shows_secondary_details_and_their_truthful_overflow": "og-full",
+    "Optional_locations_use_only_space_left_after_essential_rows": "all",
+    "Dense_long_titles_use_one_title_line_and_keep_truthful_ordered_fitting": "og-full",
+    "Timed_and_all_day_titles_preserve_text_and_typography_with_visible_end_ellipsis": "all",
+    "Long_untrusted_calendar_strings_cannot_displace_essential_information_or_execute_markup": "all",
+    "All_day_contract_entries_keep_their_label_and_weekend_Monday_priority": "og-full",
+    "Stale_contract_keeps_commitments_warning_and_original_source_success_visible": "og-full",
+    "Configuration_source_compatibility_and_unknown_errors_are_readable_not_empty_agendas": "all",
+    "Empty_primary_days_keep_selected_dates_instead_of_promoting_secondary_commitments": "og-full",
+    "Native_capture_readiness_is_not_published_before_production_fitting_completes": "all"
+  },
+  "title_variants": [
+    "short/timed", "short/all-day", "long/timed", "long/all-day",
+    "unbroken/timed", "unbroken/all-day", "markup/timed", "markup/all-day"
+  ],
+  "secondary_title_variants": [
+    "short/timed", "long/all-day", "markup/timed", "markup/all-day"
+  ]
+}

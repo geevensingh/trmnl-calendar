@@ -48,6 +48,17 @@ test("setup diagnoses broken native-extension tools before restoring gems", asyn
   assert.ok(!calls.some(call => call.arguments.includes("config") || call.arguments.includes("install")));
 });
 
+test("setup rejects an unloadable native PNG decoder before acquiring assets or reporting readiness", async t => {
+  const fixture = await checkout(t);
+  const result = fixture.run({ DISPLAY_FAIL: "raster-native" });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /locked Liquid\/raster gems.*native extensions.*setup-display/s);
+  assert.doesNotMatch(result.stdout, /Display setup PASSED/);
+  assert.ok(!(await fixture.calls()).some(call => call.tool === "download" || call.tool === "playwright"));
+  const { before, after } = await fixture.environment();
+  assert.deepEqual(after, before);
+});
+
 test("repeat setup reuses locked gems, pinned assets and usable Chromium without changing lockfiles", async t => {
   const fixture = await checkout(t);
   const lockfile = await readFile(join(fixture.directory, "Gemfile.lock"), "utf8");

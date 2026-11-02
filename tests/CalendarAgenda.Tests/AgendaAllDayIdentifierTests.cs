@@ -321,8 +321,8 @@ public sealed partial class AgendaHttpTests
         const string excludeOof = """[{"field":"title","mode":"whole_word","value":"OOF"}]""";
         const string excludeProofreading = """[{"field":"title","mode":"starts_with","value":"Proofreading"}]""";
         using var storage = new CacheDirectory();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 800, Height = 480 } });
         var view = new AdaptiveDisplayTests.NativeView("og", "full", 800, 480, 1, 780, 460);
         string? movedId;

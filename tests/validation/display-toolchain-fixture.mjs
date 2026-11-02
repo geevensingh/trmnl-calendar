@@ -59,6 +59,14 @@ exit 0
            frozen = $env:BUNDLE_FROZEN; ignoreConfig = $env:BUNDLE_IGNORE_CONFIG;
            userCache = $env:BUNDLE_USER_CACHE } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:DISPLAY_CALLS
+        if ($args[0] -eq '-e' -and $args[1] -match 'RbConfig::CONFIG') {
+          @{ engine = 'ruby'; version = if ($env:DISPLAY_RUBY_VERSION) { $env:DISPLAY_RUBY_VERSION } else { '4.0.0' };
+             platform = 'x64-mingw-ucrt'; patchlevel = 0; revision = 'synthetic';
+             config = @{ arch = 'x64-mingw-ucrt'; DLEXT = 'so'; ruby_version = if ($env:DISPLAY_NATIVE_ABI) { $env:DISPLAY_NATIVE_ABI } else { '4.0.0' } } } |
+            ConvertTo-Json -Depth 5 -Compress
+          $global:LASTEXITCODE = if ($env:DISPLAY_FAIL -eq 'cache-identity') { 34 } else { 0 }
+          return
+        }
         if ($args[0] -eq '-e' -and $args[1] -match 'RUBY_VERSION') {
           if ($env:DISPLAY_FAIL -eq 'ruby') {
             $global:LASTEXITCODE = 31
@@ -82,7 +90,7 @@ exit 0
           return
         }
         if ($args -contains 'check') {
-          $global:LASTEXITCODE = if (Test-Path -LiteralPath (Join-Path $env:BUNDLE_PATH 'synthetic-gems')) { 0 } else { 54 }
+          $global:LASTEXITCODE = if (Test-Path -LiteralPath (Join-Path $env:BUNDLE_PATH 'ruby\4.0.0\gems\synthetic-gem\lib\ready')) { 0 } else { 54 }
           return
         }
         if ($args -contains 'config') {
@@ -102,12 +110,15 @@ exit 0
           New-Item -ItemType Directory -Force $env:BUNDLE_PATH | Out-Null
           'interrupted gem restore' | Set-Content -LiteralPath (Join-Path $env:BUNDLE_PATH 'partial-gem')
           if ($LASTEXITCODE -eq 0) {
-            'ready' | Set-Content -LiteralPath (Join-Path $env:BUNDLE_PATH 'synthetic-gems')
+            $gem = Join-Path $env:BUNDLE_PATH 'ruby\4.0.0\gems\synthetic-gem\lib'
+            New-Item -ItemType Directory -Force $gem | Out-Null
+            'ready' | Set-Content -LiteralPath (Join-Path $gem 'ready')
           }
           return
         }
         if (($args -join ' ') -match 'trmnl/liquid') {
-          $global:LASTEXITCODE = if ($env:DISPLAY_FAIL -eq 'gems') { 56 } else { 0 }
+          $global:LASTEXITCODE = if ($env:DISPLAY_FAIL -eq 'gems' -or
+            ($env:DISPLAY_FAIL -eq 'raster-native' -and ($args -join ' ') -match 'require "oily_png"')) { 56 } else { 0 }
           return
         }
         $global:LASTEXITCODE = 53

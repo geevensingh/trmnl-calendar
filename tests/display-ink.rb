@@ -1,38 +1,47 @@
 # frozen_string_literal: true
 
-require "bundler/setup"
-require "chunky_png"
-require "json"
+require_relative "../display/timing"
+ValidationTiming.measure("ruby.load") do
+  require "bundler/setup"
+  require "oily_png"
+  require "json"
+end
+ValidationTiming.loaded!
 
 request = JSON.parse($stdin.read)
-image = ChunkyPNG::Image.from_file(request.fetch("image"))
-comparison = ChunkyPNG::Image.from_file(request.fetch("comparison_image")) if request.key?("comparison_image")
+image, comparison = ValidationTiming.measure("png.decode") do
+  image = ChunkyPNG::Image.from_file(request.fetch("image"))
+  comparison = ChunkyPNG::Image.from_file(request.fetch("comparison_image")) if request.key?("comparison_image")
+  [image, comparison]
+end
 if comparison && (comparison.width != image.width || comparison.height != image.height)
   abort "Raster comparison must use identical physical dimensions."
 end
-results = request.fetch("regions").map do |region|
-  left = region.fetch("x").floor
-  top = region.fetch("y").floor
-  right = (region.fetch("x") + region.fetch("width")).ceil
-  bottom = (region.fetch("y") + region.fetch("height")).ceil
-  unless left >= 0 && top >= 0 && right <= image.width && bottom <= image.height
-    abort "Required text is outside the physical screenshot."
-  end
+results = ValidationTiming.measure("png.inspect") do
+  request.fetch("regions").map do |region|
+    left = region.fetch("x").floor
+    top = region.fetch("y").floor
+    right = (region.fetch("x") + region.fetch("width")).ceil
+    bottom = (region.fetch("y") + region.fetch("height")).ceil
+    unless left >= 0 && top >= 0 && right <= image.width && bottom <= image.height
+      abort "Required text is outside the physical screenshot."
+    end
 
-  ink = 0
-  different = 0
-  (top...bottom).each do |y|
-    (left...right).each do |x|
-      color = image[x, y]
-      different += 1 if comparison && color != comparison[x, y]
-      if ChunkyPNG::Color.a(color).positive? && ChunkyPNG::Color.r(color) < 96 &&
-          ChunkyPNG::Color.g(color) < 96 && ChunkyPNG::Color.b(color) < 96
-        ink += 1
+    ink = 0
+    different = 0
+    (top...bottom).each do |y|
+      (left...right).each do |x|
+        color = image[x, y]
+        different += 1 if comparison && color != comparison[x, y]
+        if ChunkyPNG::Color.a(color).positive? && ChunkyPNG::Color.r(color) < 96 &&
+            ChunkyPNG::Color.g(color) < 96 && ChunkyPNG::Color.b(color) < 96
+          ink += 1
+        end
       end
     end
+    result = { text: region.fetch("text"), dark_pixels: ink }
+    result[:different_pixels] = different if comparison
+    result
   end
-  result = { text: region.fetch("text"), dark_pixels: ink }
-  result[:different_pixels] = different if comparison
-  result
 end
 puts JSON.generate(results)

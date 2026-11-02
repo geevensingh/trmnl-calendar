@@ -40,8 +40,8 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
         var template = fixture.Template;
         await fixture.WriteTemplate(template.Replace("data-agenda-state=", "data-workbench-probe=\"uncommitted\" data-agenda-state="));
         var running = await fixture.Start();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await Page(browser, running);
         await Ready(page);
         await Assertions.Expect(page.Locator("#baseline-commit")).ToHaveTextAsync(fixture.Baseline);
@@ -92,8 +92,8 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
             </script>
             """);
         var running = await fixture.Start();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await Page(browser, running);
         foreach (var target in Targets)
         {
@@ -148,8 +148,8 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
     {
         await using var fixture = await Workspace.Create();
         var running = await fixture.Start();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await Page(browser, running);
         await Ready(page);
         await Check(page);
@@ -213,8 +213,8 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
     {
         await using var fixture = await Workspace.Create();
         var running = await fixture.Start();
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync();
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
         var page = await Page(browser, running);
         var measurements = new List<object>();
         try
@@ -448,7 +448,8 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
             foreach (var directory in new[] { Path.Combine("display", "src"), Path.Combine("display", "scenarios") })
                 foreach (var file in Directory.GetFiles(Path.Combine(DisplayTests.Root, directory)))
                     File.Copy(file, Path.Combine(workspace.Root, directory, Path.GetFileName(file)));
-            foreach (var file in new[] { Path.Combine("display", "render.rb"), Path.Combine("docs", "agenda-contract.md") })
+            foreach (var file in new[] { Path.Combine("display", "render.rb"), Path.Combine("display", "timing.rb"),
+                Path.Combine("docs", "agenda-contract.md") })
                 File.Copy(Path.Combine(DisplayTests.Root, file), Path.Combine(workspace.Root, file));
             workspace.Template = await File.ReadAllTextAsync(Path.Combine(workspace.Root, "display", "src", "shared.liquid"));
             await workspace.Git("init", "--quiet", "--template=");

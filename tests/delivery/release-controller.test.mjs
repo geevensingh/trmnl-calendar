@@ -373,6 +373,11 @@ test("classification selects only affected production targets and defaults unkno
   assert.deepEqual(classifyPaths(["tests/CalendarAgenda.Tests/AgendaHttpTests.cs"]), ["azure"]);
   assert.deepEqual(classifyPaths(["display/workbench/preview.mjs", "README.md"]), []);
   assert.deepEqual(classifyPaths(["scripts/agenda-workbench.mjs", "display/render.rb"]), []);
+  assert.deepEqual(classifyPaths(["display/timing.rb"]), []);
+  for (const script of ["validation-report.ps1", "plan-dependency-cache.ps1",
+    "node-timing-reporter.mjs", "check-required-validation.mjs"]) {
+    assert.deepEqual(classifyPaths([`scripts/${script}`]), [], script);
+  }
   assert.deepEqual(classifyPaths(["scripts/setup-display.ps1", "scripts/display-toolchain.ps1"]), []);
   for (const script of [
     "azure-cli.ps1", "deploy-azure.ps1", "deploy-release-infrastructure.ps1",

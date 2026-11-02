@@ -1,10 +1,14 @@
 # frozen_string_literal: true
 
-require "bundler/setup"
-require "json"
-require "optparse"
-require "yaml"
-require "trmnl/liquid"
+require_relative "timing"
+ValidationTiming.measure("ruby.load") do
+  require "bundler/setup"
+  require "json"
+  require "optparse"
+  require "yaml"
+  require "trmnl/liquid"
+end
+ValidationTiming.loaded!
 
 template_root = File.join(__dir__, "src")
 OptionParser.new do |options|
@@ -39,8 +43,10 @@ markup =
     abort "Unsupported display mode."
   end
 
-rendered = Liquid::Template.parse(markup, environment: environment)
-  .render!(variables, strict_variables: true, strict_filters: true)
+rendered = ValidationTiming.measure("ruby.render") do
+  Liquid::Template.parse(markup, environment: environment)
+    .render!(variables, strict_variables: true, strict_filters: true)
+end
 
 if views.include?(mode)
   device = ARGV.fetch(1, "og")

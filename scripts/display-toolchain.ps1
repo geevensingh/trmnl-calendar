@@ -6,6 +6,7 @@ function Assert-DisplaySdk {
         if ($LASTEXITCODE -ne 0 -or "$sdk" -notmatch '^10\.') {
             throw "Reported '$sdk' (exit $LASTEXITCODE)."
         }
+        $script:DisplaySdkVersion = "$sdk"
     }
     catch {
         throw "The .NET 10 SDK selected by global.json is unavailable. $hint $($_.Exception.Message)"
@@ -41,6 +42,7 @@ function Get-DisplayRuby([string]$Root) {
         throw "Ruby 4 is required; '$selection' reported '$version'. $hint"
     }
     Write-Host "Ruby $version : $selection"
+    $script:DisplayRubyVersion = "$version"
     return $selection
 }
 
@@ -152,7 +154,7 @@ function Invoke-DisplayBundle($Toolchain, [string[]]$Arguments) {
 }
 
 function Assert-DisplayGems($Toolchain) {
-    & $Toolchain.Ruby -e 'gem "bundler", ARGV.fetch(0); require "bundler/setup"; require "trmnl/liquid"; require "chunky_png"; require "redcarpet"; require "bigdecimal"; require "strscan"; puts "Locked Liquid/raster/native gems loaded"' `
+    & $Toolchain.Ruby -e 'gem "bundler", ARGV.fetch(0); require "bundler/setup"; require "trmnl/liquid"; require "oily_png"; require "redcarpet"; require "bigdecimal"; require "strscan"; puts "Locked Liquid/raster/native gems loaded"' `
         $Toolchain.BundlerVersion | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw 'The locked Liquid/raster gems or native extensions cannot load. Run .\scripts\setup-display.ps1 with the selected Ruby and compatible Devkit; repair worktree-local gems if necessary. Do not update Gemfile.lock.'

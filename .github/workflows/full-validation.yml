@@ -11,6 +11,8 @@ permissions:
 jobs:
   full:
     name: Full validation
+    outputs:
+      preparation: ${{ steps.prepare.outputs.revision }}
     concurrency:
       group: ${{ format('full-validation-{0}', github.event.pull_request.number || github.ref) }}
       cancel-in-progress: true
@@ -23,6 +25,8 @@ jobs:
       DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       AZURE_BICEP_CHECK_VERSION: 'false'
+      PR_HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
     steps:
       - name: Check out the event-pinned head or dispatch revision
         uses: actions/checkout@v6
@@ -37,11 +41,16 @@ jobs:
           node-version: '22'
 
       - name: Prepare and verify the event-pinned PR merge
+        id: prepare
         if: github.event_name == 'pull_request'
         env:
           PR_HEAD_COMMIT: ${{ github.event.pull_request.head.sha }}
           PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
-        run: node .\scripts\prepare-ci.mjs --head-commit "$env:PR_HEAD_COMMIT" --base-commit "$env:PR_BASE_COMMIT"
+        run: |
+          $revision = node .\scripts\prepare-ci.mjs --head-commit "$env:PR_HEAD_COMMIT" --base-commit "$env:PR_BASE_COMMIT"
+          if ($LASTEXITCODE -ne 0) { throw 'Event-pinned PR preparation failed.' }
+          $revision
+          "revision=$revision" >> $env:GITHUB_OUTPUT
 
       - name: Set up the selected .NET SDK and host runtime
         uses: actions/setup-dotnet@v5
@@ -70,8 +79,152 @@ jobs:
           az bicep version
           if ($LASTEXITCODE -ne 0) { throw 'Local Bicep compiler is unavailable.' }
 
+      - name: Plan exact worktree dependency caches
+        id: cache_plan
+        if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $plan = & .\scripts\plan-dependency-cache.ps1 | ConvertFrom-Json
+          if (!$plan) { throw 'Dependency cache planning failed.' }
+          New-Item -ItemType Directory -Force artifacts\validation | Out-Null
+          $plan | ConvertTo-Json -Depth 15 | Set-Content artifacts\validation\cache-plan.json
+          foreach ($kind in @('gems', 'framework')) {
+            "$($kind)_key=$($plan.$kind.key)" >> $env:GITHUB_OUTPUT
+            "$($kind)_restore=$($plan.$kind.restore.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+            "$($kind)_paths<<CACHE_PATHS" >> $env:GITHUB_OUTPUT
+            $plan.$kind.paths >> $env:GITHUB_OUTPUT
+            'CACHE_PATHS' >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Restore exact locked native gems
+        id: gems_cache
+        if: steps.cache_plan.outputs.gems_restore == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.cache_plan.outputs.gems_key }}
+          path: ${{ steps.cache_plan.outputs.gems_paths }}
+
+      - name: Restore exact pinned framework and fonts
+        id: framework_cache
+        if: steps.cache_plan.outputs.framework_restore == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.cache_plan.outputs.framework_key }}
+          path: ${{ steps.cache_plan.outputs.framework_paths }}
+
+      - name: Record dependency cache restoration
+        id: cache_evidence
+        env:
+          GEMS_PRIMARY_KEY: ${{ steps.cache_plan.outputs.gems_key }}
+          GEMS_MATCHED_KEY: ${{ steps.gems_cache.outputs.cache-matched-key }}
+          GEMS_CACHE_HIT: ${{ steps.gems_cache.outputs.cache-hit }}
+          GEMS_CACHE_OUTCOME: ${{ steps.gems_cache.outcome }}
+          FRAMEWORK_PRIMARY_KEY: ${{ steps.cache_plan.outputs.framework_key }}
+          FRAMEWORK_MATCHED_KEY: ${{ steps.framework_cache.outputs.cache-matched-key }}
+          FRAMEWORK_CACHE_HIT: ${{ steps.framework_cache.outputs.cache-hit }}
+          FRAMEWORK_CACHE_OUTCOME: ${{ steps.framework_cache.outcome }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = [ordered]@{}
+          foreach ($kind in @('gems', 'framework')) {
+            $primary = [Environment]::GetEnvironmentVariable("$($kind)_PRIMARY_KEY")
+            $matched = [Environment]::GetEnvironmentVariable("$($kind)_MATCHED_KEY")
+            $hit = [Environment]::GetEnvironmentVariable("$($kind)_CACHE_HIT")
+            $outcome = [Environment]::GetEnvironmentVariable("$($kind)_CACHE_OUTCOME")
+            $state = if ($outcome -ne 'success') { 'not-restored' } elseif ($hit -eq 'true') { 'exact-hit' } else { 'not-hit' }
+            $evidence[$kind] = @{ primary_key = $primary; matched_key = $matched; cache_hit = $hit; action_outcome = $outcome; state = $state }
+            "$($kind)_state=$state" >> $env:GITHUB_OUTPUT
+          }
+          New-Item -ItemType Directory -Force artifacts\validation | Out-Null
+          $evidence | ConvertTo-Json -Depth 5 | Set-Content artifacts\validation\cache-restore.json
+          foreach ($item in $evidence.Values) {
+            if (($item.matched_key -and $item.matched_key -cne $item.primary_key) -or
+                ($item.cache_hit -eq 'true' -and $item.matched_key -cne $item.primary_key)) {
+              throw 'An inexact dependency cache was restored. Change only this cache namespace before retrying.'
+            }
+          }
+
       - name: Restore locked display dependencies and pinned Chromium
+        id: setup
+        env:
+          TRMNL_GEMS_CACHE_STATE: ${{ steps.cache_evidence.outputs.gems_state }}
+          TRMNL_FRAMEWORK_CACHE_STATE: ${{ steps.cache_evidence.outputs.framework_state }}
         run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\setup-display.ps1
 
+      - name: Save verified locked native gems
+        if: steps.cache_plan.outputs.gems_restore == 'true' && steps.gems_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.cache_plan.outputs.gems_key }}
+          path: ${{ steps.cache_plan.outputs.gems_paths }}
+
+      - name: Save verified pinned framework and fonts
+        if: steps.cache_plan.outputs.framework_restore == 'true' && steps.framework_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.cache_plan.outputs.framework_key }}
+          path: ${{ steps.cache_plan.outputs.framework_paths }}
+
       - name: Run the shared Full validation
-        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full
+        env:
+          TRMNL_GEMS_CACHE_STATE: ${{ steps.cache_evidence.outputs.gems_state }}
+          TRMNL_FRAMEWORK_CACHE_STATE: ${{ steps.cache_evidence.outputs.framework_state }}
+          DISPLAY_COVERAGE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && 'Exhaustive' || 'OgFirst' }}
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full -DisplayCoverage "$env:DISPLAY_COVERAGE_PROFILE"
+
+      - name: Retain compact timing and test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/validation/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Retain synthetic screenshots only on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/*.png
+          retention-days: 7
+          if-no-files-found: ignore
+
+  required:
+    name: Required validation
+    needs: full
+    if: ${{ always() }}
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - name: Check out the event-pinned head or dispatch revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Prepare the same pinned revision for the gate implementation
+        if: github.event_name == 'pull_request' && needs.full.result == 'success'
+        shell: pwsh
+        env:
+          PR_HEAD_COMMIT: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        run: node .\scripts\prepare-ci.mjs --head-commit "$env:PR_HEAD_COMMIT" --base-commit "$env:PR_BASE_COMMIT"
+
+      - name: Require this execution's genuine Full result and pinned revision
+        shell: pwsh
+        env:
+          FULL_RESULT: ${{ needs.full.result }}
+          FULL_PREPARATION: ${{ needs.full.outputs.preparation }}
+          VALIDATION_EVENT: ${{ github.event_name }}
+          VALIDATION_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          VALIDATION_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          node .\scripts\check-required-validation.mjs --full-result "$env:FULL_RESULT" --event-name "$env:VALIDATION_EVENT" --head-commit "$env:VALIDATION_HEAD" --base-commit "$env:VALIDATION_BASE" --preparation "$env:FULL_PREPARATION"
+          if ($LASTEXITCODE -ne 0) { throw 'Required validation failed; genuine Full success for this revision is required.' }

@@ -226,8 +226,12 @@ async function readDefinitionDetails(pluginId, apiKey, signal) {
       deadline.aborted ? "trmnl_details_timeout" : "trmnl_details_request_failed");
   }
   if (response.status !== 200) {
-    await response.body?.cancel();
-    fail(`trmnl_details_http_${response.status}`);
+    try {
+      await response.body?.cancel();
+    } finally {
+      // Cleanup must not replace the redacted HTTP rejection with a raw stream error.
+      fail(`trmnl_details_http_${response.status}`);
+    }
   }
   const reader = response.body?.getReader();
   if (!reader) fail("trmnl_details_response_invalid");

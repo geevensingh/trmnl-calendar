@@ -170,6 +170,9 @@ test("post-upload details failures retain archive comparison evidence and redact
   t.mock.method(console, "error", message => events.push(JSON.parse(message)));
   for (const [response, code] of [
     [() => new Response(marker, { status: 403 }), "trmnl_details_http_403"],
+    [() => new Response(new ReadableStream({
+      start(controller) { controller.error(new Error(marker)); }
+    }), { status: 403 }), "trmnl_details_http_403"],
     [() => new Response(marker), "trmnl_details_response_invalid"],
     [() => { throw new Error(marker); }, "trmnl_details_request_failed"]
   ]) {
@@ -258,6 +261,9 @@ test("details HTTP and malformed or oversized response failures are explicit and
   const marker = "SYNTHETIC_PRIVATE_DETAILS_FAILURE";
   for (const [response, code] of [
     [new Response(marker, { status: 403 }), "trmnl_details_http_403"],
+    [new Response(new ReadableStream({
+      start(controller) { controller.error(new Error(marker)); }
+    }), { status: 403 }), "trmnl_details_http_403"],
     [new Response(marker, { status: 404 }), "trmnl_details_http_404"],
     [new Response(marker, { status: 401 }), "trmnl_details_http_401"],
     [new Response(marker), "trmnl_details_response_invalid"],

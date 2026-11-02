@@ -16,6 +16,10 @@ _Avoid_: Displayed event (when referring to every qualifying event)
 An eligible event whose details are visible on the device.
 _Avoid_: Eligible event (when referring only to visible details)
 
+**Participation expectation**:
+An evidence-based indication of how likely the calendar owner is to participate in an event, distinct from invitation role or RSVP status. It is not a guarantee of attendance.
+_Avoid_: Attendance status, RSVP status (when referring to expected participation)
+
 **Exclusion rule**:
 A configurable condition that identifies calendar events to omit from the agenda.
 _Avoid_: Hide rule

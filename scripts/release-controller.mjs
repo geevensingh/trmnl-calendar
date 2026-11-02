@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { trmnlFunctionalVerification } from "./publish-trmnl.mjs";
 
 const TARGETS = Object.freeze(["azure", "trmnl"]);
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
@@ -136,6 +137,20 @@ function assertTrmnlRepairArtifact(artifact, commit, original) {
     throw Object.assign(new Error("artifact_identity_invalid"), { code: "artifact_identity_invalid" });
   }
   return artifact;
+}
+
+function trmnlVerification(outcome, commit, artifact) {
+  const expected = trmnlFunctionalVerification;
+  const evidence = outcome?.verification;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence) ||
+    Object.keys(evidence).length !== Object.keys(expected).length ||
+    Object.entries(expected).some(([key, value]) => evidence[key] !== value)) {
+    throw Object.assign(new Error(), { code: "trmnl_verification_failed" });
+  }
+  return {
+    ...expected, source_commit: commit, artifact_identity: artifact.identity,
+    checked_at: new Date().toISOString()
+  };
 }
 
 function newState() {
@@ -418,6 +433,13 @@ async function activateBaseline({
         if (outcome?.verified !== true) {
           throw Object.assign(new Error(), { code: `${target}_verification_failed` });
         }
+        if (target === "trmnl") {
+          const evidence = trmnlVerification(
+            outcome, repair?.commit ?? commit, repair?.artifact ?? activation.artifact);
+          activation.target_verification ??= {};
+          activation.target_verification.trmnl = evidence;
+          if (repair) repair.attempts.at(-1).trmnl_verification = evidence;
+        }
         activation.target_results[target] = "verified";
         activation.recovery_confirmation_required = false;
         state.pending_reconciliation[target] = false;
@@ -433,12 +455,16 @@ async function activateBaseline({
       if (repair) {
         return {
           active: true, checkpoint: commit, baselines: { ...state.baselines },
-          targets: ["trmnl"], status: "succeeded", trmnl_backup_recovery_accepted: true
+          targets: ["trmnl"], status: "succeeded", trmnl_backup_recovery_accepted: true,
+          ...(activation.target_verification?.trmnl
+            ? { trmnl_verification: activation.target_verification.trmnl } : {})
         };
       }
       return {
         active: true, baseline: commit, targets: [...TARGETS], status: "succeeded",
-        trmnl_backup_recovery_accepted: true
+        trmnl_backup_recovery_accepted: true,
+        ...(activation.target_verification?.trmnl
+          ? { trmnl_verification: activation.target_verification.trmnl } : {})
       };
     } catch (error) {
       state.active = false;
@@ -638,9 +664,9 @@ export async function runNextRelease({ ledger, services, isAncestor }) {
         attempt.stage = "selection";
         attempt.result = "succeeded";
         release.status = "succeeded";
-        release.targets = [];
-        await save();
-        return { started: true, release: release.commit, targets, status: "succeeded" };
+          release.targets = [];
+          await save();
+          return { started: true, release: release.commit, targets, status: "succeeded" };
       }
       attempt.targets = targets;
       attempt.stage = "prepare";
@@ -669,6 +695,12 @@ export async function runNextRelease({ ledger, services, isAncestor }) {
         if (outcome?.verified !== true) {
           throw Object.assign(new Error(), { code: `${target}_verification_failed` });
         }
+        if (target === "trmnl") {
+          const evidence = trmnlVerification(outcome, release.commit, release.artifact);
+          release.target_verification ??= {};
+          release.target_verification.trmnl = evidence;
+          attempt.trmnl_verification = evidence;
+        }
         state.baselines[target] = release.commit;
         release.target_results[target] = "verified";
         release.recovery_confirmation_required = false;
@@ -681,7 +713,11 @@ export async function runNextRelease({ ledger, services, isAncestor }) {
       release.targets = targets;
       release.status = "succeeded";
       await save();
-      return { started: true, release: release.commit, targets, status: "succeeded" };
+      return {
+        started: true, release: release.commit, targets, status: "succeeded",
+        ...(release.target_verification?.trmnl
+          ? { trmnl_verification: release.target_verification.trmnl } : {})
+      };
     } catch (error) {
       const failure = { stage: attempt.stage, code: safeFailure(error) };
       release.status = "failed";
@@ -725,6 +761,7 @@ export async function listReleaseStatus({ ledger }) {
         stage: state.activation.stage,
         trmnl_backup_recovery_accepted: state.activation.trmnl_backup_recovery_accepted ?? null,
         target_results: { ...state.activation.target_results },
+        target_verification: state.activation.target_verification ?? {},
         recovery_confirmation_required: requiresRecoveryConfirmation(state.activation),
         failure: state.activation.failure ?? null,
         first_failure: state.activation.first_failure ?? null,
@@ -733,15 +770,18 @@ export async function listReleaseStatus({ ledger }) {
           commit: repair.commit,
           original_failure: repair.original_failure,
           artifact: artifactEvidence(repair.artifact),
-          attempts: repair.attempts.map(({ actor, started_at, previous_mutation_stopped, result, failure }) => ({
-            actor, started_at, previous_mutation_stopped, result, failure: failure ?? null
+          attempts: repair.attempts.map(({ actor, started_at, previous_mutation_stopped, result, failure,
+            trmnl_verification }) => ({
+            actor, started_at, previous_mutation_stopped, result, failure: failure ?? null,
+            trmnl_verification: trmnl_verification ?? null
           }))
         } : null
       } : null,
       queue: state.queue.map(({ id, commit, status, targets, target_results, covered_targets, first_failure, skip,
-        recovery_confirmation_required }) => ({
+        recovery_confirmation_required, target_verification }) => ({
         id, commit, status, targets: targets ?? null,
         target_results: target_results ?? {},
+        target_verification: target_verification ?? {},
         covered_targets: covered_targets ?? {},
         recovery_confirmation_required: requiresRecoveryConfirmation({ recovery_confirmation_required, target_results }),
         first_failure: first_failure ?? null,

@@ -58,7 +58,7 @@ async function digestFiles(root, paths) {
   return hash.digest("hex");
 }
 
-async function canonicalSettings(path, signal, code) {
+async function canonicalSettings(path, signal, code, omittedFields = []) {
   try {
     const { stdout } = await execFileAsync("ruby", [
       "-rjson", "-ryaml", "-e",
@@ -75,9 +75,10 @@ async function canonicalSettings(path, signal, code) {
         "value = YAML.safe_load_file(ARGV.fetch(0))",
         "abort unless value.is_a?(Hash)",
         "value.delete('id')",
+        "ARGV.drop(1).each { |field| value.delete(field) }",
         "STDOUT.write(JSON.generate(canonical(value)))"
       ].join("\n"),
-      path
+      path, ...omittedFields
     ], {
       signal,
       env: publisherEnvironment(),
@@ -344,21 +345,24 @@ async function compareContent(source, deployed, sourceFiles, signal, readback) {
       matches: JSON.stringify(unknownBefore) === JSON.stringify(unknownAfter)
     }
   };
-  const effectiveSettings = { ...after };
-  const expectedSettings = { ...before };
+  const omittedFields = [];
   let directMismatch = false;
   for (const field of pollingFields) {
     const proof = readback?.fields.find(item => item.field === field);
-    if (typeof before[field] !== "string" || !before[field]) continue;
     if (proof?.observable && !proof.matches) directMismatch = true;
+    if (typeof before[field] !== "string" || !before[field]) continue;
     // Omitted export content needs independent exact proof, not null normalization.
     if (proof?.matches && (after[field] === null || after[field] === undefined)) {
-      delete effectiveSettings[field];
-      delete expectedSettings[field];
+      omittedFields.push(field);
     }
   }
+  // Keep Ruby's lossless canonical JSON rather than rounding integers through JavaScript.
+  const [expectedSettings, effectiveSettings] = omittedFields.length ? await Promise.all([
+    canonicalSettings(join(source, "settings.yml"), signal, "trmnl_source_settings_invalid", omittedFields),
+    canonicalSettings(join(deployed, "settings.yml"), signal, "trmnl_verify_settings_invalid", omittedFields)
+  ]) : [sourceSettings, deployedSettings];
   const matches = !directMismatch && sourceTemplatesHash === deployedTemplatesHash &&
-    JSON.stringify(expectedSettings) === JSON.stringify(effectiveSettings);
+    expectedSettings === effectiveSettings;
   return {
     fileSetMatches: true,
     matches,
@@ -430,9 +434,18 @@ async function operateTrmnl({
     if (!preliminary.matches && preliminary.comparison.definition.fields.some(item =>
       pollingFields.includes(item.field) && item.source_type === "string" &&
       ["null", "missing"].includes(item.deployed_type))) {
+      let details;
+      try {
+        details = await readDefinitionDetails(pluginId, apiKey, signal);
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: "trmnl_content_comparison", stage: "verify", ...preliminary.comparison
+        }));
+        throw error;
+      }
       const readback = definitionEvidence(
         JSON.parse(await canonicalSettings(join(source, "settings.yml"), signal, "trmnl_source_settings_invalid")),
-        await readDefinitionDetails(pluginId, apiKey, signal));
+        details);
       content = await compareContent(source, stagedSource, sourceFiles, signal, readback);
       console.error(JSON.stringify({ event: "trmnl_definition_readback", ...readback }));
     }

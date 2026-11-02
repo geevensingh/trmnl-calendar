@@ -354,10 +354,15 @@ field for which this direct endpoint returns the exact nonempty source string.
 Every other setting, custom-field definition, unknown field and template byte
 remains compared. Archive differences stay visible in `content_comparison`;
 `content_matches` can reflect the combined archive-and-direct proof. A direct
-string disagreement remains a failure even if the archive agrees. Publisher
+string disagreement remains a failure even if the archive agrees, including
+when the source string is empty. Remaining settings are compared as lossless
+canonical JSON, without JavaScript integer rounding, whether or not a polling
+omission is resolved. Publisher
 success output remains unchanged; it requests direct details only after the
 post-upload pull needs this exact omission check, and records a bounded
-`trmnl_definition_readback` event. Neither inspection nor this GET uploads,
+`trmnl_definition_readback` event. If that request fails, it emits the preliminary
+archive `trmnl_content_comparison` evidence before returning the unchanged
+redacted details error. Neither inspection nor this GET uploads,
 updates configured values, retargets the immutable archive, or clears the ledger.
 
 The request uses only the existing publishing key, a fixed HTTPS service/path,

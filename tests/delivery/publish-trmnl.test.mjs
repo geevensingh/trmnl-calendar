@@ -7,6 +7,342 @@ import * as publisher from "../../scripts/publish-trmnl.mjs";
 
 const { publishTrmnl } = publisher;
 
+test.beforeEach(t => {
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(url, "https://trmnl.com/api/plugin_settings/12345/details");
+    assert.equal(options.method, "GET");
+    return Response.json({ data: { settings: {}, strategy: "polling" } });
+  });
+});
+
+test("inspection compares only explicitly returned polling definition text from documented details", async t => {
+  const sourceDirectory = await pluginSource(t);
+  await writeFile(join(sourceDirectory, "settings.yml"),
+    (await readFile(join(sourceDirectory, "settings.yml"), "utf8")) +
+    'polling_headers: "x-functions-key: {{ function_key }}"\npolling_body: \'{"rules_json": {{ rules_json | json }}}\'\n');
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push(url);
+    assert.equal(options.method, "GET");
+    assert.equal(options.redirect, "error");
+    assert.equal(options.headers.Authorization, "Bearer synthetic-key");
+    return Response.json({ data: { settings: {
+      polling_headers: "x-functions-key: {{ function_key }}",
+      polling_body: '{"rules_json": {{ rules_json | json }}}',
+      SYNTHETIC_PRIVATE_CUSTOM_FIELD: "SYNTHETIC_PRIVATE_VALUE"
+    } } });
+  });
+  const result = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => {
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      const path = join(cwd, "src", "settings.yml");
+      await writeFile(path, (await readFile(path, "utf8")).replace(/polling_headers:[\s\S]*$/,
+        "polling_headers: null\npolling_body: null\n"));
+    }
+  });
+  assert.deepEqual(requests, ["https://trmnl.com/api/plugin_settings/12345/details"]);
+  assert.equal(result.content_matches, true);
+  assert.deepEqual(result.definition_readback, {
+    operation: "getPluginSettingDetails", response_available: true,
+    fields: [
+      { field: "polling_headers", source_type: "string", deployed_type: "string", observable: true, matches: true },
+      { field: "polling_body", source_type: "string", deployed_type: "string", observable: true, matches: true }
+    ]
+  });
+  assert.equal(result.content_comparison.files[0].result, "different", "Archive differences remain visible");
+  assert.doesNotMatch(JSON.stringify(result), /SYNTHETIC|function_key|rules_json|x-functions-key|[a-f0-9]{64}/);
+});
+
+async function pollingSource(t) {
+  const source = await pluginSource(t);
+  await writeFile(join(source, "settings.yml"), (await readFile(join(source, "settings.yml"), "utf8")) +
+    'polling_headers: "x-functions-key: {{ function_key }}"\npolling_body: \'{"rules_json": {{ rules_json | json }}}\'\n');
+  return source;
+}
+
+const pollingDetails = {
+  polling_headers: "x-functions-key: {{ function_key }}",
+  polling_body: '{"rules_json": {{ rules_json | json }}}'
+};
+
+async function pullRedacted(source, cwd) {
+  await cp(source, join(cwd, "src"), { recursive: true });
+  const path = join(cwd, "src", "settings.yml");
+  await writeFile(path, (await readFile(path, "utf8")).replace(/polling_headers:[\s\S]*$/,
+    "polling_headers: null\npolling_body: null\n"));
+}
+
+test("publication accepts exported nulls only after exact independent polling readback", async t => {
+  const sourceDirectory = await pollingSource(t);
+  const calls = [];
+  const events = [];
+  t.mock.method(console, "error", message => events.push(JSON.parse(message)));
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.deepEqual(calls, ["pull", "push", "pull"], "Read the current definition after publication");
+    assert.equal(url, "https://trmnl.com/api/plugin_settings/12345/details");
+    assert.deepEqual(options.headers, { Authorization: "Bearer synthetic-key", Accept: "application/json" });
+    return Response.json({ data: { settings: { ...pollingDetails } } });
+  });
+  const result = await publishTrmnl({
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      calls.push(args[0]);
+      if (args[0] === "pull") await pullRedacted(sourceDirectory, cwd);
+      if (args[0] === "push") {
+        assert.equal(await readFile(join(cwd, "src", "settings.yml"), "utf8"),
+          await readFile(join(sourceDirectory, "settings.yml"), "utf8"));
+      }
+    }
+  });
+  assert.deepEqual(Object.keys(result).sort(), ["identity", "pluginId", "verified"]);
+  assert.equal(result.verified, true);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "trmnl_definition_readback");
+  assert.ok(events[0].fields.every(field => field.observable && field.matches));
+  assert.doesNotMatch(JSON.stringify(events), /function_key|rules_json|synthetic-key|12345|[a-f0-9]{64}/);
+});
+
+test("direct disagreement with an empty source body blocks publication and inspection", async t => {
+  const sourceDirectory = await pollingSource(t);
+  const path = join(sourceDirectory, "settings.yml");
+  await writeFile(path, (await readFile(path, "utf8")).replace(
+    /^polling_body:.*$/m, 'polling_body: ""'));
+  t.mock.method(console, "error", () => {});
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    data: { settings: { ...pollingDetails, polling_body: "SYNTHETIC_PRIVATE_UNEXPECTED_BODY" } }
+  }));
+  const options = {
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      if (args[0] !== "pull") return;
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      const deployedPath = join(cwd, "src", "settings.yml");
+      await writeFile(deployedPath, (await readFile(deployedPath, "utf8")).replace(
+        /^polling_headers:.*$/m, "polling_headers: null"));
+    }
+  };
+  await assert.rejects(publishTrmnl(options), { code: "trmnl_deployed_content_mismatch" });
+  const result = await publisher.inspectTrmnl(options);
+  assert.equal(result.content_matches, false);
+  assert.equal(result.definition_readback.fields[1].observable, true);
+  assert.equal(result.definition_readback.fields[1].matches, false);
+  assert.doesNotMatch(JSON.stringify(result), /SYNTHETIC_PRIVATE_UNEXPECTED_BODY/);
+});
+
+for (const omittedPolling of [false, true]) {
+  test(`settings retain integer precision with omitted polling ${omittedPolling}`, async t => {
+    const sourceDirectory = await pollingSource(t);
+    const path = join(sourceDirectory, "settings.yml");
+    // Include a known scalar and a nested unknown field; neither may be rounded away.
+    await writeFile(path, (await readFile(path, "utf8")).replace("---\n",
+      "---\nrefresh_interval: 9007199254740992\n" +
+      "SYNTHETIC_PRIVATE_SETTING: {nested: [9007199254740992]}\n"));
+    t.mock.method(console, "error", () => {});
+    t.mock.method(globalThis, "fetch", async () => Response.json({ data: { settings: { ...pollingDetails } } }));
+    for (const setting of ["refresh_interval", "SYNTHETIC_PRIVATE_SETTING"]) {
+      let changed = true;
+      const options = {
+        sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+        runCommand: async (_command, args, { cwd }) => {
+          if (args[0] !== "pull") return;
+          if (omittedPolling) await pullRedacted(sourceDirectory, cwd);
+          else await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+          if (changed) {
+            const deployedPath = join(cwd, "src", "settings.yml");
+            await writeFile(deployedPath, (await readFile(deployedPath, "utf8")).replace(
+              new RegExp(`^${setting}:.*$`, "m"), line => line.replace("9007199254740992", "9007199254740993")));
+          }
+        }
+      };
+      await assert.rejects(publishTrmnl(options), { code: "trmnl_deployed_content_mismatch" });
+      assert.equal((await publisher.inspectTrmnl(options)).content_matches, false);
+      changed = false;
+      assert.equal((await publishTrmnl(options)).verified, true, "Equal large integers still match");
+    }
+  });
+}
+
+test("post-upload details failures retain archive comparison evidence and redacted errors", async t => {
+  const sourceDirectory = await pollingSource(t);
+  const marker = "SYNTHETIC_PRIVATE_DETAILS_FAILURE";
+  const events = [];
+  t.mock.method(console, "error", message => events.push(JSON.parse(message)));
+  for (const [response, code] of [
+    [() => new Response(marker, { status: 403 }), "trmnl_details_http_403"],
+    [() => new Response(new ReadableStream({
+      start(controller) { controller.error(new Error(marker)); }
+    }), { status: 403 }), "trmnl_details_http_403"],
+    [() => new Response(marker), "trmnl_details_response_invalid"],
+    [() => { throw new Error(marker); }, "trmnl_details_request_failed"]
+  ]) {
+    events.length = 0;
+    const calls = [];
+    t.mock.method(globalThis, "fetch", async () => response());
+    await assert.rejects(publishTrmnl({
+      sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async (_command, args, { cwd }) => {
+        calls.push(args[0]);
+        if (args[0] === "pull") await pullRedacted(sourceDirectory, cwd);
+      }
+    }), error => error.code === code && error.message === code && !JSON.stringify(error).includes(marker));
+    assert.deepEqual(calls, ["pull", "push", "pull"]);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event, "trmnl_content_comparison");
+    assert.equal(events[0].stage, "verify");
+    assert.deepEqual(events[0].definition.fields.map(({ field }) => field), ["polling_headers", "polling_body"]);
+    assert.equal(events[0].files[0].result, "different");
+    assert.doesNotMatch(JSON.stringify(events), /SYNTHETIC|function_key|rules_json|synthetic-key|12345|[a-f0-9]{64}/);
+  }
+});
+
+test("sanitized, missing, rendered or changed details never prove the unrendered polling definition", async t => {
+  const sourceDirectory = await pollingSource(t);
+  t.mock.method(console, "error", () => {});
+  for (const settings of [
+    {}, { ...pollingDetails, polling_headers: null },
+    { ...pollingDetails, polling_body: null },
+    { ...pollingDetails, polling_headers: "[set]" },
+    { ...pollingDetails, polling_headers: "SYNTHETIC_PRIVATE_LITERAL_KEY" },
+    { custom_fields_values: { ...pollingDetails } },
+    { ...pollingDetails, polling_body: '{"rules_json": []}' },
+    { ...pollingDetails, polling_body: `${pollingDetails.polling_body}\n` }
+  ]) {
+    t.mock.method(globalThis, "fetch", async () => Response.json({ data: { settings } }));
+    await assert.rejects(publishTrmnl({
+      sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async (_command, args, { cwd }) => {
+        if (args[0] === "pull") await pullRedacted(sourceDirectory, cwd);
+      }
+    }), { code: "trmnl_deployed_content_mismatch" });
+  }
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    data: { settings: { ...pollingDetails, polling_headers: "[set]" } }
+  }));
+  const inspected = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => pullRedacted(sourceDirectory, cwd)
+  });
+  assert.deepEqual(inspected.definition_readback.fields[0], {
+    field: "polling_headers", source_type: "string", deployed_type: "string",
+    observable: false, matches: false
+  });
+});
+
+test("exact details cannot waive a different template, known setting or unknown behavior-changing export field", async t => {
+  const sourceDirectory = await pollingSource(t);
+  const events = [];
+  t.mock.method(console, "error", message => events.push(JSON.parse(message)));
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: { settings: { ...pollingDetails } } }));
+  for (const change of ["template", "known_setting", "unknown_setting", "documented_metadata"]) {
+    await assert.rejects(publishTrmnl({
+      sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async (_command, args, { cwd }) => {
+        if (args[0] !== "pull") return;
+        await pullRedacted(sourceDirectory, cwd);
+        if (change === "template") await writeFile(join(cwd, "src", "full.liquid"), "SYNTHETIC_PRIVATE_TEMPLATE");
+        const path = join(cwd, "src", "settings.yml");
+        if (change === "known_setting") {
+          await writeFile(path, (await readFile(path, "utf8")).replace("strategy: polling", "strategy: webhook"));
+        } else if (change === "unknown_setting" || change === "documented_metadata") {
+          await writeFile(path, (await readFile(path, "utf8")) +
+            (change === "unknown_setting" ? "SYNTHETIC_PRIVATE_EXTRA_FIELD: true\n" : "'read_only?': false\n"));
+        }
+      }
+    }), { code: "trmnl_deployed_content_mismatch" });
+  }
+  assert.doesNotMatch(JSON.stringify(events), /SYNTHETIC|function_key|rules_json|[a-f0-9]{64}/);
+  assert.ok(events.at(-1).definition.fields.some(field => field.field === "read_only?"));
+  assert.equal(events.at(-1).definition.unknown_fields.deployed_count, 0);
+});
+
+test("details HTTP and malformed or oversized response failures are explicit and redacted", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const marker = "SYNTHETIC_PRIVATE_DETAILS_FAILURE";
+  for (const [response, code] of [
+    [new Response(marker, { status: 403 }), "trmnl_details_http_403"],
+    [new Response(new ReadableStream({
+      start(controller) { controller.error(new Error(marker)); }
+    }), { status: 403 }), "trmnl_details_http_403"],
+    [new Response(marker, { status: 404 }), "trmnl_details_http_404"],
+    [new Response(marker, { status: 401 }), "trmnl_details_http_401"],
+    [new Response(marker), "trmnl_details_response_invalid"],
+    [Response.json({ data: null }), "trmnl_details_response_invalid"],
+    [Response.json({ data: { settings: ["not a mapping"] } }), "trmnl_details_response_invalid"],
+    [new Response(JSON.stringify({ data: { settings: {}, private_value: marker.repeat(40000) } })),
+      "trmnl_details_output_limit"]
+  ]) {
+    t.mock.method(globalThis, "fetch", async () => response);
+    await assert.rejects(publisher.inspectTrmnl({
+      sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async (_command, _args, { cwd }) => cp(sourceDirectory, join(cwd, "src"), { recursive: true })
+    }), error => error.code === code && !JSON.stringify(error).includes(marker));
+  }
+});
+
+test("details cancellation reaches the request and reports no raw transport diagnostic", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const abort = new AbortController();
+  let requested = false;
+  t.mock.method(globalThis, "fetch", async (_url, { signal }) => {
+    requested = true;
+    const cancelled = new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("SYNTHETIC_PRIVATE_TRANSPORT")), { once: true });
+    });
+    abort.abort(new Error("SYNTHETIC_PRIVATE_ABORT"));
+    return cancelled;
+  });
+  await assert.rejects(publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key", signal: abort.signal,
+    runCommand: async (_command, _args, { cwd }) => cp(sourceDirectory, join(cwd, "src"), { recursive: true })
+  }), error => error.code === "trmnl_details_cancelled" && !JSON.stringify(error).includes("SYNTHETIC"));
+  assert.equal(requested, true);
+});
+
+test("details cancellation during body reading leaves no partial-response success", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const abort = new AbortController();
+  t.mock.method(globalThis, "fetch", async (_url, { signal }) => {
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(Buffer.from('{"data":{"settings":'));
+        signal.addEventListener("abort", () => controller.error(new Error("SYNTHETIC_PRIVATE_BODY")), { once: true });
+        setTimeout(() => abort.abort(), 10);
+      }
+    });
+    return new Response(body);
+  });
+  await assert.rejects(publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key", signal: abort.signal,
+    runCommand: async (_command, _args, { cwd }) => cp(sourceDirectory, join(cwd, "src"), { recursive: true })
+  }), error => error.code === "trmnl_details_cancelled" && !JSON.stringify(error).includes("SYNTHETIC"));
+});
+
+test("details has one bounded deadline and refuses transport or redirect failures", async t => {
+  const sourceDirectory = await pluginSource(t);
+  t.mock.method(globalThis, "fetch", async (_url, { signal }) =>
+    new Promise((_resolve, reject) => signal.addEventListener("abort", () =>
+      reject(new Error("SYNTHETIC_PRIVATE_TIMEOUT")), { once: true })));
+  // Keep the mock transport alive as a real socket would; AbortSignal's timeout is unreferenced.
+  const socket = setInterval(() => {}, 1000);
+  try {
+    await assert.rejects(publisher.inspectTrmnl({
+      sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async (_command, _args, { cwd }) => cp(sourceDirectory, join(cwd, "src"), { recursive: true })
+    }), { code: "trmnl_details_timeout" });
+  } finally {
+    clearInterval(socket);
+  }
+  t.mock.method(globalThis, "fetch", async (_url, { redirect }) => {
+    assert.equal(redirect, "error");
+    throw new TypeError("SYNTHETIC_PRIVATE_REDIRECT");
+  });
+  await assert.rejects(publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => cp(sourceDirectory, join(cwd, "src"), { recursive: true })
+  }), error => error.code === "trmnl_details_request_failed" && !JSON.stringify(error).includes("SYNTHETIC"));
+});
+
 async function pluginSource(t) {
   const root = await mkdtemp(join(tmpdir(), "trmnl-plugin-source-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -357,7 +693,7 @@ test("read-only TRMNL inspection pulls once and reports compatibility without pu
       await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
     }
   });
-  const { content_comparison, ...existing } = result;
+  const { content_comparison, definition_readback, ...existing } = result;
   assert.deepEqual(existing, {
     operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: true, content_matches: true
   });
@@ -377,6 +713,8 @@ test("read-only TRMNL inspection pulls once and reports compatibility without pu
     }
   });
   assert.deepEqual(calls, ["pull"]);
+  assert.equal(definition_readback.response_available, true);
+  assert.ok(definition_readback.fields.every(field => field.observable === false && field.matches === false));
   assert.doesNotMatch(JSON.stringify(result), /synthetic|12345|agenda_endpoint|function_key|rules_json/);
 });
 
@@ -393,7 +731,7 @@ test("read-only TRMNL inspection reports mismatches without mutating the plugin"
       await writeFile(join(cwd, "src", "full.liquid"), "different remote template\n");
     }
   });
-  const { content_comparison, ...existing } = result;
+  const { content_comparison, definition_readback, ...existing } = result;
   assert.deepEqual(existing, {
     operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: false, content_matches: false
   });
@@ -403,6 +741,7 @@ test("read-only TRMNL inspection reports mismatches without mutating the plugin"
   ]);
   assert.equal(content_comparison.files.find(item => item.file === "full.liquid").result, "different");
   assert.deepEqual(calls, ["pull"]);
+  assert.equal(definition_readback.operation, "getPluginSettingDetails");
 });
 
 test("read-only comparison identifies fixed fields and files without exposing remote names, values or hashes", async t => {

@@ -24,8 +24,12 @@ const comparisonFields = [
   "oauth_enabled", "oauth_expiry_field_name", "oauth_expiry_strategy", "oauth_fixed_expiry_ms",
   "oauth_pkce_enabled", "oauth_refresh_params", "oauth_refresh_url", "oauth_scope_separator",
   "oauth_scopes", "oauth_token_field_name", "oauth_token_headers", "oauth_token_params",
-  "oauth_token_request_auth_method", "oauth_token_response_metadata", "oauth_token_site", "oauth_token_url"
+  "oauth_token_request_auth_method", "oauth_token_response_metadata", "oauth_token_site", "oauth_token_url",
+  "sync", "plugin_id", "health_notification_enabled", "icon_url", "icon_content_type", "read_only?"
 ];
+const pollingFields = ["polling_headers", "polling_body"];
+const valueType = value => value === undefined ? "missing" : value === null ? "null" :
+  Array.isArray(value) ? "array" : typeof value;
 
 function fail(code) {
   const error = new Error(code);
@@ -54,7 +58,7 @@ async function digestFiles(root, paths) {
   return hash.digest("hex");
 }
 
-async function canonicalSettings(path, signal, code) {
+async function canonicalSettings(path, signal, code, omittedFields = []) {
   try {
     const { stdout } = await execFileAsync("ruby", [
       "-rjson", "-ryaml", "-e",
@@ -71,9 +75,10 @@ async function canonicalSettings(path, signal, code) {
         "value = YAML.safe_load_file(ARGV.fetch(0))",
         "abort unless value.is_a?(Hash)",
         "value.delete('id')",
+        "ARGV.drop(1).each { |field| value.delete(field) }",
         "STDOUT.write(JSON.generate(canonical(value)))"
       ].join("\n"),
-      path
+      path, ...omittedFields
     ], {
       signal,
       env: publisherEnvironment(),
@@ -205,7 +210,81 @@ function publisherEnvironment(apiKey) {
   return env;
 }
 
-async function compareContent(source, deployed, sourceFiles, signal) {
+async function readDefinitionDetails(pluginId, apiKey, signal) {
+  signal?.throwIfAborted();
+  const deadline = AbortSignal.timeout(15_000);
+  const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  let response;
+  try {
+    response = await fetch(`https://trmnl.com/api/plugin_settings/${pluginId}/details`, {
+      method: "GET", redirect: "error",
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      signal: requestSignal
+    });
+  } catch {
+    fail(signal?.aborted ? "trmnl_details_cancelled" :
+      deadline.aborted ? "trmnl_details_timeout" : "trmnl_details_request_failed");
+  }
+  if (response.status !== 200) {
+    try {
+      await response.body?.cancel();
+    } finally {
+      // Cleanup must not replace the redacted HTTP rejection with a raw stream error.
+      fail(`trmnl_details_http_${response.status}`);
+    }
+  }
+  const reader = response.body?.getReader();
+  if (!reader) fail("trmnl_details_response_invalid");
+  const chunks = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      requestSignal.throwIfAborted();
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.length;
+      if (bytes > 1024 * 1024) {
+        await reader.cancel();
+        fail("trmnl_details_output_limit");
+      }
+      chunks.push(Buffer.from(chunk.value));
+    }
+  } catch (error) {
+    if (error?.code === "trmnl_details_output_limit") throw error;
+    fail(signal?.aborted ? "trmnl_details_cancelled" :
+      deadline.aborted ? "trmnl_details_timeout" : "trmnl_details_request_failed");
+  } finally {
+    reader.releaseLock();
+  }
+  let details;
+  try {
+    details = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    fail("trmnl_details_response_invalid");
+  }
+  if (!details?.data || typeof details.data !== "object" || Array.isArray(details.data) ||
+    (details.data.settings !== undefined && details.data.settings !== null &&
+      (typeof details.data.settings !== "object" || Array.isArray(details.data.settings)))) {
+    fail("trmnl_details_response_invalid");
+  }
+  return details.data.settings;
+}
+
+function definitionEvidence(source, details) {
+  return {
+    operation: "getPluginSettingDetails", response_available: true,
+    fields: pollingFields.map(field => {
+      const value = details?.[field];
+      const observable = typeof value === "string" && value !== "[set]";
+      return {
+        field, source_type: valueType(source[field]), deployed_type: valueType(value),
+        observable, matches: observable && value === source[field]
+      };
+    })
+  };
+}
+
+async function compareContent(source, deployed, sourceFiles, signal, readback) {
   const deployedFiles = await filesIn(deployed);
   const fileSetMatches = JSON.stringify(deployedFiles) === JSON.stringify(sourceFiles);
   const byteMatches = new Map(await Promise.all(
@@ -243,8 +322,6 @@ async function compareContent(source, deployed, sourceFiles, signal) {
   ]);
   const before = JSON.parse(sourceSettings);
   const after = JSON.parse(deployedSettings);
-  const valueType = value => value === undefined ? "missing" : value === null ? "null" :
-    Array.isArray(value) ? "array" : typeof value;
   const empty = value => typeof value === "string" || Array.isArray(value) ? value.length === 0 :
     value !== null && typeof value === "object" ? Object.keys(value).length === 0 : null;
   const fields = comparisonFields.flatMap(field => {
@@ -272,13 +349,30 @@ async function compareContent(source, deployed, sourceFiles, signal) {
       matches: JSON.stringify(unknownBefore) === JSON.stringify(unknownAfter)
     }
   };
-  const matches = sourceTemplatesHash === deployedTemplatesHash && sourceSettings === deployedSettings;
+  const omittedFields = [];
+  let directMismatch = false;
+  for (const field of pollingFields) {
+    const proof = readback?.fields.find(item => item.field === field);
+    if (proof?.observable && !proof.matches) directMismatch = true;
+    if (typeof before[field] !== "string" || !before[field]) continue;
+    // Omitted export content needs independent exact proof, not null normalization.
+    if (proof?.matches && (after[field] === null || after[field] === undefined)) {
+      omittedFields.push(field);
+    }
+  }
+  // Keep Ruby's lossless canonical JSON rather than rounding integers through JavaScript.
+  const [expectedSettings, effectiveSettings] = omittedFields.length ? await Promise.all([
+    canonicalSettings(join(source, "settings.yml"), signal, "trmnl_source_settings_invalid", omittedFields),
+    canonicalSettings(join(deployed, "settings.yml"), signal, "trmnl_verify_settings_invalid", omittedFields)
+  ]) : [sourceSettings, deployedSettings];
+  const matches = !directMismatch && sourceTemplatesHash === deployedTemplatesHash &&
+    expectedSettings === effectiveSettings;
   return {
     fileSetMatches: true,
     matches,
     comparison,
     identity: matches ? `sha256:${createHash("sha256")
-      .update(deployedTemplatesHash).update("\0").update(deployedSettings).digest("hex")}` : null
+      .update(deployedTemplatesHash).update("\0").update(sourceSettings).digest("hex")}` : null
   };
 }
 
@@ -317,11 +411,14 @@ async function operateTrmnl({
       ));
       const compatible = [...deployedSchema].every(([key, type]) => expectedSchema.get(key) === type);
       if (inspecting) {
-        const content = await compareContent(source, stagedSource, sourceFiles, signal);
+        const readback = definitionEvidence(JSON.parse(sourceSettings),
+          await readDefinitionDetails(pluginId, apiKey, signal));
+        const content = await compareContent(source, stagedSource, sourceFiles, signal, readback);
         return {
           operation: "inspect-trmnl", remote_readable: true,
           field_schema_compatible: compatible, content_matches: content.matches,
-          content_comparison: content.comparison
+          content_comparison: content.comparison,
+          definition_readback: readback
         };
       }
       if (!compatible) fail("trmnl_field_migration_required");
@@ -336,7 +433,26 @@ async function operateTrmnl({
     } finally {
       delete childEnvironment.TRMNL_API_KEY;
     }
-    const content = await compareContent(source, stagedSource, sourceFiles, signal);
+    const preliminary = await compareContent(source, stagedSource, sourceFiles, signal);
+    let content = preliminary;
+    if (!preliminary.matches && preliminary.comparison.definition.fields.some(item =>
+      pollingFields.includes(item.field) && item.source_type === "string" &&
+      ["null", "missing"].includes(item.deployed_type))) {
+      let details;
+      try {
+        details = await readDefinitionDetails(pluginId, apiKey, signal);
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: "trmnl_content_comparison", stage: "verify", ...preliminary.comparison
+        }));
+        throw error;
+      }
+      const readback = definitionEvidence(
+        JSON.parse(await canonicalSettings(join(source, "settings.yml"), signal, "trmnl_source_settings_invalid")),
+        details);
+      content = await compareContent(source, stagedSource, sourceFiles, signal, readback);
+      console.error(JSON.stringify({ event: "trmnl_definition_readback", ...readback }));
+    }
     if (!content.matches) {
       console.error(JSON.stringify({
         event: "trmnl_content_comparison", stage: "verify", ...content.comparison

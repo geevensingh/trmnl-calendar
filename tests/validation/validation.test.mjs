@@ -1,19 +1,51 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
+function processEvidence(result) {
+  return JSON.stringify({
+    phase: result.phase, status: result.status, signal: result.signal, pid: result.pid, elapsed_ms: result.elapsed_ms,
+    error: result.error && { code: result.error.code, errno: result.error.errno,
+      syscall: result.error.syscall, message: result.error.message },
+    stdout: result.stdout, stderr: result.stderr
+  });
+}
+
 async function checkout(t, { owned = false } = {}) {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), "agenda validation ")));
+  const parent = owned && process.platform === "win32" ? join(process.env.SystemDrive ?? "C:", "\\", ".tools") : tmpdir();
+  await mkdir(parent, { recursive: true });
+  if (owned) assert.equal((await lstat(parent)).isSymbolicLink(), false, "Owned fixture parent must be physical");
+  const namespace = owned ? await realpath(await mkdtemp(join(parent, "vf-"))) : parent;
+  const owner = owned ? randomUUID() : undefined;
+  if (owned) await writeFile(join(namespace, ".fixture-owner"), owner, { flag: "wx" });
+  const directory = await realpath(await mkdtemp(join(namespace, owned ? `v ${process.pid}-` : "agenda validation ")));
+  if (owned) await writeFile(join(directory, ".fixture-owner"), owner, { flag: "wx" });
   if (!owned || !process.env.VALIDATION_RETAIN_FIXTURES)
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    t.after(async () => {
+      if (owned) {
+        for (const path of [namespace, directory]) {
+          assert.equal((await lstat(path)).isSymbolicLink(), false, "Refusing linked fixture cleanup");
+          assert.equal((await lstat(join(path, ".fixture-owner"))).isSymbolicLink(), false, "Refusing linked owner marker");
+          assert.equal(await readFile(join(path, ".fixture-owner"), "utf8"), owner, "Refusing foreign fixture cleanup");
+          assert.equal(await realpath(path), path, "Refusing displaced fixture cleanup");
+        }
+      }
+      await rm(directory, { recursive: true, force: false });
+      if (owned) {
+        assert.deepEqual(await readdir(namespace), [".fixture-owner"], "Refusing occupied namespace cleanup");
+        await unlink(join(namespace, ".fixture-owner"));
+        await rmdir(namespace);
+      }
+    });
   else t.diagnostic(`Retained owned external-tool fixture: ${directory}`);
   const ownedScripts = new Set(["scripts", "validate.ps1", "validation-report.ps1",
     "validation-scheduling.ps1", "display-toolchain.ps1", "validation-execution.mjs",
@@ -98,7 +130,7 @@ exit 0
     await mkdir(join(directory, ".tools", "fixture"), { recursive: true });
     await mkdir(join(directory, ".tools", "playwright"), { recursive: true });
     await writeFile(join(directory, ".tools", "fixture", "discovery.json"), JSON.stringify(discovery));
-    await writeFile(join(directory, ".gitignore"), ".tools/\nartifacts/\ncalls.jsonl\nenvironment.json\n");
+    await writeFile(join(directory, ".gitignore"), ".tools/\nartifacts/\ncalls.jsonl\nenvironment.json\n.fixture-owner\n");
     for (const args of [
       ["init", "--quiet"], ["add", "."],
       ["-c", "user.name=Validation fixture", "-c", "user.email=fixture@example.invalid",
@@ -113,8 +145,9 @@ exit 0
     }
   }
   let reportDirectory;
-  const run = (scope = "Fast", environment = {}, selection = {}) => {
-    const result = spawnSync("pwsh", [
+  let bootstrapped = false;
+  const run = (scope = "Fast", environment = {}, selection = {}, background = false) => {
+    const arguments_ = [
     "-NoProfile", "-NonInteractive", "-Command", `
       $ErrorActionPreference = 'Stop'
       function global:Get-Command {
@@ -122,6 +155,9 @@ exit 0
         param([Parameter(Position = 0)][string]$Name, [string]$CommandType)
         if ($env:VALIDATION_OWNED -and $CommandType -eq 'Application' -and
             $Name -in @('dotnet','node','ruby','func','az')) {
+          if ($Name -eq 'az' -and $env:VALIDATION_CMD_SHIM) {
+            return [pscustomobject]@{ Source = Join-Path (Get-Location).Path '.tools\\fixture\\az.cmd' }
+          }
           return [pscustomobject]@{ Source = Join-Path (Get-Location).Path ".tools\\fixture\\$Name.exe" }
         }
         if ($Name -eq $env:VALIDATION_MISSING) { return }
@@ -198,6 +234,10 @@ exit 0
           }
           if ($env:VALIDATION_REPORTED_FAILURE -eq 'dotnet') {
             (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')) -replace 'outcome="Passed"','outcome="Failed"' |
+              Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
+          }
+          if ($env:VALIDATION_SKIPPED_DOTNET) {
+            (Get-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')) -replace 'outcome="Passed"','outcome="Skipped"' |
               Set-Content -LiteralPath (Join-Path $env:TRMNL_TIMING_DIRECTORY 'dotnet.trx')
           }
           if ($env:VALIDATION_ABORTED_DOTNET) {
@@ -302,6 +342,11 @@ exit 0
           & $env:VALIDATION_REAL_NODE @args
           return
         }
+        if ($env:VALIDATION_RUN_FIXTURE -and $args[0] -eq '--test') {
+          & $env:VALIDATION_REAL_NODE --test "--test-name-pattern=$env:VALIDATION_FIXTURE_PATTERN" $env:VALIDATION_RUN_FIXTURE
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { $global:LASTEXITCODE = $code; return }
+        }
         @{ tool = 'node'; arguments = @($args); bicepCheck = $env:AZURE_BICEP_CHECK_VERSION;
            certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE } | ConvertTo-Json -Compress |
           Add-Content -LiteralPath $env:VALIDATION_CALLS
@@ -387,9 +432,19 @@ exit 0
         $snapshot = @{}
         Get-ChildItem Env: | Where-Object {
           $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE',
-            'TRMNL_TIMING_DIRECTORY', 'AZURE_BICEP_CHECK_VERSION', 'TRMNL_DISPLAY_COVERAGE', 'TRMNL_DISCOVERY_PATH')
+            'TRMNL_TIMING_DIRECTORY', 'AZURE_BICEP_CHECK_VERSION', 'TRMNL_DISPLAY_COVERAGE', 'TRMNL_DISCOVERY_PATH',
+            'TEMP', 'TMP', 'TMPDIR', 'DOTNET_CLI_HOME', 'DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER',
+            'MSBUILDDISABLENODEREUSE', 'UseSharedCompilation', 'DOTNET_CLI_TELEMETRY_OPTOUT', 'DOTNET_NOLOGO',
+            'DOTNET_ADD_GLOBAL_TOOLS_TO_PATH',
+            'NUGET_HTTP_CACHE_PATH', 'NUGET_PLUGINS_CACHE_PATH', 'NUGET_SCRATCH', 'AZURE_CONFIG_DIR',
+            'AZURE_BICEP_USE_BINARY_FROM_PATH', 'AZURE_EXTENSION_USE_DYNAMIC_INSTALL',
+            'GeneratedMSBuildEditorConfigFile', 'DOTNET_EnableEventPipe', 'DOTNET_EventPipeOutputPath')
         } | ForEach-Object { $snapshot[$_.Name] = $_.Value }
         return $snapshot
+      }
+      if ($env:VALIDATION_CALLER_ENVIRONMENT) {
+        $caller = $env:VALIDATION_CALLER_ENVIRONMENT | ConvertFrom-Json -AsHashtable
+        foreach ($name in $caller.Keys) { [Environment]::SetEnvironmentVariable($name, $caller[$name], 'Process') }
       }
       $before = Get-CallerEnvironment
       if ($env:VALIDATION_OWNED) {
@@ -413,6 +468,7 @@ foreach ($property in $configuration.PSObject.Properties) {
           ForEach-Object { $configuration[$_.Name] = $_.Value }
         $configuration | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $tools 'configuration.json')
         (Join-Path $PSHOME 'pwsh.exe') | Set-Content -LiteralPath (Join-Path $tools 'pwsh.txt')
+        [IO.File]::WriteAllText((Join-Path $tools 'az.cmd'), "@echo off\r\necho Bicep CLI version 0.38.0\r\nexit /b 0\r\n")
         $hostSource = @'
 using System;
 using System.Diagnostics;
@@ -424,11 +480,46 @@ public class ExternalToolFixture {
         string directory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
         string tool = Path.GetFileNameWithoutExtension(Assembly.GetExecutingAssembly().Location);
         var serializer = new JavaScriptSerializer();
+        var snapshot = new System.Collections.Generic.Dictionary<string, string>();
+        foreach (string name in new[] { "TEMP", "TMP", "TMPDIR", "TRMNL_TIMING_DIRECTORY", "TRMNL_DISCOVERY_PATH",
+            "DOTNET_CLI_HOME", "DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER", "MSBUILDDISABLENODEREUSE",
+            "UseSharedCompilation", "DOTNET_CLI_TELEMETRY_OPTOUT", "DOTNET_NOLOGO",
+            "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH",
+            "NUGET_HTTP_CACHE_PATH", "NUGET_PLUGINS_CACHE_PATH", "NUGET_SCRATCH", "BUNDLE_USER_HOME",
+            "BUNDLE_USER_CACHE", "AZURE_CONFIG_DIR", "AZURE_BICEP_USE_BINARY_FROM_PATH",
+            "AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "PATH", "GeneratedMSBuildEditorConfigFile",
+            "DOTNET_EnableEventPipe", "DOTNET_EventPipeOutputPath" }) {
+            snapshot[name] = Environment.GetEnvironmentVariable(name);
+        }
         File.AppendAllText(Path.Combine(Environment.CurrentDirectory, "calls.jsonl"),
-            serializer.Serialize(new { tool = tool, arguments = args }) + Environment.NewLine);
+            serializer.Serialize(new { tool = tool, arguments = args, environment = snapshot }) + Environment.NewLine);
+        var configuration = serializer.Deserialize<System.Collections.Generic.Dictionary<string, string>>(
+            File.ReadAllText(Path.Combine(directory, "configuration.json")));
+        string behavior;
+        if (tool == "dotnet" && args.Length > 0 && args[0] == "--version" &&
+            configuration.TryGetValue("VALIDATION_PROCESS_BEHAVIOR", out behavior) && behavior.Length > 0) {
+            if (behavior == "exit7") return 7;
+            var childStart = new ProcessStartInfo(File.ReadAllText(Path.Combine(directory, "pwsh.txt")).Trim(),
+                "-NoLogo -NoProfile -NonInteractive -Command \\"Start-Sleep -Seconds 120\\"");
+            childStart.UseShellExecute = false;
+            var child = Process.Start(childStart);
+            File.WriteAllText(Path.Combine(directory, "owned-processes.json"), serializer.Serialize(new {
+                parent = Process.GetCurrentProcess().Id, child = child.Id, scratch = snapshot["TEMP"] }));
+            if (behavior == "orphan") { Console.WriteLine("10.0.100"); return 0; }
+            var clock = Stopwatch.StartNew();
+            while (!File.Exists(Path.Combine(directory, "release")) &&
+                !File.Exists(Path.Combine(directory, "release-" + Process.GetCurrentProcess().Id))) {
+                if (clock.Elapsed.TotalSeconds >= 120) return 91;
+                System.Threading.Thread.Sleep(20);
+            }
+            Console.WriteLine("10.0.100");
+            return 0;
+        }
         if (args.Length > 0 && (args[0] == "format" || args[0] == "build" || args[0] == "--check")) {
-            var configuration = serializer.Deserialize<System.Collections.Generic.Dictionary<string, string>>(
-                File.ReadAllText(Path.Combine(directory, "configuration.json")));
+            if (args[0] == "build") {
+                Console.WriteLine("owned stdout");
+                Console.Error.WriteLine("owned stderr");
+            }
             string failure;
             return configuration.TryGetValue("VALIDATION_FAIL", out failure) && failure == tool + ":" + args[0] ? 23 : 0;
         }
@@ -453,19 +544,62 @@ public class ExternalToolFixture {
 }
 '@
         if (!(Test-Path -LiteralPath (Join-Path $tools 'dotnet.exe'))) {
+          $bootstrap = @{ phase = 'fixture-bootstrap'; pid = $PID; compiler_pid = $null;
+            compiler_exit = $null; timed_out = $false; cleanup_complete = $false; failure = $null }
+          $bootstrapPath = Join-Path $tools 'bootstrap.json'
+          $compilerProcess = $null
+          $bootstrapClock = [Diagnostics.Stopwatch]::StartNew()
+          try {
+          if ($env:VALIDATION_INVALID_HOST_SOURCE) { $hostSource += "\ninvalid C# fixture source;" }
           [IO.File]::WriteAllText((Join-Path $tools 'host.cs'), $hostSource)
           $compiler = @'
 param([string]$Directory)
 Add-Type -Path (Join-Path $Directory 'host.cs') -OutputAssembly (Join-Path $Directory 'dotnet.exe') -OutputType ConsoleApplication -ReferencedAssemblies System.Web.Extensions
 '@
           [IO.File]::WriteAllText((Join-Path $tools 'compile.ps1'), $compiler)
-          & powershell.exe -NoProfile -NonInteractive -File (Join-Path $tools 'compile.ps1') -Directory $tools | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw 'Synthetic external executable compilation failed.' }
+          $start = [Diagnostics.ProcessStartInfo]::new((Microsoft.PowerShell.Core\\Get-Command powershell.exe).Source)
+          $start.UseShellExecute = $false
+          $start.RedirectStandardOutput = $true
+          $start.RedirectStandardError = $true
+          foreach ($argument in @('-NoProfile','-NonInteractive','-File',(Join-Path $tools 'compile.ps1'),'-Directory',$tools)) {
+            $start.ArgumentList.Add($argument)
+          }
+          $compilerProcess = [Diagnostics.Process]::Start($start)
+          $bootstrap.compiler_pid = $compilerProcess.Id
+          $stdout = $compilerProcess.StandardOutput.ReadToEndAsync()
+          $stderr = $compilerProcess.StandardError.ReadToEndAsync()
+          $compilerBound = if ($env:VALIDATION_BOOTSTRAP_COMPILER_TIMEOUT_MS) {
+            [Math]::Clamp([int]$env:VALIDATION_BOOTSTRAP_COMPILER_TIMEOUT_MS, 1, 50000)
+          } else { 50000 }
+          if (!$compilerProcess.WaitForExit($compilerBound)) {
+            $bootstrap.timed_out = $true
+            $compilerProcess.Kill($true)
+            $compilerProcess.WaitForExit()
+            throw 'Fixture bootstrap compiler exceeded its finite deadline; owned process tree terminated.'
+          }
+          $stdout.GetAwaiter().GetResult() | Out-Host
+          $stderr.GetAwaiter().GetResult() | Out-Host
+          $bootstrap.compiler_exit = $compilerProcess.ExitCode
+          if ($compilerProcess.ExitCode -ne 0) { throw 'Synthetic external executable compilation failed.' }
           foreach ($tool in @('node','ruby','func','az')) {
             Copy-Item -LiteralPath (Join-Path $tools 'dotnet.exe') -Destination (Join-Path $tools "$tool.exe")
           }
+          } catch {
+            $bootstrap.failure = $_.Exception.Message
+            throw
+          } finally {
+            if ($compilerProcess) {
+              if (!$compilerProcess.HasExited) { $compilerProcess.Kill($true); $compilerProcess.WaitForExit() }
+              $bootstrap.compiler_exit = $compilerProcess.ExitCode
+              $compilerProcess.Dispose()
+            }
+            $bootstrap.elapsed_ms = $bootstrapClock.Elapsed.TotalMilliseconds
+            $bootstrap.cleanup_complete = $true
+            $bootstrap | ConvertTo-Json | Set-Content -LiteralPath $bootstrapPath
+          }
         }
       }
+      if ($env:VALIDATION_BOOTSTRAP_ONLY) { exit 0 }
       $selection = $env:VALIDATION_SELECTION | ConvertFrom-Json -AsHashtable
       if ($env:VALIDATION_DISPLAY_PROFILE) { $selection.DisplayCoverage = $env:VALIDATION_DISPLAY_PROFILE }
       & $env:VALIDATION_SCRIPT -Scope $env:VALIDATION_SCOPE @selection
@@ -475,35 +609,146 @@ Add-Type -Path (Join-Path $Directory 'host.cs') -OutputAssembly (Join-Path $Dire
         Set-Content -LiteralPath $env:VALIDATION_ENVIRONMENT
       exit $code
     `
-  ], {
+  ];
+    const options = {
     cwd: directory, encoding: "utf8", timeout: Number(environment.VALIDATION_TIMEOUT_MS ?? 30_000),
     env: {
       ...process.env, VALIDATION_SCRIPT: join(directory, "scripts", "validate.ps1"),
       VALIDATION_SCOPE: scope, VALIDATION_CALLS: calls, TRMNL_RUBY: "ruby",
       VALIDATION_OWNED: owned ? "1" : "", VALIDATION_REAL_NODE: process.execPath,
       VALIDATION_SELECTION: JSON.stringify(selection),
-      ...(owned ? { PLAYWRIGHT_BROWSERS_PATH: join(directory, ".tools", "playwright") } : {}),
+      ...(owned ? { PLAYWRIGHT_BROWSERS_PATH: join(directory, ".tools", "playwright"),
+        GITHUB_RUN_ID: "", GITHUB_RUN_ATTEMPT: "", GITHUB_OUTPUT: "", PR_HEAD_COMMIT: "", PR_BASE_COMMIT: "",
+        GITHUB_SHA: "", GITHUB_REF: "", GITHUB_HEAD_REF: "", GITHUB_BASE_REF: "",
+        GITHUB_WORKSPACE: "", GITHUB_EVENT_NAME: "", GITHUB_EVENT_PATH: "" } : {}),
       VALIDATION_ENVIRONMENT: join(directory, "environment.json"), ...environment
     }
+    };
+    const inProcess = {};
+    for (const name of ["DOTNET_EnableEventPipe", "DOTNET_EventPipeOutputPath"]) {
+      if (Object.hasOwn(environment, name)) {
+        inProcess[name] = environment[name];
+        delete options.env[name];
+      }
+    }
+    options.env.VALIDATION_CALLER_ENVIRONMENT = JSON.stringify(inProcess);
+    if (owned && !bootstrapped) {
+      const bootstrapStarted = performance.now();
+      const bootstrap = spawnSync("pwsh", arguments_, {
+        ...options, timeout: 60_000, env: { ...options.env, VALIDATION_BOOTSTRAP_ONLY: "1" }
+      });
+      bootstrap.phase = "fixture-bootstrap";
+      bootstrap.elapsed_ms = performance.now() - bootstrapStarted;
+      writeFileSync(join(directory, ".tools", "fixture", "bootstrap-process.json"), processEvidence(bootstrap));
+      if (bootstrap.status !== 0 || bootstrap.error) return bootstrap;
+      bootstrapped = true;
+    }
+    const started = performance.now();
+    const capture = result => {
+      result.phase = "public-validation";
+      result.elapsed_ms = performance.now() - started;
+      if (owned) writeFileSync(join(directory, ".tools", "fixture", `result-${Date.now()}.json`),
+        processEvidence(result));
+      reportDirectory = result.stdout.match(/Timing report: (.+)/)?.[1].trim();
+      return result;
+    };
+    if (!background) return capture(spawnSync("pwsh", arguments_, options));
+    const process_ = spawn("pwsh", arguments_, options);
+    const done = new Promise((resolve, reject) => {
+      let stdout = "", stderr = "";
+      process_.stdout.on("data", data => { stdout += data; });
+      process_.stderr.on("data", data => { stderr += data; });
+      process_.on("error", reject);
+      process_.on("close", (status, signal) => resolve(capture({ status, signal, stdout, stderr })));
     });
-    if (owned) writeFileSync(join(directory, ".tools", "fixture", `result-${Date.now()}.json`),
-      JSON.stringify(result));
-    reportDirectory = result.stdout.match(/Timing report: (.+)/)?.[1].trim();
-    return result;
+    return { process: process_, done };
   };
   return {
-    directory, run,
+    directory, run, start: (scope, environment, selection) => run(scope, environment, selection, true),
     reportDirectory: () => reportDirectory,
     report: async () => JSON.parse(await readFile(join(reportDirectory, "summary.json"), "utf8")),
     environment: async () => JSON.parse(await readFile(join(directory, "environment.json"), "utf8")),
+    bootstrap: async () => ({
+      process: JSON.parse(await readFile(join(directory, ".tools", "fixture", "bootstrap-process.json"), "utf8")),
+      compiler: JSON.parse(await readFile(join(directory, ".tools", "fixture", "bootstrap.json"), "utf8"))
+    }),
     calls: async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/).map(JSON.parse)
   };
 }
 
+test("owned public fixture planning is local even when its caller carries hosted run metadata", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const names = ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "PR_HEAD_COMMIT", "PR_BASE_COMMIT", "GITHUB_OUTPUT"];
+  const before = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  try {
+    process.env.GITHUB_RUN_ID = "41563631726";
+    process.env.GITHUB_RUN_ATTEMPT = "1";
+    process.env.PR_HEAD_COMMIT = "a648e579ab88df2f04d2333f8308c6e1b922105d";
+    process.env.PR_BASE_COMMIT = "0c64e6d03f3fce6f43c0fdd460a9b0ffa3530680";
+    delete process.env.GITHUB_OUTPUT;
+    const result = fixture.run("Fast", {}, { Execution: "Plan" });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const plan = JSON.parse(await readFile(join(fixture.reportDirectory(), "execution-plan.json"), "utf8"));
+    const rejected = fixture.run("Full", { GITHUB_RUN_ID: "999" }, {
+      Execution: "Aggregate", ExecutionPlan: join(fixture.reportDirectory(), "execution-plan.json"),
+      ReportsDirectory: join(fixture.directory, "artifacts", "missing"), JobResults: "{}"
+    });
+    assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
+    assert.match(rejected.stderr, /local execution plan cannot certify a hosted workflow run/,
+      JSON.stringify({ status: rejected.status, error: rejected.error?.code, signal: rejected.signal,
+        stdout: rejected.stdout, stderr: rejected.stderr }));
+    assert.match(plan.context.run_id, /^local-[a-f0-9]{32}$/);
+    assert.equal(plan.context.run_attempt, "1");
+  } finally {
+    for (const [name, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("public fixture timeout evidence retains native spawn error, signal and failed exit instead of success", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const ready = fixture.run("Fast");
+  assert.equal(ready.status, 0, processEvidence(ready));
+  const timedOut = fixture.run("Fast", { VALIDATION_TIMEOUT_MS: "500", VALIDATION_PAUSE: "1" });
+  assert.equal(timedOut.status, null, processEvidence(timedOut));
+  assert.equal(timedOut.error?.code, "ETIMEDOUT", processEvidence(timedOut));
+  const recorded = JSON.parse(processEvidence(timedOut));
+  assert.equal(recorded.error.syscall, "spawnSync pwsh");
+  assert.ok(recorded.error.message.length);
+  assert.ok(recorded.signal);
+  assert.ok(recorded.elapsed_ms >= 500);
+  assertProcessState([timedOut.pid]);
+});
+
+test("fixture bootstrap reports compilation and timeout failures before any public validation executes", async t => {
+  for (const environment of [
+    { VALIDATION_INVALID_HOST_SOURCE: "1" }, { VALIDATION_BOOTSTRAP_COMPILER_TIMEOUT_MS: "1" }
+  ]) {
+    const fixture = await checkout(t, { owned: true });
+    const failed = fixture.run("Fast", environment);
+    assert.equal(failed.phase, "fixture-bootstrap", processEvidence(failed));
+    assert.equal(failed.status, 1, processEvidence(failed));
+    assert.doesNotMatch(failed.stdout + failed.stderr, /Timing report:|Fast validation PASSED/);
+    const recorded = await fixture.bootstrap();
+    assert.equal(recorded.process.phase, "fixture-bootstrap");
+    assert.equal(recorded.compiler.cleanup_complete, true);
+    assert.ok(recorded.compiler.failure.length);
+    assert.equal(recorded.compiler.timed_out, Boolean(environment.VALIDATION_BOOTSTRAP_COMPILER_TIMEOUT_MS));
+    assertProcessState([recorded.compiler.compiler_pid]);
+  }
+});
+
 test("external tool fixture forwards literal UTF-8 JSON without a BOM under owned encoding", async t => {
   const fixture = await checkout(t, { owned: true });
   const initialized = fixture.run("Fast");
-  assert.equal(initialized.status, 0, initialized.stdout + initialized.stderr);
+  assert.equal(initialized.status, 0, processEvidence(initialized));
+  assert.equal(initialized.phase, "public-validation");
+  const bootstrap = await fixture.bootstrap();
+  assert.equal(bootstrap.process.status, 0, JSON.stringify(bootstrap));
+  assert.equal(bootstrap.compiler.compiler_exit, 0);
+  assert.equal(bootstrap.compiler.cleanup_complete, true);
   const tools = join(fixture.directory, ".tools", "fixture");
   const values = ["caf\u00e9 \u96ea \ud83d\ude80", 'quote " and backslash \\', "first\nsecond\r\nthird", ""];
   await writeFile(join(tools, "arguments.json"), JSON.stringify(values));
@@ -574,6 +819,34 @@ exit $code
   assert.equal(cleanup.status, 0, cleanup.stdout + cleanup.stderr);
 });
 
+test("public Worker classifies identity-complete failed TRX as known failure rather than missing evidence", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const planned = fixture.run("Fast", {}, { Execution: "Plan" });
+  assert.equal(planned.status, 0, processEvidence(planned));
+  const planPath = join(fixture.reportDirectory(), "execution-plan.json");
+  const plan = JSON.parse(await readFile(planPath, "utf8"));
+  const expected = plan.components.find(component => component.id === "d1").expected_tests;
+  const failed = fixture.run("Full", { VALIDATION_REPORTED_FAILURE: "dotnet", VALIDATION_TIMEOUT_MS: "60000" },
+    { Execution: "Worker", Component: "d1", ExecutionPlan: planPath });
+  assert.equal(failed.status, 1, processEvidence(failed));
+  const report = await fixture.report();
+  assert.equal(report.outcome, "failed");
+  assert.equal(report.evidence.dotnet.count, expected.length);
+  assert.deepEqual(report.evidence.dotnet.tests.map(({ test_id, name, method }) => ({ test_id, name, method })),
+    expected.map(({ test_id, name, method }) => ({ test_id, name, method })));
+  assert.equal(report.evidence.dotnet.tests.filter(item => item.result === "Failed").length, 2);
+  const directory = fixture.reportDirectory();
+  const manifest = JSON.parse(await readFile(join(directory, "raw-manifest.json"), "utf8"));
+  const trx = await readFile(join(directory, "dotnet.trx"));
+  const sealed = manifest.files.find(item => item.path === "dotnet.trx");
+  assert.equal(sealed.length, trx.length);
+  assert.equal(sealed.sha256, createHash("sha256").update(trx).digest("hex"));
+  assert.equal(report.evidence.status, "failed");
+  assert.equal(report.components.find(item => item.id === "dotnet").evidence_outcome, "failure");
+  assert.equal(report.components.find(item => item.id === "dotnet").outcome, "failure");
+  assert.ok(!report.unavailable.includes("complete .NET TRX results"));
+});
+
 test("public owned workers preserve assignment through build and report missing results truthfully", async t => {
   const fixture = await checkout(t, { owned: true });
   const planned = fixture.run("Fast", { VALIDATION_TIMEOUT_MS: "180000" }, { Execution: "Plan" });
@@ -624,6 +897,7 @@ test("public owned modes complete each assigned worker and preserve truthful agg
       assert.equal(report.evidence.status, "complete");
       assert.equal(report.evidence.dotnet?.count ?? 0, id === "d1" ? 2 : id === "node" ? 0 : 1);
       assert.equal(report.evidence.node?.summary.tests ?? 0, id === "node" ? 2 : 0);
+      assert.equal(report.evidence.phases?.display_coverage.length ?? 0, id === "d1" ? 12 : id === "node" ? 0 : 6);
       assert.deepEqual((await workerFixture.environment()).after, (await workerFixture.environment()).before);
       const reportDirectory = workerFixture.reportDirectory();
       await mkdir(join(incoming, id));
@@ -641,8 +915,17 @@ test("public owned modes complete each assigned worker and preserve truthful agg
   assert.equal(combined.evidence.status, "complete");
   assert.equal(combined.evidence.dotnet.count, 5);
   assert.equal(combined.evidence.node.summary.tests, 2);
+  assert.equal(combined.execution.components.length, 5);
+  assert.equal(combined.execution.controller_isolation.tool_environment_policy, "native-inputs-v1");
+  assert.equal(combined.provenance.run_source, "local");
+  assert.equal(combined.provenance.run_id, plan.context.run_id);
+  assert.deepEqual(combined.stages, []);
+  assert.equal(combined.execution.reconciliation.total_job_runner_minutes, null);
+  assert.match(combined.timing_semantics, /aggregation duration excludes worker/);
   const originalSeal = await readFile(join(incoming, "d1", componentDirectories.d1, "raw-manifest.json"), "utf8");
-  for (const fault of ["after-seal", "missing", "extra", "hash", "provenance", "failed-job"]) {
+  for (const fault of ["after-seal", "missing", "extra", "hash", "provenance", "failed-job",
+    "cancelled-job", "foreign-component", "duplicate-directory", "stale-plan",
+    "skipped-with-valid-seal", "missing-completions-with-valid-seal"]) {
     const altered = join(fixture.directory, "artifacts", `aggregate-negative-${fault}`);
     await cp(incoming, altered, { recursive: true });
     const component = join(altered, "d1", componentDirectories.d1);
@@ -655,20 +938,55 @@ test("public owned modes complete each assigned worker and preserve truthful agg
       manifest.files[0].sha256 = "0".repeat(64);
       await writeFile(join(component, "raw-manifest.json"), JSON.stringify(manifest));
     }
+    if (["skipped-with-valid-seal", "missing-completions-with-valid-seal"].includes(fault)) {
+      const file = fault === "skipped-with-valid-seal" ? "dotnet.trx" : "coverage-fixture.jsonl";
+      const raw = join(component, file);
+      await writeFile(raw, fault === "skipped-with-valid-seal"
+        ? (await readFile(raw, "utf8")).replaceAll('outcome="Passed"', 'outcome="Skipped"') : "");
+      const bytes = await readFile(raw);
+      const manifest = JSON.parse(originalSeal);
+      const entry = manifest.files.find(item => item.path === file);
+      assert.ok(entry, "The public Worker must emit this raw evidence and its seal");
+      entry.length = bytes.length;
+      entry.sha256 = createHash("sha256").update(bytes).digest("hex");
+      await writeFile(join(component, "raw-manifest.json"), JSON.stringify(manifest));
+      const claims = JSON.parse(await readFile(join(component, "summary.json"), "utf8"));
+      assert.equal(claims.outcome, "passed");
+      assert.equal(claims.evidence.status, "complete");
+    }
+    if (fault === "foreign-component") await mkdir(join(altered, "foreign"));
+    if (fault === "duplicate-directory")
+      await cp(component, join(altered, "d1", "component-duplicate"), { recursive: true });
+    const alteredPlan = join(fixture.directory, ".tools", "fixture", "stale-plan.json");
+    if (fault === "stale-plan") {
+      await writeFile(alteredPlan, JSON.stringify({
+        ...plan, context: { ...plan.context, run_id: `local-${"b".repeat(32)}` }
+      }));
+      await cp(join(dirname(planPath), "execution-request.json"), join(dirname(alteredPlan), "execution-request.json"));
+    }
     const rejected = fixture.run("Full", {
       ...environment, ...(fault === "provenance" ? { GITHUB_RUN_ID: "999" } : {})
     }, {
-      Execution: "Aggregate", ExecutionPlan: planPath, ReportsDirectory: altered,
-      JobResults: fault === "failed-job" ? JSON.stringify({
-        d1: "failure", d2: "success", d3: "success", d4: "success", node: "success"
+      Execution: "Aggregate", ExecutionPlan: fault === "stale-plan" ? alteredPlan : planPath, ReportsDirectory: altered,
+      JobResults: ["failed-job", "cancelled-job"].includes(fault) ? JSON.stringify({
+        d1: fault === "failed-job" ? "failure" : "cancelled",
+        d2: "success", d3: "success", d4: "success", node: "success"
       }) : jobResults
     });
-    assert.equal(rejected.status, 1, fault + rejected.stdout + rejected.stderr);
-    if (fault === "provenance") assert.match(rejected.stderr, /local execution plan cannot certify a hosted workflow run/);
+    assert.equal(rejected.status, 1, fault + processEvidence(rejected));
+    if (fault === "provenance")
+      assert.match(rejected.stderr, /local execution plan cannot certify a hosted workflow run/, processEvidence(rejected));
     else {
       assert.equal((await fixture.report()).outcome, "failed", fault);
       if (["after-seal", "missing", "extra", "hash"].includes(fault))
         assert.match(rejected.stdout, /Component raw artifact|Component raw file/);
+      if (fault === "foreign-component") assert.match(rejected.stdout, /component set contains missing, duplicate or foreign/);
+      if (fault === "duplicate-directory") assert.match(rejected.stdout, /exactly one report directory/);
+      if (fault === "stale-plan") assert.match(rejected.stdout, /execution plan cannot be reconstructed/);
+      if (["failed-job", "cancelled-job"].includes(fault))
+        assert.match(rejected.stdout + rejected.stderr, /all_execution_jobs_must_succeed/);
+      if (["skipped-with-valid-seal", "missing-completions-with-valid-seal"].includes(fault))
+        assert.match(rejected.stdout, /Fresh raw component evidence differs from its claimed complete report/);
     }
     assert.equal(await readFile(join(incoming, "d1", componentDirectories.d1, "raw-manifest.json"), "utf8"),
       originalSeal);
@@ -689,6 +1007,329 @@ test("public owned modes complete each assigned worker and preserve truthful agg
   assert.equal(aggregate.status, 1, aggregate.stdout + aggregate.stderr);
   assert.equal((await fixture.report()).outcome, "failed");
   assert.doesNotMatch(aggregate.stdout, /evidence_outcome.*cannot be found/);
+  await writeFile(join(fixture.directory, "tests", "delivery", "synthetic.test.mjs"), "// Changed after planning\n");
+  const changed = fixture.run("Full", environment, {
+    Execution: "Aggregate", ExecutionPlan: planPath, ReportsDirectory: incoming, JobResults: jobResults
+  });
+  assert.equal(changed.status, 1, changed.stdout + changed.stderr);
+  assert.match(changed.stdout, /content or coverage policy does not match/);
+});
+
+async function waitForRecord(path) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try { return JSON.parse(await readFile(path, "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.fail(`Owned native process never produced ${path}`);
+}
+
+function stopProcess(pid) {
+  return spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+    `Stop-Process -Id ${Number(pid)} -Force -ErrorAction SilentlyContinue`],
+  { encoding: "utf8", timeout: 10_000 });
+}
+
+function assertProcessState(gone, alive = []) {
+  const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `
+for ($attempt = 0; $attempt -lt 100; $attempt++) {
+    if (!(@(${gone.map(Number).join(",")}) | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })) { break }
+    Start-Sleep -Milliseconds 20
+}
+foreach ($pidValue in @(${gone.map(Number).join(",")})) {
+    if (Get-Process -Id $pidValue -ErrorAction SilentlyContinue) { throw 'Owned descendant survived.' }
+}
+foreach ($pidValue in @(${alive.map(Number).join(",")})) {
+    if (!(Get-Process -Id $pidValue -ErrorAction SilentlyContinue)) { throw 'Independent peer was terminated.' }
+}
+`], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+}
+
+test("public Plan scopes native tool environment and cleans scratch without altering its caller", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const trace = join(fixture.directory, ".tools", "fixture", "foreign.nettrace");
+  await writeFile(trace, "preserve-foreign-trace");
+  const result = fixture.run("Fast", {
+    TRMNL_DISCOVERY_PATH: "caller-discovery-sentinel", TRMNL_TIMING_DIRECTORY: "caller-timing-sentinel",
+    BUNDLE_PATH: "caller-bundle-sentinel", GeneratedMSBuildEditorConfigFile: "caller-output-sentinel",
+    DOTNET_EnableEventPipe: "1", DOTNET_EventPipeOutputPath: trace, DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: "true"
+  }, { Execution: "Plan" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /owned stdout/);
+  assert.match(result.stdout + result.stderr, /owned stderr/);
+  const report = await fixture.report();
+  const isolation = report.execution.isolation;
+  const native = (await fixture.calls()).find(call => call.environment && call.arguments[0] === "build").environment;
+  const scratch = isolation.process_root;
+  assert.equal(isolation.workspace_root, fixture.directory);
+  assert.equal(isolation.build_roots.length, 4);
+  assert.equal(isolation.tool_environment_policy, "native-inputs-v1");
+  for (const name of ["GeneratedMSBuildEditorConfigFile", "DOTNET_EnableEventPipe", "DOTNET_EventPipeOutputPath"]) {
+    assert.ok(isolation.omitted_inherited_variables.includes(name));
+    assert.equal(native[name], null);
+  }
+  for (const name of ["TEMP", "TMP", "TMPDIR"]) assert.equal(native[name], scratch);
+  assert.equal(native.TRMNL_DISCOVERY_PATH, null);
+  assert.equal(native.TRMNL_TIMING_DIRECTORY, fixture.reportDirectory());
+  for (const [name, suffix] of [
+    ["DOTNET_CLI_HOME", "dotnet-home"], ["NUGET_HTTP_CACHE_PATH", "nuget-http"],
+    ["NUGET_PLUGINS_CACHE_PATH", "nuget-plugins"], ["NUGET_SCRATCH", "nuget-scratch"],
+    ["BUNDLE_USER_HOME", "bundler"], ["BUNDLE_USER_CACHE", "bundler\\cache"], ["AZURE_CONFIG_DIR", "azure"]
+  ]) assert.equal(native[name], join(scratch, suffix));
+  for (const name of ["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER", "MSBUILDDISABLENODEREUSE",
+    "DOTNET_CLI_TELEMETRY_OPTOUT", "DOTNET_NOLOGO"]) assert.equal(native[name], "1");
+  assert.equal(native.UseSharedCompilation, "false");
+  assert.equal(native.DOTNET_ADD_GLOBAL_TOOLS_TO_PATH, "false");
+  assert.equal(native.AZURE_BICEP_USE_BINARY_FROM_PATH, "true");
+  assert.equal(native.AZURE_EXTENSION_USE_DYNAMIC_INSTALL, "no");
+  assert.ok(native.PATH.length);
+  await assert.rejects(readFile(join(scratch, ".validation-owner")), { code: "ENOENT" });
+  assert.equal(await readFile(trace, "utf8"), "preserve-foreign-trace");
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+});
+
+test("public Worker accepts literal command shims and rejects skipped or missing assigned raw results", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const planned = fixture.run("Fast", {}, { Execution: "Plan" });
+  assert.equal(planned.status, 0, planned.stdout + planned.stderr);
+  const plan = join(fixture.reportDirectory(), "execution-plan.json");
+  const completed = fixture.run("Full", { VALIDATION_CMD_SHIM: "1", VALIDATION_TIMEOUT_MS: "60000" },
+    { Execution: "Worker", Component: "d1", ExecutionPlan: plan });
+  assert.equal(completed.status, 0, completed.stdout + completed.stderr);
+  const report = await fixture.report();
+  assert.equal(report.provenance.tools.bicep, "Bicep CLI version 0.38.0");
+  assert.equal(report.evidence.phases.display_coverage.length, 12);
+  const testCall = (await fixture.calls()).find(call => call.environment &&
+    call.arguments.includes("trx;LogFileName=dotnet.trx"));
+  assert.ok(testCall.arguments.includes("--filter"));
+  assert.equal(testCall.arguments[testCall.arguments.indexOf("--results-directory") + 1], fixture.reportDirectory());
+  assert.equal(testCall.arguments[testCall.arguments.indexOf("--settings") + 1],
+    join(fixture.directory, "tests", "validation-partitions.runsettings"));
+  for (const environment of [
+    { VALIDATION_SKIPPED_DOTNET: "1" }, { VALIDATION_MISSING_COVERAGE: "1" },
+    { VALIDATION_COVERAGE_FAULT: "duplicate" }, { VALIDATION_COVERAGE_FAULT: "unexpected" }
+  ]) {
+    const failed = fixture.run("Full", { ...environment, VALIDATION_TIMEOUT_MS: "60000" },
+      { Execution: "Worker", Component: "d1", ExecutionPlan: plan });
+    assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+    assert.equal((await fixture.report()).evidence.status, "incomplete");
+    assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+  }
+});
+
+test("public Plan preserves native exit status, timeout and exited-launcher descendant cleanup", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const failed = fixture.run("Fast", { VALIDATION_PROCESS_BEHAVIOR: "exit7" }, { Execution: "Plan" });
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.match(failed.stdout + failed.stderr, /Owned validation tool exited with code 7/);
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+  const orphan = fixture.run("Fast", { VALIDATION_PROCESS_BEHAVIOR: "orphan" }, { Execution: "Plan" });
+  assert.equal(orphan.status, 0, orphan.stdout + orphan.stderr);
+  const path = join(fixture.directory, ".tools", "fixture", "owned-processes.json");
+  const orphanProcesses = await waitForRecord(path);
+  assertProcessState([orphanProcesses.parent, orphanProcesses.child]);
+  const timeout = fixture.run("Fast", { VALIDATION_PROCESS_BEHAVIOR: "hold", VALIDATION_TIMEOUT_MS: "85000" },
+    { Execution: "Plan" });
+  assert.equal(timeout.status, 1, timeout.stdout + timeout.stderr);
+  assert.match(timeout.stdout + timeout.stderr, /Owned validation tool exceeded its finite deadline/);
+  const timedOut = await waitForRecord(path);
+  assertProcessState([timedOut.parent, timedOut.child]);
+  await assert.rejects(readFile(join(timedOut.scratch, ".validation-owner")), { code: "ENOENT" });
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+});
+
+test("cancelling a public Plan terminates its descendants while a separate live owner remains protected", async t => {
+  const first = await checkout(t, { owned: true });
+  const peer = await checkout(t, { owned: true });
+  const environment = { VALIDATION_PROCESS_BEHAVIOR: "hold", VALIDATION_TIMEOUT_MS: "85000",
+    DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: "true" };
+  const owner = first.start("Fast", environment, { Execution: "Plan" });
+  const other = peer.start("Fast", environment, { Execution: "Plan" });
+  t.after(() => { stopProcess(owner.process.pid); stopProcess(other.process.pid); });
+  const owned = await waitForRecord(join(first.directory, ".tools", "fixture", "owned-processes.json"));
+  const foreign = await waitForRecord(join(peer.directory, ".tools", "fixture", "owned-processes.json"));
+  assert.notEqual(owned.scratch, foreign.scratch);
+  const peerMarker = await readFile(join(foreign.scratch, ".validation-owner"), "utf8");
+  assert.equal(stopProcess(owner.process.pid).status, 0);
+  const cancelled = await owner.done;
+  assert.notEqual(cancelled.status, 0);
+  assertProcessState([owned.parent, owned.child], [other.process.pid, foreign.parent, foreign.child]);
+  assert.equal(await readFile(join(foreign.scratch, ".validation-owner"), "utf8"), peerMarker);
+  await writeFile(join(peer.directory, ".tools", "fixture", "release"), "continue");
+  const completed = await other.done;
+  assert.equal(completed.status, 0, completed.stdout + completed.stderr);
+  assertProcessState([foreign.parent, foreign.child]);
+  await assert.rejects(readFile(join(foreign.scratch, ".validation-owner")), { code: "ENOENT" });
+  assert.deepEqual((await peer.environment()).after, (await peer.environment()).before);
+});
+
+test("public Plan refuses cleanup of a displaced scratch owner and restores its caller after failure", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const owner = fixture.start("Fast", { VALIDATION_PROCESS_BEHAVIOR: "hold", VALIDATION_TIMEOUT_MS: "85000" },
+    { Execution: "Plan" });
+  t.after(() => stopProcess(owner.process.pid));
+  const processes = await waitForRecord(join(fixture.directory, ".tools", "fixture", "owned-processes.json"));
+  const marker = join(processes.scratch, ".validation-owner");
+  await writeFile(marker, "foreign-owner");
+  await writeFile(join(fixture.directory, ".tools", "fixture", "release"), "continue");
+  const result = await owner.done;
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /Worker scratch ownership changed; refusing cleanup/);
+  assert.equal(await readFile(marker, "utf8"), "foreign-owner");
+  assertProcessState([processes.parent, processes.child]);
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+});
+
+test("two live public Plans in one checkout keep distinct scratch and peer cleanup leaves the active owner intact", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const prepared = fixture.run("Fast");
+  assert.equal(prepared.status, 0, prepared.stdout + prepared.stderr);
+  const environment = { VALIDATION_PROCESS_BEHAVIOR: "hold", VALIDATION_TIMEOUT_MS: "85000",
+    DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: "true" };
+  const first = fixture.start("Fast", environment, { Execution: "Plan" });
+  const recordPath = join(fixture.directory, ".tools", "fixture", "owned-processes.json");
+  const owned = await waitForRecord(recordPath);
+  await rm(recordPath);
+  const second = fixture.start("Fast", environment, { Execution: "Plan" });
+  t.after(() => { stopProcess(first.process.pid); stopProcess(second.process.pid); });
+  const peer = await waitForRecord(recordPath);
+  assert.notEqual(owned.scratch, peer.scratch);
+  const marker = await readFile(join(peer.scratch, ".validation-owner"), "utf8");
+  await writeFile(join(fixture.directory, ".tools", "fixture", `release-${owned.parent}`), "continue");
+  const completed = await first.done;
+  assert.equal(completed.status, 0, completed.stdout + completed.stderr);
+  assertProcessState([owned.parent, owned.child], [second.process.pid, peer.parent, peer.child]);
+  await assert.rejects(readFile(join(owned.scratch, ".validation-owner")), { code: "ENOENT" });
+  assert.equal(await readFile(join(peer.scratch, ".validation-owner"), "utf8"), marker);
+  await writeFile(join(fixture.directory, ".tools", "fixture", `release-${peer.parent}`), "continue");
+  const other = await second.done;
+  assert.equal(other.status, 0, other.stdout + other.stderr);
+  assertProcessState([peer.parent, peer.child]);
+  await assert.rejects(readFile(join(peer.scratch, ".validation-owner")), { code: "ENOENT" });
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+});
+
+test("public Node Worker forwards literal file paths without interpreting shell expressions", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const name = "$notAnExpression; & no-command.test.mjs";
+  const selected = join(fixture.directory, "tests", "validation", name);
+  await writeFile(selected, "// Literal public Node test path fixture.\n");
+  for (const arguments_ of [["add", "."], ["-c", "user.name=Validation fixture",
+    "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Literal test path"]]) {
+    const result = spawnSync("git", arguments_, {
+      cwd: fixture.directory, env: isolatedGitEnvironment(), encoding: "utf8", timeout: 10_000
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  }
+  const planned = fixture.run("Fast", {}, { Execution: "Plan" });
+  assert.equal(planned.status, 0, planned.stdout + planned.stderr);
+  const plan = join(fixture.reportDirectory(), "execution-plan.json");
+  const worker = fixture.run("Full", { VALIDATION_TIMEOUT_MS: "60000" },
+    { Execution: "Worker", Component: "node", ExecutionPlan: plan });
+  assert.equal(worker.status, 0, worker.stdout + worker.stderr);
+  const call = (await fixture.calls()).find(item => item.environment && item.arguments[0] === "--test");
+  assert.ok(call.arguments.includes(selected));
+  assert.equal((await fixture.report()).evidence.node.summary.tests, 3);
+  assert.ok((await fixture.report()).evidence.node.summary.files.includes(join("tests", "validation", name)));
+});
+
+test("public Plan and Worker reject linked writable outputs and inherited build overrides before work", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const foreign = join(fixture.directory, "foreign");
+  await mkdir(foreign);
+  const sentinel = join(foreign, "sentinel");
+  await writeFile(sentinel, "preserve-foreign");
+  const plan = join(fixture.directory, "preflight-plan.json");
+  await writeFile(plan, JSON.stringify({ coverage: { profile: "OgFirst" }, context: { run_id: "101" } }));
+  const modes = [
+    ["-Scope", "Fast", "-Execution", "Plan"],
+    ["-Scope", "Full", "-Execution", "Worker", "-Component", "d1", "-ExecutionPlan", plan]
+  ];
+  const aggregateMode = ["-Scope", "Full", "-Execution", "Aggregate", "-ExecutionPlan", plan,
+    "-ReportsDirectory", foreign, "-JobResults", "{}"];
+  const reject = (arguments_, environment = {}) => {
+    const result = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-File",
+      join(fixture.directory, "scripts", "validate.ps1"), ...arguments_], {
+      cwd: fixture.directory, encoding: "utf8", timeout: 10_000,
+      env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: join(fixture.directory, ".tools", "playwright"), ...environment }
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /linked directory|inherited MSBuild output overrides/);
+    assert.doesNotMatch(result.stdout, /Timing report:|== Prerequisites ==/);
+  };
+  for (const name of ["BaseOutputPath", "OutputPath", "OutDir", "BaseIntermediateOutputPath",
+    "IntermediateOutputPath", "MSBuildProjectExtensionsPath", "ArtifactsPath", "UseArtifactsOutput",
+    "CompilerGeneratedFilesOutputPath", "GeneratedAssemblyInfoFile", "GeneratedGlobalUsingsFile", "TargetPath",
+    "DocumentationFile", "PublishDir", "PackageOutputPath",
+    "CreateHardLinksForCopyFilesToOutputDirectoryIfPossible",
+    "CreateSymbolicLinksForCopyFilesToOutputDirectoryIfPossible"]) {
+    for (const mode of modes) reject(mode, { [name]: foreign });
+    assert.equal(await readFile(sentinel, "utf8"), "preserve-foreign");
+  }
+  for (const relative of ["src", "tests", "vendor", ".tools",
+    "src\\CalendarAgenda\\bin", "src\\CalendarAgenda\\obj",
+    "tests\\CalendarAgenda.Tests\\bin", "tests\\CalendarAgenda.Tests\\obj",
+    "src\\CalendarAgenda\\bin\\Debug", "src\\CalendarAgenda\\obj\\Debug",
+    "tests\\CalendarAgenda.Tests\\bin\\Debug\\net10.0", "tests\\CalendarAgenda.Tests\\obj\\Debug\\net10.0",
+    ".bundle", "vendor\\bundle", ".tools\\framework", ".tools\\run", "artifacts\\validation"]) {
+    const destination = join(fixture.directory, relative);
+    const backup = destination + "-saved";
+    let existed = false;
+    try { await rename(destination, backup); existed = true; }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    await mkdir(dirname(destination), { recursive: true });
+    await symlink(foreign, destination, "junction");
+    try {
+      for (const mode of relative === "artifacts\\validation" ? [...modes, aggregateMode] : modes) {
+        if (relative === "tests") {
+          const scripts = join(fixture.directory, "scripts", "validate.ps1");
+          const result = spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-File", scripts, ...mode], {
+            cwd: fixture.directory, encoding: "utf8", timeout: 10_000, env: { ...process.env }
+          });
+          assert.equal(result.status, 1, result.stdout + result.stderr);
+          assert.match(result.stderr, /linked directory/);
+          assert.doesNotMatch(result.stdout, /Timing report:/);
+        } else reject(mode);
+      }
+      assert.deepEqual(await readdir(foreign), ["sentinel"]);
+      assert.equal(await readFile(sentinel, "utf8"), "preserve-foreign");
+    } finally {
+      await unlink(destination);
+      if (existed) await rename(backup, destination);
+    }
+  }
+  const hardLink = join(fixture.directory, "src", "CalendarAgenda", "bin", "shared.dll");
+  await mkdir(dirname(hardLink), { recursive: true });
+  await link(sentinel, hardLink);
+  try { for (const mode of modes) reject(mode); }
+  finally { await unlink(hardLink); }
+  assert.deepEqual(await readdir(foreign), ["sentinel"]);
+  assert.equal(await readFile(sentinel, "utf8"), "preserve-foreign");
+});
+
+for (const selected of [
+  { name: "public Git fixture", file: "tests\\delivery\\completion.test.mjs",
+    pattern: "^completion repository is isolated before initialization and keeps deliberate fixture configuration$" },
+  { name: "nonrepository fixture", file: "tests\\delivery\\completion.test.mjs",
+    pattern: "^a directory without a working repository cannot supply completion evidence$" },
+  { name: "nested alias fixture", file: "tests\\validation\\git-isolation.test.mjs",
+    pattern: "^public process fixtures preserve exact directory identity under an aliased temporary root$" }
+]) test(`public Node Worker runs the ${selected.name} within its owned native scratch`, async t => {
+  const fixture = await checkout(t, { owned: true });
+  const planned = fixture.run("Fast", {}, { Execution: "Plan" });
+  assert.equal(planned.status, 0, planned.stdout + planned.stderr);
+  const plan = join(fixture.reportDirectory(), "execution-plan.json");
+  const result = fixture.run("Full", {
+    VALIDATION_RUN_FIXTURE: join(root, selected.file), VALIDATION_FIXTURE_PATTERN: selected.pattern,
+    VALIDATION_TIMEOUT_MS: "90000"
+  }, { Execution: "Worker", Component: "node", ExecutionPlan: plan });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /pass 1\b/);
+  const report = await fixture.report();
+  assert.equal(report.outcome, "passed");
+  await assert.rejects(readFile(join(report.execution.isolation.process_root, ".validation-owner")), { code: "ENOENT" });
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
 });
 
 test("fast validation reports success, checks formatting without edits, and compiles without restoring", async t => {

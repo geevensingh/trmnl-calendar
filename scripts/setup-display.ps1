@@ -20,6 +20,7 @@ function Start-SetupTimingStage([string]$Name) {
 try {
     Set-Location -LiteralPath $root
     $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
+    $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH = 'false'
     Set-DisplayEnvironment $root
     Start-SetupTimingStage 'Toolchain and native readiness'
     $toolchain = Get-DisplayToolchain $root

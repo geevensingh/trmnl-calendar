@@ -117,7 +117,7 @@ puts "Native extension compiled and loaded with #{RbConfig::CONFIG["CC"]}"
 
 function Save-DisplayEnvironment {
     $saved = @{}
-    foreach ($name in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE') +
+    foreach ($name in @('PATH', 'TRMNL_RUBY', 'DOTNET_GENERATE_ASPNET_CERTIFICATE', 'DOTNET_ADD_GLOBAL_TOOLS_TO_PATH') +
         @(Get-ChildItem Env: | Where-Object Name -Like 'BUNDLE_*' | ForEach-Object Name)) {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }

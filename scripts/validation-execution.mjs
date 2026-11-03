@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { assignCoverage, describePartitions, readPartitionJson, reconcileTests } from "./validation-partitions.mjs";
+import { assignCoverage, coverageKey, describePartitions, readPartitionJson, reconcileTests } from "./validation-partitions.mjs";
 
 const componentIds = ["d1", "d2", "d3", "d4", "node"];
 const serialIds = ["prerequisites", "format", "build", "syntax", "browser", "node", "dotnet", "evidence"];
@@ -36,10 +36,6 @@ function workerGraph(serial, component) {
     seen.add(item.id);
   }
   return graph;
-}
-
-function coverageKey(item) {
-  return JSON.stringify([item.policy, item.method, item.scenario, item.view, item.variant]);
 }
 
 function windowsPath(value) {

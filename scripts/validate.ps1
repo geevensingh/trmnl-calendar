@@ -192,6 +192,7 @@ try {
             }
         }
         $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
+        $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH = 'false'
         if ($Scope -eq 'Full') { Set-DisplayEnvironment $root }
         if ($Scope -eq 'Full') {
             $env:TRMNL_TIMING_DIRECTORY = $script:validationDirectory

@@ -91,6 +91,29 @@ locals must not shadow the public `Component` selector: PowerShell is case-insen
 and invoked check scriptblocks resolve caller-local variables dynamically. Missing
 results remain incomplete/failed; neither a successful build nor discovery probe is
 proof that a worker's assigned tests ran.
+Assigned raw .NET identity checks are separate from result classification: a complete,
+identity-matched TRX containing `Failed` rows records known failed evidence, not a
+missing TRX. Skipped, missing or foreign identities remain incomplete, and no failed
+result can certify a successful Aggregate.
+
+Raw transfer, environment and process-lifecycle regressions use the same public
+Plan/Worker/Aggregate fixture, not dot-sourced private helpers. They observe worker
+reports, emitted manifests, real owned process IDs and protected peer outputs.
+Successful aggregation and rejected tampering, partial inventories, stale bindings,
+timeout, cancellation and uncertain-owner cleanup all retain explicit assertions.
+Partition assignment and execution reconciliation share one coverage-identity key;
+the expected coverage policy is still expanded independently.
+Owned Windows test checkouts use a fresh short physical
+`C:\.tools\vf-<random>\v <pid>-<random>` namespace with full random owner markers,
+rather than nesting another checkout beneath inherited worker TEMP. Cleanup verifies
+both markers and physical paths, removes only that fixture, and rejects foreign
+entries before removing the now-empty namespace. This
+keeps real nested Git/alias fixture consumers within their path budgets without
+changing global TEMP, Git configuration, assertions or production worker roots.
+Fixture adapter compilation is a separately bounded bootstrap (at most 60 seconds);
+public Fast retains its 30-second fixture deadline. Each phase records exit/error,
+signal, elapsed time and compiler cleanup. Local disposable fixtures clear inherited
+workflow/event pins before explicit negative overrides; real CI metadata is untouched.
 
 The shared complete Node invocation explicitly uses `--test-concurrency=4` for
 Serial Full and Node Worker, without a name filter or file omission. This bounds
@@ -117,6 +140,10 @@ process-state collisions. Native commands use a named input-environment policy, 
 deadlines and Windows Job Objects: the tool cannot start before job assignment; timeout,
 owner death or exited launchers terminate owned descendants. Caller environment is
 restored and uncertain ownership fails cleanup rather than deleting foreign content.
+Setup, validation and owned SDK children explicitly disable global-tools PATH
+registration with `DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false` before SDK use, then restore
+the caller. This prevents private SDK homes from being added to persistent user PATH;
+it does not remove existing entries or repair an already oversized host PATH.
 
 Private scratch is separate from the long report/launcher hierarchy:
 `.tools\run\<pid>-<sequence>` inside each physical worktree. The per-process sequence

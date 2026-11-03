@@ -381,8 +381,7 @@ function Read-ValidationEvidence([switch]$NodeOnly, [switch]$DotnetOnly, [switch
             $actual = @($tests | ForEach-Object { Get-ValidationDigest @($_.test_id, $_.name, $_.method) })
             if ($actual.Count -ne $expected.Count -or
                 @($actual | Sort-Object -Unique -CaseSensitive).Count -ne $actual.Count -or
-                @(Compare-Object $actual $expected -CaseSensitive).Count -or
-                @($tests | Where-Object result -CNE 'Passed').Count) {
+                @(Compare-Object $actual $expected -CaseSensitive).Count) {
                 throw 'Assigned .NET raw identity inventory is incomplete or foreign.'
             }
         }

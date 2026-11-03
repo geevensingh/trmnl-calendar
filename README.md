@@ -97,6 +97,7 @@ For Fast-only work, restore .NET dependencies without requesting an SDK developm
 
 ```powershell
 $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
+$env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH = 'false'
 dotnet restore .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj
 ```
 

@@ -198,6 +198,10 @@ export function reconcileTests(partition, actual) {
   return { expected: expected.size, completed: completed.size };
 }
 
+export function coverageKey(item) {
+  return JSON.stringify([item.policy, item.method, item.scenario, item.view, item.variant]);
+}
+
 export function assignCoverage(plan, coverage) {
   requireCondition(record(coverage) && typeof coverage.policy_id === "string" &&
     /^[a-f0-9]{64}$/.test(coverage.policy_sha256 ?? "") &&
@@ -210,7 +214,7 @@ export function assignCoverage(plan, coverage) {
       item.policy === `${coverage.policy_id}/${coverage.profile}` &&
       typeof item.method === "string" && (item.scenario === null || typeof item.scenario === "string") &&
       typeof item.view === "string" && typeof item.variant === "string", "coverage_case_shape");
-    const key = JSON.stringify([item.policy, item.method, item.scenario, item.view, item.variant]);
+    const key = coverageKey(item);
     requireCondition(!cases.has(key), "duplicate_expected_coverage_case");
     cases.add(key);
     const owners = plan.partitions.filter(partition => partition.methods.some(method =>

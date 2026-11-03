@@ -39,7 +39,7 @@ exit 0
   const run = (environment = {}) => {
     const inherited = { ...process.env };
     for (const name of Object.keys(inherited)) {
-      if (["DOTNET_GENERATE_ASPNET_CERTIFICATE", "DOTNET_CLI_HOME", "TRMNL_RUBY"].includes(name.toUpperCase()) ||
+      if (["DOTNET_GENERATE_ASPNET_CERTIFICATE", "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH", "DOTNET_CLI_HOME", "TRMNL_RUBY"].includes(name.toUpperCase()) ||
           name.toUpperCase().startsWith("DISPLAY_"))
         delete inherited[name];
     }
@@ -152,7 +152,9 @@ exit 0
         $firstRun = !(Test-Path -LiteralPath $state)
         @{ tool = 'dotnet'; arguments = @($args); sdkHome = $env:DOTNET_CLI_HOME;
            firstRun = $firstRun; certificate = $env:DOTNET_GENERATE_ASPNET_CERTIFICATE;
-           certificateAttempt = $firstRun -and $env:DOTNET_GENERATE_ASPNET_CERTIFICATE -ne 'false' } |
+           certificateAttempt = $firstRun -and $env:DOTNET_GENERATE_ASPNET_CERTIFICATE -ne 'false';
+           globalToolsPath = $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH;
+           globalToolsPathAttempt = $firstRun -and $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH -ne 'false' } |
           ConvertTo-Json -Compress | Add-Content -LiteralPath $env:DISPLAY_CALLS
         Set-Content -LiteralPath $state 'synthetic SDK first-run state'
         if ($env:DISPLAY_FAIL -eq 'dotnet:throw') { throw 'Synthetic unusable SDK executable' }
@@ -201,7 +203,7 @@ exit 0
       $before = @{}
       Get-ChildItem Env: | Where-Object {
         $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_CLI_HOME',
-          'DOTNET_GENERATE_ASPNET_CERTIFICATE', 'PLAYWRIGHT_BROWSERS_PATH')
+          'DOTNET_GENERATE_ASPNET_CERTIFICATE', 'DOTNET_ADD_GLOBAL_TOOLS_TO_PATH', 'PLAYWRIGHT_BROWSERS_PATH')
       } | ForEach-Object { $before[$_.Name] = $_.Value }
       $code = 0
       try { & $env:DISPLAY_SCRIPT }
@@ -210,7 +212,7 @@ exit 0
         $after = @{}
         Get-ChildItem Env: | Where-Object {
           $_.Name -like 'BUNDLE_*' -or $_.Name -in @('PATH', 'TRMNL_RUBY', 'DOTNET_CLI_HOME',
-            'DOTNET_GENERATE_ASPNET_CERTIFICATE', 'PLAYWRIGHT_BROWSERS_PATH')
+            'DOTNET_GENERATE_ASPNET_CERTIFICATE', 'DOTNET_ADD_GLOBAL_TOOLS_TO_PATH', 'PLAYWRIGHT_BROWSERS_PATH')
         } | ForEach-Object { $after[$_.Name] = $_.Value }
         @{ before = $before; after = $after } | ConvertTo-Json -Depth 5 |
           Set-Content -LiteralPath $env:DISPLAY_ENVIRONMENT

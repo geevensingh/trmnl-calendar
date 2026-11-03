@@ -72,6 +72,23 @@ test("display setup suppresses certificate generation before the first SDK call 
   assert.ok(calls.every(call => !call.certificateAttempt));
 });
 
+test("display setup prevents global tool PATH registration before every SDK call and restores its caller", async t => {
+  for (const failure of ["", "dotnet:restore"]) {
+    const fixture = await checkout(t);
+    assert.deepEqual(await readdir(fixture.sdkHome), []);
+    const result = fixture.run({ DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: "true", DISPLAY_FAIL: failure });
+    assert.equal(result.status, failure ? 1 : 0, result.stdout + result.stderr);
+    const calls = (await fixture.calls()).filter(call => call.tool === "dotnet");
+    assert.ok(calls.length);
+    assert.equal(calls[0].firstRun, true);
+    assert.ok(calls.every(call => call.globalToolsPath === "false"));
+    assert.ok(calls.every(call => !call.globalToolsPathAttempt));
+    const { before, after } = await fixture.environment();
+    assert.equal(before.DOTNET_ADD_GLOBAL_TOOLS_TO_PATH, "true");
+    assert.deepEqual(after, before);
+  }
+});
+
 test("dependency cache planning uses exact native identities without changing selected tools or foreign state", async t => {
   const fixture = await checkout(t);
   const planScript = join(fixture.directory, "scripts", "plan-dependency-cache.ps1");
@@ -354,7 +371,9 @@ test("the documented Fast-only restore suppresses first-run certificates without
         sdkHome: fixture.sdkHome,
         firstRun: true,
         certificate: "false",
-        certificateAttempt: false
+        certificateAttempt: false,
+        globalToolsPath: "false",
+        globalToolsPathAttempt: false
       }]);
     });
   }

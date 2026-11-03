@@ -105,7 +105,7 @@ function Remove-ValidationUnsupportedToolEnvironment($Variables) {
         'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'TERM', 'COLORTERM', 'NO_COLOR', 'TZ',
         'DOTNET_ROOT', 'DOTNET_ROOT_X64', 'DOTNET_ROOT_X86', 'DOTNET_ROOT_ARM64', 'DOTNET_HOST_PATH',
         'DOTNET_CLI_HOME', 'DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER', 'DOTNET_CLI_TELEMETRY_OPTOUT',
-        'DOTNET_NOLOGO', 'DOTNET_GENERATE_ASPNET_CERTIFICATE', 'POWERSHELL_TELEMETRY_OPTOUT',
+        'DOTNET_NOLOGO', 'DOTNET_GENERATE_ASPNET_CERTIFICATE', 'DOTNET_ADD_GLOBAL_TOOLS_TO_PATH', 'POWERSHELL_TELEMETRY_OPTOUT',
         'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH', 'NUGET_PLUGINS_CACHE_PATH', 'NUGET_SCRATCH',
         'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_HEAD_REF', 'GITHUB_BASE_REF',
         'GITHUB_EVENT_NAME', 'GITHUB_EVENT_PATH', 'GITHUB_REPOSITORY', 'GITHUB_SERVER_URL', 'GITHUB_WORKSPACE',
@@ -213,7 +213,7 @@ function Enter-ValidationWorkerEnvironment([string]$Root, [string]$ReportDirecto
     $saved = @{}
     foreach ($name in @('TEMP', 'TMP', 'TMPDIR', 'TRMNL_TIMING_DIRECTORY', 'TRMNL_DISCOVERY_PATH',
         'DOTNET_CLI_HOME', 'DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER', 'MSBUILDDISABLENODEREUSE', 'UseSharedCompilation',
-        'DOTNET_CLI_TELEMETRY_OPTOUT', 'DOTNET_NOLOGO',
+        'DOTNET_CLI_TELEMETRY_OPTOUT', 'DOTNET_NOLOGO', 'DOTNET_ADD_GLOBAL_TOOLS_TO_PATH',
         'BUNDLE_USER_HOME', 'BUNDLE_USER_CACHE', 'PATH', 'AZURE_CONFIG_DIR',
         'NUGET_HTTP_CACHE_PATH', 'NUGET_PLUGINS_CACHE_PATH', 'NUGET_SCRATCH',
         'AZURE_BICEP_USE_BINARY_FROM_PATH', 'AZURE_EXTENSION_USE_DYNAMIC_INSTALL')) {
@@ -234,6 +234,7 @@ function Enter-ValidationWorkerEnvironment([string]$Root, [string]$ReportDirecto
         $env:TRMNL_TIMING_DIRECTORY = $reportPath
         Remove-Item Env:TRMNL_DISCOVERY_PATH -ErrorAction SilentlyContinue
         $env:DOTNET_CLI_HOME = Join-Path $processRoot 'dotnet-home'
+        $env:DOTNET_ADD_GLOBAL_TOOLS_TO_PATH = 'false'
         New-Item -ItemType Directory -Path $env:DOTNET_CLI_HOME | Out-Null
         $env:DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER = '1'
         $env:MSBUILDDISABLENODEREUSE = '1'
@@ -401,6 +402,7 @@ exit $LASTEXITCODE
 '@
     $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
     $null = Remove-ValidationUnsupportedToolEnvironment $start.Environment
+    if ($start.Environment['DOTNET_CLI_HOME']) { $start.Environment['DOTNET_ADD_GLOBAL_TOOLS_TO_PATH'] = 'false' }
     $start.Environment['POWERSHELL_TELEMETRY_OPTOUT'] = '1'
     $start.WorkingDirectory = $WorkingDirectory
     $start.UseShellExecute = $false

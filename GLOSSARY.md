@@ -1,8 +1,13 @@
 # TRMNL Calendar
 
-A filtered calendar display for a TRMNL device.
+A visitor-facing calendar display for a TRMNL device.
 
 ## Language
+
+**Availability**:
+The calendar owner's capacity to talk with another person, regardless of physical location.
+Attendance at an event does not, by itself, establish availability or unavailability.
+_Avoid_: Physical presence, participation expectation (when referring to availability)
 
 **Agenda**:
 A chronological list of calendar events selected for display.

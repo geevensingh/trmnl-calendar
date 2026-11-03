@@ -140,23 +140,23 @@ public sealed partial class AgendaHttpTests
     }
 
     [Theory]
-    [InlineData("ORGANIZER:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Organized", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Accepted", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ATTENDEE;PARTSTAT=TENTATIVE:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Tentative", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ATTENDEE:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Missing response", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Needs action", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ATTENDEE;PARTSTAT=UNSUPPORTED:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Unsupported response", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ORGANIZER:mailto:owner@example.invalid\nATTENDEE;PARTSTAT=DECLINED:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Declined organizer", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ORGANIZER:mailto:owner@example.invalid\nATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nTRANSP:TRANSPARENT\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Free organizer", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ATTENDEE;PARTSTAT=TENTATIVE:mailto:owner@example.invalid\nATTENDEE;PARTSTAT=ACCEPTED:mailto:guest@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Different attendee responses", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ATTENDEE;PARTSTAT=ACCEPTED:mailto:guest@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Unmatched owner", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("STATUS:TENTATIVE\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Event status only", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nTRANSP:TRANSPARENT\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Free accepted", "mailto:owner@example.invalid", "unknown")]
-    [InlineData("TRANSP:TRANSPARENT\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Free without owner", null, "unknown")]
-    [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Following: Roadmap", null, "unknown")]
-    [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Personal appointment", null, "unknown")]
-    public async Task Participation_remains_unknown_until_source_evidence_is_accepted(
-        string properties, string? ownerAddress, string expected)
+    [InlineData("ORGANIZER:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Organized", "mailto:owner@example.invalid")]
+    [InlineData("ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Accepted", "mailto:owner@example.invalid")]
+    [InlineData("ATTENDEE;PARTSTAT=TENTATIVE:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Tentative", "mailto:owner@example.invalid")]
+    [InlineData("ATTENDEE:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Missing response", "mailto:owner@example.invalid")]
+    [InlineData("ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Needs action", "mailto:owner@example.invalid")]
+    [InlineData("ATTENDEE;PARTSTAT=UNSUPPORTED:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Unsupported response", "mailto:owner@example.invalid")]
+    [InlineData("ORGANIZER:mailto:owner@example.invalid\nATTENDEE;PARTSTAT=DECLINED:mailto:owner@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Declined organizer", "mailto:owner@example.invalid")]
+    [InlineData("ORGANIZER:mailto:owner@example.invalid\nATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nTRANSP:TRANSPARENT\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Free organizer", "mailto:owner@example.invalid")]
+    [InlineData("ATTENDEE;PARTSTAT=TENTATIVE:mailto:owner@example.invalid\nATTENDEE;PARTSTAT=ACCEPTED:mailto:guest@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Different attendee responses", "mailto:owner@example.invalid")]
+    [InlineData("ATTENDEE;PARTSTAT=ACCEPTED:mailto:guest@example.invalid\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Unmatched owner", "mailto:owner@example.invalid")]
+    [InlineData("STATUS:TENTATIVE\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Event status only", "mailto:owner@example.invalid")]
+    [InlineData("ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\nTRANSP:TRANSPARENT\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Free accepted", "mailto:owner@example.invalid")]
+    [InlineData("TRANSP:TRANSPARENT\nDTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Free without owner", null)]
+    [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Following: Roadmap", null)]
+    [InlineData("DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nSUMMARY:Personal appointment", null)]
+    public async Task Source_metadata_never_adds_participation_or_availability_to_the_agenda(
+        string properties, string? ownerAddress)
     {
         var settings = ownerAddress is null ? null : new Dictionary<string, string?>
         {
@@ -168,13 +168,16 @@ public sealed partial class AgendaHttpTests
         var occurrence = Assert.Single(result.RootElement.GetProperty("primary")
             .GetProperty("occurrences").EnumerateArray());
 
-        Assert.Equal(expected, occurrence.GetProperty("participation_expectation").GetString());
+        Assert.Equal(3, result.RootElement.GetProperty("schema_version").GetInt32());
+        Assert.False(occurrence.TryGetProperty("participation_expectation", out _));
+        Assert.Equal(["end_at", "id", "location", "start_at", "time_kind", "title"],
+            occurrence.EnumerateObject().Select(property => property.Name).Order());
         Assert.DoesNotContain("owner@example.invalid", result.RootElement.GetRawText(), StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("guest@example.invalid", result.RootElement.GetRawText(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task All_day_occurrences_remain_unknown_until_source_evidence_is_accepted()
+    public async Task All_day_occurrences_publish_only_calendar_context_without_participation()
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z",
             CalendarWithEvent("ATTENDEE;PARTSTAT=ACCEPTED:mailto:owner@example.invalid\n"
@@ -188,7 +191,9 @@ public sealed partial class AgendaHttpTests
             .GetProperty("occurrences").EnumerateArray());
 
         Assert.Equal("all_day", occurrence.GetProperty("time_kind").GetString());
-        Assert.Equal("unknown", occurrence.GetProperty("participation_expectation").GetString());
+        Assert.False(occurrence.TryGetProperty("participation_expectation", out _));
+        Assert.Equal(["end_date_exclusive", "id", "location", "start_date", "time_kind", "title"],
+            occurrence.EnumerateObject().Select(property => property.Name).Order());
     }
 
     [Theory]

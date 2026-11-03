@@ -11,6 +11,123 @@ public sealed class SourceFallbackDisplayTests
 {
     [Theory]
     [MemberData(nameof(AdaptiveDisplayTests.Views), MemberType = typeof(AdaptiveDisplayTests))]
+    public async Task Label_free_HTTP_occurrences_reach_native_views_with_original_titles_and_recurrence(NativeView view)
+    {
+        var allDayTitle = $"All-day <planning> & {new string('W', 80)}";
+        const string timedTitle = "Timed <svg onload=window.pwn=1> & planning";
+        var calendar = $"""
+            BEGIN:VCALENDAR
+            VERSION:2.0
+            PRODID:-//Synthetic label retirement//EN
+            BEGIN:VEVENT
+            UID:CONFIDENTIAL_ALL_DAY@synthetic.invalid
+            DTSTAMP:20261018T120000Z
+            DTSTART;VALUE=DATE:20261019
+            DTEND;VALUE=DATE:20261021
+            SUMMARY:{allDayTitle}
+            LOCATION:Studio A
+            DESCRIPTION:CONFIDENTIAL_DESCRIPTION
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:CONFIDENTIAL_SERIES@synthetic.invalid
+            DTSTAMP:20261018T120000Z
+            DTSTART:20261019T180000Z
+            DTEND:20261019T190000Z
+            RRULE:FREQ=DAILY;COUNT=2
+            SUMMARY:{timedTitle}
+            LOCATION:Studio B
+            ORGANIZER:mailto:CONFIDENTIAL_OWNER@synthetic.invalid
+            ATTENDEE;PARTSTAT=ACCEPTED:mailto:CONFIDENTIAL_GUEST@synthetic.invalid
+            TRANSP:TRANSPARENT
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:CONFIDENTIAL_SERIES@synthetic.invalid
+            DTSTAMP:20261018T120000Z
+            RECURRENCE-ID:20261020T180000Z
+            DTSTART:20261020T200000Z
+            DTEND:20261020T210000Z
+            SUMMARY:Timed moved occurrence
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:CONFIDENTIAL_FOLLOWING@synthetic.invalid
+            DTSTAMP:20261018T120000Z
+            DTSTART:20261019T190000Z
+            DTEND:20261019T200000Z
+            SUMMARY:Following: Excluded commitment
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:CONFIDENTIAL_ENDED@synthetic.invalid
+            DTSTAMP:20261018T120000Z
+            DTSTART:20261019T170000Z
+            DTEND:20261019T180000Z
+            SUMMARY:Ended commitment
+            END:VEVENT
+            END:VCALENDAR
+            """;
+        using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", calendar,
+            sourceUrl: "https://synthetic.invalid/CONFIDENTIAL_SOURCE_CREDENTIAL");
+        const string rules = """{"rules_json":"[{\"field\":\"title\",\"mode\":\"starts_with\",\"value\":\"Following: \"}]"}""";
+        await agenda.Tick();
+        using var current = await agenda.PollOnly(rules);
+        Assert.Equal(3, current.RootElement.GetProperty("schema_version").GetInt32());
+        foreach (var day in new[] { "primary", "secondary" })
+        {
+            var occurrences = current.RootElement.GetProperty(day).GetProperty("occurrences").EnumerateArray().ToArray();
+            Assert.Equal(2, current.RootElement.GetProperty(day).GetProperty("eligible_total").GetInt32());
+            Assert.Equal(["all_day", "timed"], occurrences.Select(item => item.GetProperty("time_kind").GetString()));
+            Assert.Equal(allDayTitle, occurrences[0].GetProperty("title").GetString());
+            Assert.All(occurrences, item => Assert.False(item.TryGetProperty("participation_expectation", out _)));
+        }
+        Assert.Equal(timedTitle, current.RootElement.GetProperty("primary").GetProperty("occurrences")[1]
+            .GetProperty("title").GetString());
+        Assert.Equal("in_progress", current.RootElement.GetProperty("primary").GetProperty("occurrences")[1]
+            .GetProperty("emphasis").GetString());
+        Assert.Equal("2026-10-20T20:00:00+00:00", current.RootElement.GetProperty("secondary").GetProperty("occurrences")[1]
+            .GetProperty("start_at").GetString());
+        using var allDay = await agenda.PollOnly(
+            """{"rules_json":"[{\"field\":\"title\",\"mode\":\"starts_with\",\"value\":\"Following: \"},{\"field\":\"title\",\"mode\":\"starts_with\",\"value\":\"Timed \"}]"}""");
+        using var playwright = await ValidationTiming.CreatePlaywright();
+        await using var browser = await ValidationTiming.Launch(playwright);
+        var page = await browser.NewPageAsync(new()
+        {
+            ViewportSize = new() { Width = view.PhysicalWidth, Height = view.PhysicalHeight },
+            DeviceScaleFactor = 1
+        });
+        foreach (var (result, name) in new[] { (current, "mixed"), (allDay, "all-day") })
+        {
+            Assert.DoesNotContain("CONFIDENTIAL", result.RootElement.GetRawText());
+            Assert.DoesNotContain("participation_expectation", result.RootElement.GetRawText());
+            var markup = DisplayTests.Render(view.Placement, result.RootElement, view.Device);
+            Assert.DoesNotContain("CONFIDENTIAL", markup);
+            await DisplayTests.Show(page, result.RootElement, view.Placement, view.Device);
+            await AdaptiveDisplayTests.NativeBounds(page, view);
+            var findings = await page.EvaluateAsync<JsonElement>("""
+                async input => {
+                  const checks = await import("/workbench/layout-checks.mjs");
+                  return checks.checkLayout(document, JSON.parse(input.agenda), input.target).filter(item => !item.passed);
+                }
+                """, new { agenda = result.RootElement.GetRawText(), target = new { width = view.PhysicalWidth, height = view.PhysicalHeight } });
+            Assert.Equal(0, findings.GetArrayLength());
+            Assert.DoesNotMatch(@"\b(Definite|Likely|Maybe|Unlikely|Unknown)\b", await page.Locator(".agenda").InnerTextAsync());
+            Assert.Null(await page.EvaluateAsync<int?>("window.pwn"));
+            if (name == "mixed")
+                await Assertions.Expect(page.GetByText("IN PROGRESS", new() { Exact = true })).ToBeVisibleAsync();
+            else
+                await Assertions.Expect(page.GetByText("All day", new() { Exact = true }).First).ToBeVisibleAsync();
+            await AdaptiveDisplayTests.VisibleInk(page, $"label-free-{view.Device}-{view.Placement}-{name}", view,
+                await page.Locator("""
+                    .agenda-heading .title, .agenda-day-label .label, [data-agenda-source],
+                    tbody tr:not([hidden]) .label--large, tbody tr:not([hidden]) td .title,
+                    tbody tr:not([hidden]) .agenda-status, .agenda-location:not([hidden])
+                    """).AllAsync());
+        }
+        Assert.Equal(1, agenda.SourceRequests);
+        Assert.Equal(current.RootElement.GetProperty("source_succeeded_at").GetString(),
+            allDay.RootElement.GetProperty("source_succeeded_at").GetString());
+    }
+
+    [Theory]
+    [MemberData(nameof(AdaptiveDisplayTests.Views), MemberType = typeof(AdaptiveDisplayTests))]
     public async Task Scheduled_source_freshness_remains_visible_in_every_production_native_view(NativeView view)
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z",

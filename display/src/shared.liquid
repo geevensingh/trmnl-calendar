@@ -27,8 +27,6 @@
   .agenda .agenda-event-heading {
     display: flex; align-items: baseline; gap: 8px; min-width: 0;
   }
-  .agenda .agenda-participation { flex: 0 0 auto; white-space: nowrap; }
-  .agenda .agenda-participation[data-expectation="definite"] { font-weight: bold; }
   .agenda .agenda-location {
     display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 16px; line-height: 1.4;
@@ -92,7 +90,7 @@
             <tbody>
               {% for occurrence in day.occurrences %}
                 {% assign occurrence_emphasis = nil %}
-                {% if schema_version == 2 and occurrence contains "emphasis" %}{% assign occurrence_emphasis = occurrence.emphasis %}{% endif %}
+                {% if schema_version == 3 and occurrence contains "emphasis" %}{% assign occurrence_emphasis = occurrence.emphasis %}{% endif %}
                 <tr hidden data-agenda-id="{{ occurrence.id | escape }}"{% if occurrence_emphasis %} class="agenda-emphasized" data-agenda-emphasis="{{ occurrence_emphasis | escape }}"{% endif %}>
                   <td class="agenda-time">
                     {% if occurrence.time_kind == "all_day" %}
@@ -106,13 +104,6 @@
                   <td>
                     <div class="agenda-event-heading">
                       <span class="title">{{ occurrence.title | escape }}</span>
-                      {% case occurrence.participation_expectation %}
-                        {% when "definite" %}<span class="label agenda-participation" data-expectation="definite">Definite</span>
-                        {% when "likely" %}<span class="label agenda-participation" data-expectation="likely">Likely</span>
-                        {% when "maybe" %}<span class="label agenda-participation" data-expectation="maybe">Maybe</span>
-                        {% when "unlikely" %}<span class="label agenda-participation" data-expectation="unlikely">Unlikely</span>
-                        {% when "unknown" %}<span class="label agenda-participation" data-expectation="unknown">Unknown</span>
-                      {% endcase %}
                     </div>
                     {% if occurrence_emphasis == "in_progress" %}
                       <span class="label agenda-status">IN PROGRESS</span>

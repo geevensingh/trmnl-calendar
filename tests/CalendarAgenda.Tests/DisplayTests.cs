@@ -32,7 +32,7 @@ public sealed class DisplayTests
         await Assertions.Expect(page.GetByText("Friday, Oct 23", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Synthetic planning", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("Likely", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator(".agenda-participation, [data-expectation]")).ToHaveCountAsync(0);
         await Assertions.Expect(page.GetByText("11:00 AM - 12:00 PM", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Monday, Oct 26", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("0 of 3 events shown", new() { Exact = true })).ToBeVisibleAsync();
@@ -48,9 +48,9 @@ public sealed class DisplayTests
     [InlineData("primary", "all_day")]
     [InlineData("secondary", "timed")]
     [InlineData("secondary", "all_day")]
-    public void Direct_renderer_rejects_missing_or_invalid_participation_on_every_occurrence(string day, string timeKind)
+    public void Direct_renderer_rejects_retired_participation_on_every_occurrence(string day, string timeKind)
     {
-        foreach (var invalid in new[] { "missing", "null", "unsupported", "number" })
+        foreach (var invalid in new[] { "unknown", "null", "unsupported", "number" })
         {
             var data = CurrentAgenda();
             var occurrence = data["primary"]!["occurrences"]![0]!.DeepClone().AsObject();
@@ -63,22 +63,20 @@ public sealed class DisplayTests
                 occurrence["start_date"] = data[day]!["date"]!.DeepClone();
                 occurrence["end_date_exclusive"] = "2026-10-27";
             }
-            if (invalid == "missing")
-                occurrence.Remove("participation_expectation");
-            else
-                occurrence["participation_expectation"] = invalid switch
-                {
-                    "null" => null,
-                    "number" => JsonValue.Create(1),
-                    _ => JsonValue.Create("CONFIDENTIAL_PARTICIPATION_MARKER")
-                };
+            occurrence["participation_expectation"] = invalid switch
+            {
+                "null" => null,
+                "number" => JsonValue.Create(1),
+                "unknown" => JsonValue.Create("unknown"),
+                _ => JsonValue.Create("CONFIDENTIAL_PARTICIPATION_MARKER")
+            };
             data[day]!["occurrences"] = new JsonArray(
                 data["primary"]!["occurrences"]![0]!.DeepClone(), occurrence);
             data[day]!["eligible_total"] = 2;
             foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
             {
                 var error = Assert.ThrowsAny<Exception>(() => Render(placement, data));
-                Assert.Contains("Invalid participation expectation", error.Message);
+                Assert.Contains("Retired participation field", error.Message);
                 Assert.DoesNotContain("CONFIDENTIAL_PARTICIPATION_MARKER", error.Message);
             }
         }
@@ -435,10 +433,11 @@ public sealed class DisplayTests
                         await AdaptiveDisplayTests.VisibleInsideView(
                             preview.GetByText("Synthetic source meeting", new() { Exact = true }),
                             textMayBeTruncated: true);
-                        var participation = preview.Locator(".agenda-primary tbody tr")
-                            .Filter(new() { HasText = "Synthetic source meeting" }).Locator(".agenda-participation");
-                        await Assertions.Expect(participation).ToHaveTextAsync("Unknown");
-                        await AdaptiveDisplayTests.VisibleInsideView(participation);
+                        Assert.Equal(3, agenda["schema_version"]!.GetValue<int>());
+                        Assert.DoesNotContain("participation_expectation", agenda.ToJsonString());
+                        await Assertions.Expect(preview.Locator(".agenda-participation, [data-expectation]")).ToHaveCountAsync(0);
+                        Assert.DoesNotMatch(@"\b(Definite|Likely|Maybe|Unlikely|Unknown)\b",
+                            await preview.Locator(".agenda").InnerTextAsync());
                         foreach (var day in new[] { "primary", "secondary" })
                             await AdaptiveDisplayTests.VisibleInsideView(
                                 preview.GetByText(agenda[day]!["label"]!.GetValue<string>(), new() { Exact = true }));

@@ -5,8 +5,6 @@ namespace CalendarAgenda;
 public enum AgendaState { Current, Stale, Error }
 public enum AgendaEmphasis { InProgress, Upcoming }
 
-public enum ParticipationExpectation { Definite, Likely, Maybe, Unlikely, Unknown }
-
 public sealed record AgendaResult(
     int SchemaVersion,
     AgendaState State,
@@ -26,8 +24,7 @@ public sealed record AgendaDay(
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "time_kind")]
 [JsonDerivedType(typeof(TimedOccurrence), "timed")]
 [JsonDerivedType(typeof(AllDayOccurrence), "all_day")]
-public abstract record AgendaOccurrence(
-    string Id, string Title, string? Location, ParticipationExpectation ParticipationExpectation);
+public abstract record AgendaOccurrence(string Id, string Title, string? Location);
 
 public sealed record TimedOccurrence(
     string Id,
@@ -35,17 +32,15 @@ public sealed record TimedOccurrence(
     string? Location,
     DateTimeOffset StartAt,
     DateTimeOffset EndAt,
-    ParticipationExpectation ParticipationExpectation,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    AgendaEmphasis? Emphasis = null) : AgendaOccurrence(Id, Title, Location, ParticipationExpectation);
+    AgendaEmphasis? Emphasis = null) : AgendaOccurrence(Id, Title, Location);
 
 public sealed record AllDayOccurrence(
     string Id,
     string Title,
     string? Location,
     DateOnly StartDate,
-    DateOnly EndDateExclusive,
-    ParticipationExpectation ParticipationExpectation)
-    : AgendaOccurrence(Id, Title, Location, ParticipationExpectation);
+    DateOnly EndDateExclusive)
+    : AgendaOccurrence(Id, Title, Location);
 
 public sealed record AgendaError(string Code, string Message);

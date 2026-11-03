@@ -270,27 +270,35 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
         var contractPath = Path.Combine(fixture.Root, "docs", "agenda-contract.md");
         var contract = await File.ReadAllTextAsync(contractPath);
         await File.WriteAllTextAsync(contractPath, contract.Replace(
-            "# Agenda HTTP and display contract, version 2", "# Agenda HTTP and display contract, version 1"));
+            "# Agenda HTTP and display contract, version 3", "# Agenda HTTP and display contract, version 1"));
         await fixture.Commit("Synthetic legacy schema baseline");
         await fixture.StartFailure("HEAD", "Incompatible baseline");
     }
 
     [Fact]
-    public async Task Public_launcher_rejects_schema_two_baselines_without_the_required_participation_contract_or_template()
+    public async Task Public_launcher_rejects_schema_two_and_incoherent_label_free_baselines()
     {
         await using var fixture = await Workspace.Create();
         var contractPath = Path.Combine(fixture.Root, "docs", "agenda-contract.md");
         var contract = await File.ReadAllTextAsync(contractPath);
-        await File.WriteAllTextAsync(contractPath, contract.Replace("participation_expectation", "legacy_occurrence"));
-        await fixture.Commit("Synthetic schema-two contract without participation");
+        await File.WriteAllTextAsync(contractPath, contract.Replace("version 3", "version 2"));
+        await fixture.Commit("Synthetic schema-two baseline");
+        await fixture.StartFailure("HEAD", "Incompatible baseline");
+        await File.WriteAllTextAsync(contractPath, contract.Replace("**label-free**", "legacy occurrence contract"));
+        await fixture.Commit("Synthetic version-three contract without label-free declaration");
         await fixture.StartFailure("HEAD", "Incompatible baseline");
         await File.WriteAllTextAsync(contractPath, contract);
-        await fixture.WriteTemplate(fixture.Template.Replace("occurrence.participation_expectation", "nil"));
-        await fixture.Commit("Synthetic schema-two template without participation");
-        await fixture.StartFailure("HEAD", "Incompatible baseline");
-        await File.WriteAllTextAsync(contractPath, contract.Replace("participation_expectation", "legacy_occurrence"));
-        await fixture.Commit("Synthetic earlier schema-two baseline");
-        await fixture.StartFailure("HEAD", "Incompatible baseline");
+        foreach (var template in new[]
+        {
+            fixture.Template + "\n{{ occurrence.participation_expectation }}",
+            fixture.Template + "\n<span class=\"agenda-participation\">Unknown</span>",
+            fixture.Template.Replace("schema_version == 3", "schema_version == 2")
+        })
+        {
+            await fixture.WriteTemplate(template);
+            await fixture.Commit("Synthetic incompatible shared template");
+            await fixture.StartFailure("HEAD", "Incompatible baseline");
+        }
     }
 
     [Fact]
@@ -301,7 +309,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
         var contractPath = Path.Combine(fixture.Root, "docs", "agenda-contract.md");
         var contract = await File.ReadAllTextAsync(contractPath);
         await File.WriteAllTextAsync(contractPath, contract.Replace(
-            "# Agenda HTTP and display contract, version 2", "# Agenda HTTP and display contract, version 99"));
+            "# Agenda HTTP and display contract, version 3", "# Agenda HTTP and display contract, version 99"));
         await fixture.Commit("Synthetic incompatible schema");
         await fixture.StartFailure("HEAD", "Incompatible baseline");
         await File.WriteAllTextAsync(contractPath, contract);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
@@ -16,6 +16,90 @@ const execFileAsync = promisify(execFile);
 const pluginFiles = [
   "settings.yml", "shared.liquid", "full.liquid", "half_horizontal.liquid", "half_vertical.liquid"
 ];
+
+test("release services publish unchanged retained bytes and propagate only scoped functional verification", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "calendar-trmnl-service-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = join(directory, "src");
+  await mkdir(source);
+  for (const file of pluginFiles) {
+    await writeFile(join(source, file), file === "settings.yml"
+      ? "strategy: polling\nrefresh_interval: 15\ncustom_fields: []\n" : `reviewed:${file}\n`);
+  }
+  const archive = await createTrmnlArchive(source, join(directory, "source.tar"));
+  const reference = `releases/${"a".repeat(40)}/trmnl-${archive.sha256}.tar`;
+  const variables = {
+    AZURE_STORAGE_ACCOUNT: "syntheticrelease", AZURE_RELEASE_CONTAINER: "release-control",
+    AZURE_ARTIFACT_CONTAINER: "release-artifacts", GITHUB_TOKEN: "synthetic-token",
+    GITHUB_API_URL: "https://api.github.com", GITHUB_REPOSITORY: "synthetic/calendar",
+    TRMNL_API_KEY: "synthetic-key", TRMNL_PLUGIN_ID: "12345", TRMNL_BACKUP_RECOVERY_ACCEPTED_PLUGIN_ID: "12345"
+  };
+  const previous = Object.fromEntries(Object.keys(variables).map(key => [key, process.env[key]]));
+  Object.assign(process.env, variables);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const deploymentStates = [];
+  let nativeSuccess = true;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (url === `https://syntheticrelease.blob.core.windows.net/release-artifacts/${reference}`) {
+      assert.equal(options.method, "GET");
+      assert.equal(options.headers.Authorization, "Bearer synthetic-storage-token");
+      return new Response(archive.bytes, { headers: { "content-length": String(archive.bytes.length) } });
+    }
+    if (url.startsWith("https://api.github.com/repos/synthetic/calendar/deployments")) {
+      deploymentStates.push(JSON.parse(options.body).state);
+      return Response.json({ id: 123 });
+    }
+    assert.equal(options.headers.Authorization, "Bearer synthetic-key");
+    if (url.endsWith("/details")) return Response.json({ data: { settings: {} } });
+    if (url.endsWith("/refreshes")) {
+      return Response.json({ data: { job_id: "job", status: "pending" } }, { status: 202 });
+    }
+    assert.equal(url, "https://trmnl.com/api/plugin_settings/12345/refreshes/job");
+    const timestamp = new Date().toISOString();
+    return Response.json({ data: {
+      job_id: "job", status: "complete", success: nativeSuccess,
+      variables: {
+        schema_version: 2, state: "current", time_zone: "America/Los_Angeles",
+        generated_at: timestamp, source_succeeded_at: timestamp, error: null,
+        primary: { date: "2026-11-02", label: "Monday", eligible_total: 0, occurrences: { count: 0, sample: [] } },
+        secondary: { date: "2026-11-03", label: "Tuesday", eligible_total: 0, occurrences: { count: 0, sample: [] } }
+      }
+    } });
+  });
+  const commands = [];
+  const services = createReleaseServices({
+    getStorageToken: async () => "synthetic-storage-token",
+    runTrmnlCommand: async (_command, args, { cwd, env }) => {
+      assert.equal(env.TRMNL_API_KEY, "synthetic-key");
+      commands.push(args[0]);
+      if (args[0] === "pull") await cp(source, join(cwd, "src"), { recursive: true });
+      else for (const file of pluginFiles) {
+        assert.deepEqual(await readFile(join(cwd, "src", file)), await readFile(join(source, file)));
+      }
+    }
+  });
+  const result = await services.publishAndVerifyTrmnl("a".repeat(40), {
+    references: { trmnl: reference }, digests: { trmnl: archive.sha256 }
+  });
+  assert.deepEqual(commands, ["pull", "push", "pull"]);
+  assert.equal(result.verified, true);
+  assert.equal(result.verification.scope, "trmnl_functional_v1");
+  assert.equal(result.verification.hidden_polling_templates_proven, false);
+  assert.equal(result.verification.full_native_payload_validated, false);
+  assert.equal(result.verification.native_payload_size_proven, false);
+  assert.deepEqual(deploymentStates, [undefined, "in_progress", "success"]);
+  assert.deepEqual(Object.keys(result).sort(), ["verification", "verified"]);
+  nativeSuccess = false;
+  await assert.rejects(services.publishAndVerifyTrmnl("a".repeat(40), {
+    references: { trmnl: reference }, digests: { trmnl: archive.sha256 }
+  }), { code: "trmnl_refresh_failed" });
+  assert.equal(deploymentStates.at(-1), "failure", "A completed but failed refresh cannot mark deployment success");
+});
 
 test("activation repair retains the invalid archive and packages only the reviewed corrected TRMNL source", async t => {
   const directory = await mkdtemp(join(tmpdir(), "calendar-trmnl-repair-test-"));

@@ -70,6 +70,7 @@ export async function runReleaseBatch({ ledger, services, cwd, through }) {
       commit: outcome.release,
       status: outcome.status,
       targets: outcome.targets ?? [],
+      ...(outcome.trmnl_verification ? { trmnl_verification: outcome.trmnl_verification } : {}),
       ...(outcome.status === "failed" ? {
         stage: outcome.stage,
         code: outcome.code

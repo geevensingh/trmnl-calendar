@@ -7,12 +7,434 @@ import * as publisher from "../../scripts/publish-trmnl.mjs";
 
 const { publishTrmnl } = publisher;
 
-test.beforeEach(t => {
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    assert.equal(url, "https://trmnl.com/api/plugin_settings/12345/details");
+const exportBaseline = [
+  "static_data: ''", "serverless_language: ''", "oauth_enabled: 'false'",
+  "oauth_pkce_enabled: 'no'", "refresh_interval_floor: '15'", ""
+].join("\n");
+
+function nativeResult() {
+  const timestamp = new Date(Date.now() - 10).toISOString();
+  return {
+    job_id: "synthetic-job", status: "complete", success: true,
+    variables: {
+      schema_version: 2, state: "current", time_zone: "America/Los_Angeles",
+      generated_at: timestamp, source_succeeded_at: timestamp,
+      primary: {
+        date: "2026-11-02", label: "Monday", eligible_total: 8,
+        occurrences: { count: 8, sample: [{
+          time_kind: "timed", id: "SYNTHETIC_PRIVATE_ID", title: "SYNTHETIC_PRIVATE_TITLE",
+          participation_expectation: "unknown",
+          start_at: "2026-11-02T18:00:00Z", end_at: "2026-11-02T19:00:00Z"
+        }], provider_metadata: "SYNTHETIC_PRIVATE_METADATA" }
+      },
+      secondary: {
+        date: "2026-11-03", label: "Tuesday", eligible_total: 0,
+        occurrences: { count: 0, sample: [] }
+      },
+      error: null
+    },
+    schema: { schema_version: "number" },
+    logs: ["SYNTHETIC_PRIVATE_LOG"],
+    polling_url: "https://SYNTHETIC_PRIVATE_ENDPOINT.invalid"
+  };
+}
+
+async function nativeResponse(url, options) {
+  assert.equal(options.redirect, "error");
+  assert.equal(options.body, undefined);
+  assert.ok(options.signal instanceof AbortSignal);
+  if (url.endsWith("/details")) {
     assert.equal(options.method, "GET");
-    return Response.json({ data: { settings: {}, strategy: "polling" } });
+    return Response.json({ data: { settings: {} } });
+  }
+  assert.match(options.headers.Authorization, /^Bearer synthetic-/);
+  if (options.method === "POST") {
+    assert.equal(url, "https://trmnl.com/api/plugin_settings/12345/refreshes");
+    return Response.json({ data: { job_id: "synthetic-job", status: "pending" } }, { status: 202 });
+  }
+  assert.equal(options.method, "GET");
+  assert.equal(url, "https://trmnl.com/api/plugin_settings/12345/refreshes/synthetic-job");
+  return Response.json({ data: nativeResult() });
+}
+
+test("publication requires a completed native current refresh and reports only functional sample evidence", async t => {
+  const sourceDirectory = await pollingSource(t);
+  const path = join(sourceDirectory, "settings.yml");
+  await writeFile(path, (await readFile(path, "utf8")) + "refresh_interval: 15\n");
+  const requests = [];
+  const diagnostics = [];
+  t.mock.method(console, "error", message => diagnostics.push(JSON.parse(message)));
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url, method: options.method });
+    if (url.endsWith("/details")) {
+      return Response.json({ data: { settings: { polling_headers: "[set]", polling_body: "[set]" } } });
+    }
+    return nativeResponse(url, options);
   });
+  const result = await publishTrmnl({
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      if (args[0] === "push") {
+        for (const file of await readdir(sourceDirectory)) {
+          assert.deepEqual(await readFile(join(cwd, "src", file)), await readFile(join(sourceDirectory, file)));
+        }
+      } else {
+        await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+        const deployed = join(cwd, "src", "settings.yml");
+        await writeFile(deployed, (await readFile(deployed, "utf8"))
+          .replace(/^polling_headers:.*$/m, "polling_headers: null")
+          .replace(/^polling_body:.*$/m, "polling_body: null") + exportBaseline);
+      }
+    }
+  });
+  assert.equal(result.verified, true);
+  assert.deepEqual(result.verification, {
+    scope: "trmnl_functional_v1", observable_content_matches: true,
+    hidden_polling_templates_proven: false, native_refresh_succeeded: true,
+    agenda_current: true, agenda_fresh: true, returned_samples_validated: true,
+    full_native_payload_validated: false, native_payload_size_proven: false
+  });
+  assert.deepEqual(requests.map(request => request.method), ["GET", "POST", "GET"]);
+  assert.doesNotMatch(JSON.stringify([result, ...diagnostics]), /SYNTHETIC|2026-11-02|identity|https|[a-f0-9]{64}/);
+});
+
+async function publicationOptions(t) {
+  const sourceDirectory = await pluginSource(t);
+  return {
+    sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      if (args[0] === "pull") await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+    }
+  };
+}
+
+test("unsupported non-polling source fails before publication can mutate the plugin", async t => {
+  const options = await publicationOptions(t);
+  const path = join(options.sourceDirectory, "settings.yml");
+  await writeFile(path, (await readFile(path, "utf8")).replace("strategy: polling", "strategy: webhook"));
+  const commands = [];
+  options.runCommand = async (_command, args, { cwd }) => {
+    commands.push(args[0]);
+    if (args[0] === "pull") await cp(options.sourceDirectory, join(cwd, "src"), { recursive: true });
+  };
+  await assert.rejects(publishTrmnl(options), { code: "trmnl_refresh_strategy_unsupported" });
+  assert.deepEqual(commands, []);
+});
+
+test("native failure, warnings, stale/error agendas, unsupported shapes and invalid samples block publication", async t => {
+  const options = await publicationOptions(t);
+  for (const change of [
+    result => { result.status = "pending"; },
+    result => { result.status = "cancelled"; },
+    result => { result.success = false; },
+    result => { result.success = "true"; },
+    result => { result.warning = "SYNTHETIC_PRIVATE_WARNING"; },
+    result => { result.warning = ""; },
+    result => { result.job_id = "another-job"; },
+    result => { delete result.variables; },
+    result => { result.variables = []; },
+    result => { result.variables.state = "stale"; result.variables.error = { code: "x", message: "private" }; },
+    result => { result.variables.state = "error"; },
+    result => { result.variables.schema_version = 1; },
+    result => { result.variables.private_unknown_field = "private"; },
+    result => { result.variables.primary.occurrences = { count: 8 }; },
+    result => { result.variables.primary.occurrences.sample = []; },
+    result => { result.variables.primary.occurrences.count = -1; },
+    result => { result.variables.primary.occurrences.count = 0.5; },
+    result => { result.variables.primary.occurrences.count = "8"; },
+    result => { result.variables.primary.occurrences.count = 0; },
+    result => { result.variables.primary.occurrences.count = 9; },
+    result => { result.variables.primary.occurrences.sample[0].participation_expectation = "unsupported"; },
+    result => { result.variables.primary.occurrences.sample[0].end_at = "private"; },
+    result => { result.variables.secondary.occurrences.sample = [null]; },
+    result => { result.variables.generated_at = "private"; },
+    result => { result.variables.source_succeeded_at = null; }
+  ]) {
+    t.mock.method(globalThis, "fetch", async (url, request) => {
+      if (!url.endsWith("/synthetic-job")) return nativeResponse(url, request);
+      const result = nativeResult();
+      change(result);
+      return Response.json({ data: result });
+    });
+    await assert.rejects(publishTrmnl(options), error => {
+      assert.match(error.code, /^trmnl_refresh_(response_invalid|failed|warning|agenda_invalid|agenda_not_current)$/);
+      assert.equal(error.message, error.code);
+      assert.doesNotMatch(JSON.stringify(error), /private|SYNTHETIC|https|2026|synthetic-job|12345/);
+      return true;
+    });
+  }
+});
+
+test("native current is checked against the verification clock, not just self-consistent historical timestamps", async t => {
+  const options = await publicationOptions(t);
+  const now = Date.parse("2026-11-02T18:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  for (const [generated, source, allowed] of [
+    [now, now, true],
+    [now, now - 899999, true],
+    [now, now - 900000, false],
+    [now, now + 1, false],
+    [now + 1, now, false],
+    [now, "2026-11-02T17:45:00.0000001Z", true],
+    ["2026-11-02T18:00:00.0000001Z", now, false],
+    [now - 1001, now - 1001, false],
+    [now - 86400000, now - 86400000, false]
+  ]) {
+    t.mock.method(globalThis, "fetch", async (url, request) => {
+      if (!url.endsWith("/synthetic-job")) return nativeResponse(url, request);
+      const result = nativeResult();
+      result.variables.generated_at = typeof generated === "number" ? new Date(generated).toISOString() : generated;
+      result.variables.source_succeeded_at = typeof source === "number" ? new Date(source).toISOString() : source;
+      return Response.json({ data: result });
+    });
+    if (allowed) assert.equal((await publishTrmnl(options)).verified, true);
+    else await assert.rejects(publishTrmnl(options), error =>
+      ["trmnl_refresh_agenda_invalid", "trmnl_refresh_agenda_not_fresh"].includes(error.code));
+  }
+});
+
+test("native samples and provider summaries never certify the omitted items or full 100000-byte response limit", async t => {
+  const options = await publicationOptions(t);
+  for (const asArray of [false, true]) {
+    t.mock.method(globalThis, "fetch", async (url, request) => {
+      if (!url.endsWith("/synthetic-job")) return nativeResponse(url, request);
+      const result = nativeResult();
+      result.variables.primary.eligible_total = 100000;
+      if (asArray) {
+        result.variables.primary.occurrences = result.variables.primary.occurrences.sample;
+        result.variables.secondary.occurrences = [];
+      } else {
+        result.variables.primary.occurrences.count = 100000;
+        result.variables.primary.occurrences.provider_metadata = "SYNTHETIC_PRIVATE".repeat(7000);
+      }
+      return Response.json({ data: result });
+    });
+    const result = await publishTrmnl(options);
+    assert.equal(result.verification.returned_samples_validated, true);
+    assert.equal(result.verification.full_native_payload_validated, false);
+    assert.equal(result.verification.native_payload_size_proven, false);
+    assert.doesNotMatch(JSON.stringify(result), /SYNTHETIC|100000|bytes/);
+  }
+});
+
+test("a render-only or malformed job admission never becomes successful native polling", async t => {
+  const options = await publicationOptions(t);
+  for (const data of [
+    null, {}, { status: "queued" }, { job_id: "synthetic-job", status: "complete" },
+    { job_id: "../private?key=private", status: "pending" },
+    { job_id: "synthetic-job", status: "pending", render_in_progress: true }
+  ]) {
+    t.mock.method(globalThis, "fetch", async (url, request) => {
+      if (request.method !== "POST") return nativeResponse(url, request);
+      return Response.json({ data }, { status: 202 });
+    });
+    await assert.rejects(publishTrmnl(options), { code: "trmnl_refresh_response_invalid" });
+  }
+});
+
+test("native HTTP, redirects, malformed UTF-8/JSON and response bounds fail without provider diagnostics", async t => {
+  const options = await publicationOptions(t);
+  const marker = "SYNTHETIC_PRIVATE_RESPONSE";
+  for (const [response, code] of [
+    [() => new Response(marker, { status: 401 }), "http_401"],
+    [() => new Response(marker, { status: 403 }), "http_403"],
+    [() => new Response(marker, { status: 410 }), "http_410"],
+    [() => new Response(marker, { status: 429 }), "http_429"],
+    [() => new Response(marker, { status: 302 }), "http_302"],
+    [() => new Response(marker), "response_invalid"],
+    [() => new Response(Buffer.from([0xff, 0xfe])), "response_invalid"],
+    [() => new Response(" ".repeat(1024 * 1024 + 1)), "output_limit"],
+    [() => { throw new TypeError(marker); }, "request_failed"],
+    [() => new Response(new ReadableStream({
+      start(controller) { controller.error(new Error(marker)); }
+    })), "request_failed"]
+  ]) {
+    t.mock.method(globalThis, "fetch", async (url, request) => {
+      assert.equal(request.redirect, "error");
+      if (!url.endsWith("/synthetic-job")) return nativeResponse(url, request);
+      return response();
+    });
+    await assert.rejects(publishTrmnl(options), error => {
+      assert.equal(error.code, `trmnl_refresh_${code}`);
+      assert.equal(error.message, error.code);
+      assert.doesNotMatch(JSON.stringify(error), /SYNTHETIC|12345|synthetic-job/);
+      return true;
+    });
+  }
+});
+
+test("pending native work is polled, but never accepted before complete success", async t => {
+  const options = await publicationOptions(t);
+  let polls = 0;
+  t.mock.method(globalThis, "fetch", async (url, request) => {
+    if (!url.endsWith("/synthetic-job")) return nativeResponse(url, request);
+    if (++polls === 1) {
+      return Response.json({ data: { job_id: "synthetic-job", status: "pending" } }, { status: 202 });
+    }
+    return nativeResponse(url, request);
+  });
+  assert.equal((await publishTrmnl(options)).verified, true);
+  assert.equal(polls, 2);
+});
+
+for (const stage of ["admission", "body", "pending"]) {
+  test(`native ${stage} cancellation propagates without exposing the reason`, async t => {
+    const options = await publicationOptions(t);
+    const abort = new AbortController();
+    t.mock.method(globalThis, "fetch", async (url, request) => {
+      if (url.endsWith("/details")) return nativeResponse(url, request);
+      if (stage === "admission" && request.method === "POST") {
+        abort.abort(new Error("SYNTHETIC_PRIVATE_CANCEL"));
+        request.signal.throwIfAborted();
+      }
+      if (url.endsWith("/synthetic-job")) {
+        if (stage === "pending") {
+          setTimeout(() => abort.abort(new Error("SYNTHETIC_PRIVATE_CANCEL")), 20);
+          return Response.json({ data: { job_id: "synthetic-job", status: "pending" } }, { status: 202 });
+        }
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(Buffer.from('{"data":'));
+            request.signal.addEventListener("abort", () =>
+              controller.error(new Error("SYNTHETIC_PRIVATE_BODY")), { once: true });
+            setTimeout(() => abort.abort(new Error("SYNTHETIC_PRIVATE_CANCEL")), 20);
+          }
+        }));
+      }
+      return nativeResponse(url, request);
+    });
+    await assert.rejects(publishTrmnl({ ...options, signal: abort.signal }), error =>
+      error.code === "trmnl_refresh_cancelled" && !JSON.stringify(error).includes("SYNTHETIC"));
+  });
+}
+
+test("perpetually pending native work times out within the overall verification budget", { timeout: 15000 }, async t => {
+  const options = await publicationOptions(t);
+  const actualTimeout = AbortSignal.timeout;
+  t.mock.method(AbortSignal, "timeout", milliseconds =>
+    actualTimeout(milliseconds === 60000 ? 1200 : milliseconds));
+  let started;
+  t.mock.method(globalThis, "fetch", async (url, request) => {
+    if (url.endsWith("/refreshes")) started = performance.now();
+    if (!url.endsWith("/synthetic-job")) return nativeResponse(url, request);
+    return Response.json({ data: { job_id: "synthetic-job", status: "pending" } }, { status: 202 });
+  });
+  await assert.rejects(publishTrmnl(options), { code: "trmnl_refresh_timeout" });
+  assert.ok(performance.now() - started < 5000, "A pending response must not reset the overall deadline");
+});
+
+test("a native request that never returns times out before the overall job budget", { timeout: 30000 }, async t => {
+  const options = await publicationOptions(t);
+  let started;
+  t.mock.method(globalThis, "fetch", async (url, request) => {
+    if (url.endsWith("/details")) return nativeResponse(url, request);
+    started = performance.now();
+    return new Promise((_resolve, reject) => request.signal.addEventListener("abort",
+      () => reject(new Error("SYNTHETIC_PRIVATE_TIMEOUT")), { once: true }));
+  });
+  const socket = setInterval(() => {}, 1000);
+  try {
+    await assert.rejects(publishTrmnl(options), { code: "trmnl_refresh_timeout" });
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed >= 15000 && elapsed < 20000, "Headers/body share the bounded request deadline");
+  } finally {
+    clearInterval(socket);
+  }
+});
+
+test("inspection accepts only the approved observable contract without claiming hidden or native proof", async t => {
+  const sourceDirectory = await pollingSource(t);
+  const path = join(sourceDirectory, "settings.yml");
+  await writeFile(path, (await readFile(path, "utf8")) + "refresh_interval: 15\n");
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async url => {
+    requests.push(url);
+    return Response.json({ data: { settings: { polling_headers: "[set]", polling_body: "[set]" } } });
+  });
+  const result = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, args, { cwd }) => {
+      assert.equal(args[0], "pull");
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      const deployed = join(cwd, "src", "settings.yml");
+      await writeFile(deployed, (await readFile(deployed, "utf8"))
+        .replace(/^polling_headers:.*$/m, "polling_headers: null")
+        .replace(/^polling_body:.*$/m, "polling_body: null") + exportBaseline);
+    }
+  });
+  assert.equal(result.content_matches, true);
+  assert.equal(result.verification.scope, "trmnl_functional_v1");
+  assert.equal(result.verification.hidden_polling_templates_proven, false);
+  assert.equal(result.verification.native_refresh_succeeded, null);
+  assert.equal(result.verification.full_native_payload_validated, false);
+  assert.equal(result.verification.native_payload_size_proven, false);
+  assert.deepEqual(requests, ["https://trmnl.com/api/plugin_settings/12345/details"]);
+  assert.equal(result.content_comparison.files[0].result, "different");
+  assert.equal(result.content_comparison.definition.unknown_fields.deployed_count, 0);
+});
+
+test("floating-point YAML cadence cannot establish the integer-15 export baseline", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const path = join(sourceDirectory, "settings.yml");
+  await writeFile(path, (await readFile(path, "utf8")) + "refresh_interval: 15.0\n");
+  const result = await publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => {
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      await writeFile(join(cwd, "src", "settings.yml"), (await readFile(path, "utf8")) + exportBaseline);
+    }
+  });
+  assert.equal(result.content_matches, false, "JSON.parse must not erase the proven YAML integer context");
+});
+
+test("each export baseline is exact, typed, source-absent and limited to the proven polling cadence", async t => {
+  const sourceDirectory = await pluginSource(t);
+  const path = join(sourceDirectory, "settings.yml");
+  const original = await readFile(path, "utf8");
+  const source = original + "refresh_interval: 15\n";
+  await writeFile(path, source);
+  let additions = exportBaseline;
+  const inspect = () => publisher.inspectTrmnl({
+    sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+    runCommand: async (_command, _args, { cwd }) => {
+      await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+      await writeFile(join(cwd, "src", "settings.yml"), (await readFile(path, "utf8")) + additions);
+    }
+  });
+  for (const [field, expected] of [
+    ["static_data", "''"], ["serverless_language", "''"], ["oauth_enabled", "'false'"],
+    ["oauth_pkce_enabled", "'no'"], ["refresh_interval_floor", "'15'"]
+  ]) {
+    additions = `${field}: ${expected}\n`;
+    assert.equal((await inspect()).content_matches, true, field);
+    for (const wrong of ["'unexpected'", "null", "false", "15", "[]", "{}"]) {
+      additions = `${field}: ${wrong}\n`;
+      assert.equal((await inspect()).content_matches, false, `${field}: ${wrong}`);
+    }
+    await writeFile(path, source + `${field}: 'explicit source value'\n`);
+    additions = "";
+    const explicit = await publisher.inspectTrmnl({
+      sourceDirectory, pluginId: "12345", apiKey: "synthetic-key",
+      runCommand: async (_command, _args, { cwd }) => {
+        await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
+        await writeFile(join(cwd, "src", "settings.yml"), source + `${field}: ${expected}\n`);
+      }
+    });
+    assert.equal(explicit.content_matches, false, "Source-explicit values override no baseline");
+    await writeFile(path, source);
+  }
+  additions = exportBaseline;
+  for (const unproven of [
+    original, source.replace("15\n", "10\n"), source.replace("15\n", "'15'\n"),
+    source.replace("strategy: polling", "strategy: webhook")
+  ]) {
+    await writeFile(path, unproven);
+    assert.equal((await inspect()).content_matches, false);
+  }
+});
+
+test.beforeEach(t => {
+  t.mock.method(globalThis, "fetch", nativeResponse);
 });
 
 test("inspection compares only explicitly returned polling definition text from documented details", async t => {
@@ -73,12 +495,13 @@ async function pullRedacted(source, cwd) {
     "polling_headers: null\npolling_body: null\n"));
 }
 
-test("publication accepts exported nulls only after exact independent polling readback", async t => {
+test("publication retains exact independent readback when it is available", async t => {
   const sourceDirectory = await pollingSource(t);
   const calls = [];
   const events = [];
   t.mock.method(console, "error", message => events.push(JSON.parse(message)));
   t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (!url.endsWith("/details")) return nativeResponse(url, options);
     assert.deepEqual(calls, ["pull", "push", "pull"], "Read the current definition after publication");
     assert.equal(url, "https://trmnl.com/api/plugin_settings/12345/details");
     assert.deepEqual(options.headers, { Authorization: "Bearer synthetic-key", Accept: "application/json" });
@@ -95,7 +518,7 @@ test("publication accepts exported nulls only after exact independent polling re
       }
     }
   });
-  assert.deepEqual(Object.keys(result).sort(), ["identity", "pluginId", "verified"]);
+  assert.deepEqual(Object.keys(result).sort(), ["pluginId", "verification", "verified"]);
   assert.equal(result.verified, true);
   assert.equal(events.length, 1);
   assert.equal(events[0].event, "trmnl_definition_readback");
@@ -139,7 +562,8 @@ for (const omittedPolling of [false, true]) {
       "---\nrefresh_interval: 9007199254740992\n" +
       "SYNTHETIC_PRIVATE_SETTING: {nested: [9007199254740992]}\n"));
     t.mock.method(console, "error", () => {});
-    t.mock.method(globalThis, "fetch", async () => Response.json({ data: { settings: { ...pollingDetails } } }));
+    t.mock.method(globalThis, "fetch", async (url, options) => url.endsWith("/details")
+      ? Response.json({ data: { settings: { ...pollingDetails } } }) : nativeResponse(url, options));
     for (const setting of ["refresh_interval", "SYNTHETIC_PRIVATE_SETTING"]) {
       let changed = true;
       const options = {
@@ -196,25 +620,31 @@ test("post-upload details failures retain archive comparison evidence and redact
   }
 });
 
-test("sanitized, missing, rendered or changed details never prove the unrendered polling definition", async t => {
+test("hidden details allow functional verification without proving literals, while visible differences block", async t => {
   const sourceDirectory = await pollingSource(t);
   t.mock.method(console, "error", () => {});
-  for (const settings of [
+  const hidden = [
     {}, { ...pollingDetails, polling_headers: null },
     { ...pollingDetails, polling_body: null },
     { ...pollingDetails, polling_headers: "[set]" },
+    { custom_fields_values: { ...pollingDetails } }
+  ];
+  for (const settings of [...hidden,
     { ...pollingDetails, polling_headers: "SYNTHETIC_PRIVATE_LITERAL_KEY" },
-    { custom_fields_values: { ...pollingDetails } },
     { ...pollingDetails, polling_body: '{"rules_json": []}' },
     { ...pollingDetails, polling_body: `${pollingDetails.polling_body}\n` }
   ]) {
-    t.mock.method(globalThis, "fetch", async () => Response.json({ data: { settings } }));
-    await assert.rejects(publishTrmnl({
+    t.mock.method(globalThis, "fetch", async (url, options) => url.endsWith("/details")
+      ? Response.json({ data: { settings } }) : nativeResponse(url, options));
+    const publication = publishTrmnl({
       sourceDirectory, pluginId: "12345", backupRecoveryAcceptedPluginId: "12345", apiKey: "synthetic-key",
       runCommand: async (_command, args, { cwd }) => {
         if (args[0] === "pull") await pullRedacted(sourceDirectory, cwd);
       }
-    }), { code: "trmnl_deployed_content_mismatch" });
+    });
+    if (hidden.includes(settings)) {
+      assert.equal((await publication).verification.hidden_polling_templates_proven, false);
+    } else await assert.rejects(publication, { code: "trmnl_deployed_content_mismatch" });
   }
   t.mock.method(globalThis, "fetch", async () => Response.json({
     data: { settings: { ...pollingDetails, polling_headers: "[set]" } }
@@ -404,9 +834,9 @@ test("TRMNL publisher pins the existing plugin ID and verifies pulled definition
     assert.ok(!args.includes("synthetic-key"));
   }
   assert.equal(result.verified, true);
-  assert.match(result.identity, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(result.identity, undefined, "A source hash must not masquerade as deployed hidden-byte proof");
   assert.equal(result.pluginId, "12345");
-  assert.deepEqual(Object.keys(result).sort(), ["identity", "pluginId", "verified"]);
+  assert.deepEqual(Object.keys(result).sort(), ["pluginId", "verification", "verified"]);
 });
 
 test("settings parser receives tool settings but no workflow credentials or Azure configuration", async t => {
@@ -693,7 +1123,7 @@ test("read-only TRMNL inspection pulls once and reports compatibility without pu
       await cp(sourceDirectory, join(cwd, "src"), { recursive: true });
     }
   });
-  const { content_comparison, definition_readback, ...existing } = result;
+  const { content_comparison, definition_readback, verification, ...existing } = result;
   assert.deepEqual(existing, {
     operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: true, content_matches: true
   });
@@ -714,6 +1144,7 @@ test("read-only TRMNL inspection pulls once and reports compatibility without pu
   });
   assert.deepEqual(calls, ["pull"]);
   assert.equal(definition_readback.response_available, true);
+  assert.equal(verification.native_refresh_succeeded, null);
   assert.ok(definition_readback.fields.every(field => field.observable === false && field.matches === false));
   assert.doesNotMatch(JSON.stringify(result), /synthetic|12345|agenda_endpoint|function_key|rules_json/);
 });
@@ -731,7 +1162,7 @@ test("read-only TRMNL inspection reports mismatches without mutating the plugin"
       await writeFile(join(cwd, "src", "full.liquid"), "different remote template\n");
     }
   });
-  const { content_comparison, definition_readback, ...existing } = result;
+  const { content_comparison, definition_readback, verification, ...existing } = result;
   assert.deepEqual(existing, {
     operation: "inspect-trmnl", remote_readable: true, field_schema_compatible: false, content_matches: false
   });
@@ -856,7 +1287,7 @@ test("inspection distinguishes dropped polling settings and source-established e
   ));
 });
 
-test("comparison exposes only fixed type and structural-emptiness enums and never equates represented polling settings", async t => {
+test("comparison exposes raw types and emptiness while only null or missing polling strings are outside proof", async t => {
   const sourceDirectory = await pluginSource(t);
   const base = await readFile(join(sourceDirectory, "settings.yml"), "utf8");
   const original = '  {"rules_json": {{ rules_json | json }}}';
@@ -881,7 +1312,9 @@ test("comparison exposes only fixed type and structural-emptiness enums and neve
         await writeFile(join(cwd, "src", "settings.yml"), base + yaml);
       }
     });
-    assert.equal(result.content_matches, false, "No type/representation difference is normalized away.");
+    assert.equal(result.content_matches, ["missing", "null"].includes(type),
+      "Only absent polling strings are outside functional proof; other representations still block.");
+    assert.equal(result.verification.hidden_polling_templates_proven, false);
     assert.deepEqual(result.content_comparison.definition.fields, [{
       field: "polling_body", reason: type === "missing" ? "deployed_missing" :
         type === "string" ? "value_mismatch" : "type_mismatch",

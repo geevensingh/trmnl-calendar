@@ -119,7 +119,7 @@ These are independent aggregate observations: usable evidence on one event does 
 
 The operator supplies `Agenda__OwnerAddress` to the protected process through approved adapter configuration; the value is never prompted for, logged, or written into the report. Do not inspect secrets/settings automatically or include the identity in arguments, chat, tickets or screenshots. Failed/unsupported interpretation and acquisition failures have `participation_capabilities: null`, with their explicit phase failure/unperformed codes; partial parser observations are discarded. Authorization/input failures have no attempts. None is a successful capability check.
 
-`measurement_scope.participation_semantics` remains `not_verified`, including on a successful acquisition/interpretation check. Production remains **Unknown-only** pending owner-authorized actual-publication evidence and its acceptance. Downstream classification must not use these synthetic observations, structural support, or `checks_passed` as that acceptance. Record only safe conclusions and limitations on [#60](https://github.com/geevensingh/trmnl-calendar/issues/60); actual-source access is currently unperformed and remains an owner gate. Do not close the ticket or clear its implementation blockers from synthetic evidence alone.
+`measurement_scope.participation_semantics` remains `not_verified`, including on a successful acquisition/interpretation check. Production remains **Unknown-only**; synthetic observations, structural support, or `checks_passed` are not capability acceptance. The [observed Outlook source contract](outlook-source-contract.md) records the separately owner-authorized 2026-11-02 comparison against actual Outlook states: Free and Working Elsewhere were distinguishable, while a title-only negative control disproved prefix-only Follow detection. The checked-in command does not perform that independent comparison or inspect the vendor busy-status distinction. Record only safe conclusions and limitations on [#60](https://github.com/geevensingh/trmnl-calendar/issues/60); future source access still needs explicit owner authorization. The classifier plan is superseded by [#104](https://github.com/geevensingh/trmnl-calendar/issues/104); additional classifier-only checks do not block label retirement or authorize restarting that plan.
 
 The JSON report separates acquisition (`received`, `redirect_refused`, `http_rejected`, `transport_failed`, `headers_timeout`, `body_timeout`, `source_too_large`, `invalid_utf8`) from actual interpretation (`supported`, production invalid/unsupported codes, or an interpretation timeout). HTTP status, bounded phase durations and aggregate body size are safe metadata. A received HTML page is not a supported calendar. Absent headers, unread bodies, unperformed interpretation and unrequested polling are explicit null/unperformed evidence, never assumed successes.
 
@@ -279,7 +279,7 @@ Set these GitHub Actions secrets:
 | Secret | Value |
 |---|---|
 | `AZURE_PARAMETERS_JSON` | The complete owner-reviewed deployment parameter document based on `infra/parameters.example.json`, including the exact resource group and release identity **service-principal object ID**. Keep the document private; the runner writes it to a mode-restricted temporary file and removes it after use. |
-| `TRMNL_API_KEY` | The TRMNL publishing key. It is passed only to the isolated `trmnlp` process. |
+| `TRMNL_API_KEY` | The existing TRMNL publishing key, passed to the isolated `trmnlp` process and the fixed HTTPS details/native-refresh routes below. No new key, secret replacement or permission is introduced. |
 | `TRMNL_FUNCTION_KEY` | The dedicated function-scoped key for the existing `/api/agenda` trigger, never a host/master key. |
 
 The first manual `activate` operation on `main` publishes and verifies both targets at the selected reviewed main commit before recording target baselines. It requires verified Azure bootstrap, matching plugin-specific backup approval, and an attributed reason. It does not create the private backups or establish missing live evidence on the owner's behalf. Activation records `trmnl_backup_recovery_accepted: true` alongside the actor/reason; status exposes that acceptance without private configuration. Legacy activation records without recorded acceptance report null, not inferred approval.
@@ -288,17 +288,20 @@ If activation fails, rerun `activate` on `main` with a new attributed reason. Re
 
 Use **Actions > Coordinated production release > Run workflow** on `main` for `status`, `activate`, `retry`, or `skip`. Supply a concise reason for activation/retry/skip. A retry reuses the original commit and artifacts and preserves durably verified target outcomes, including interruptions immediately after a target-success save. A skip records the actor and reason without advancing either target baseline. `main` is the normal automatic operation. Never manually edit the Blob ledger or delete retained release artifacts to clear a barrier. Keep GitHub deployment permissions enabled for the workflow; do not add CI checks or rerun unrelated CI as part of release recovery.
 
-For a TRMNL failure, run `inspect-trmnl` on the same manual workflow before retrying publication. It pulls the existing production plugin once, compares its non-secret definition/templates with the blocked activation/release commit (or the dispatch commit when nothing is blocked), and reports boolean readability, field-schema compatibility and content equality plus the bounded comparison below. A pinned activation repair, including an older queued release whose TRMNL target it covers, compares against the corrected source instead. It never pushes, creates a deployment record, writes the ledger, clears a recovery barrier, or implies that configured values were preserved. Inspection needs the existing publishing key but not backup approval because it makes no plugin changes.
+For a TRMNL failure, run `inspect-trmnl` on the same manual workflow before retrying publication. It pulls the existing production plugin once, compares its non-secret definition/templates with the blocked activation/release commit (or the dispatch commit when nothing is blocked), and reports readability, field-schema compatibility and **observable** content agreement plus the bounded comparison below. A pinned activation repair, including an older queued release whose TRMNL target it covers, compares against the corrected source instead. It never pushes, starts a native refresh, creates a deployment record, writes the ledger, clears a recovery barrier, or implies that configured values were preserved. Inspection needs the existing publishing key but not backup approval because it makes no plugin changes.
 
-Inspection adds `content_comparison` and `definition_readback` without removing
-the existing result fields. It performs one archive pull and one direct,
-read-only details request.
+Inspection returns `content_comparison`, `definition_readback` and `verification`
+alongside the existing result fields. It performs one archive pull and one direct,
+read-only details request; `content_matches` now means the approved observable
+contract, **not** byte-exact hidden-template or native functional proof.
 It reports `file_set_matches` and one fixed result for each of `settings.yml`,
 `shared.liquid`, `full.liquid`, `half_horizontal.liquid`, and `half_vertical.liquid`.
 Results are `match`, `different`, `source_missing`, `deployed_missing`, or
 `not_compared`. Templates remain byte-exact; settings retain the existing parsed
 comparison (mapping order and the top-level plugin ID are ignored, arrays remain
-ordered). No new normalization or ignored remote field is introduced.
+ordered). Only the two hidden polling strings and five exact source-absent
+export baselines described below have limited handling; there is no general
+metadata-ignore rule.
 
 When file sets match, `definition.fields` lists only differing **allowlisted
 top-level definition fields** with `source_missing`, `deployed_missing`,
@@ -311,10 +314,9 @@ Each differing field also has `source_type` and `deployed_type`: exactly
 strings are nonempty. These are structural signals, not values or lengths:
 null/missing polling configuration is distinct from an empty object, and neither
 is presumed equivalent to the intended string.
-The comparison-only name allowlist additionally recognizes `static_data`,
-`serverless_language` and the OAuth setting identifiers in the cited schema
-below. Identifying a name does **not** make it ignored, harmless metadata, or
-an accepted default; its presence, type and content remain compared exactly.
+The comparison-name allowlist additionally recognizes `static_data`,
+`serverless_language`, `refresh_interval_floor` and the OAuth setting identifiers
+in the cited schema below. Identifying a name alone does **not** accept its value.
 Unknown definition fields and files remain part of exact verification, but only
 their source/deployed counts and aggregate equality booleans are exposed.
 When file sets differ, definition comparison is explicitly unevaluated:
@@ -332,13 +334,26 @@ before choosing a fix; do not strip unknown remote fields or retry blindly.
 Read-only inspection does not retarget a pinned repair source/archive or clear
 its mutation-confirmation barrier.
 
-#### Direct polling-definition read-back
+#### Approved functional verification contract (2026-11-02)
 
-The owner-supplied public [TRMNL OpenAPI](https://trmnl.com/api-docs/openapi.json),
-read on 2026-11-01, documents `getPluginSettingDetails` as
+The owner approved **functional verification with explicit limits**, replacing
+the conditional exact-hidden-template requirement from #102. This is a change
+in verification meaning, not a discovery that the hidden bytes are proven.
+It does not retroactively relabel prior verification, activate the controller,
+authorize a production recovery here, or retarget either retained source/archive.
+
+The public [TRMNL OpenAPI](https://trmnl.com/api-docs/openapi.json),
+read on 2026-11-02, documents `getPluginSettingDetails` as
 `GET /api/plugin_settings/{id}/details`. Its `data.settings` description says
 **sensitive values are removed**; it does not guarantee raw polling templates
-will be returned. The verifier reads only explicitly returned, flat
+will be returned. Owner editor/Export ZIP observation established that the
+pinned templates were present, but API archives and the documented `/files`
+endpoint returned null for both polling fields; details returned `[set]`.
+Read and Read+Content scoped diagnostic keys behaved the same and were revoked.
+`/files` is not a literal-readback workaround. Website exports without a browser
+session redirect to login; neither cookies nor speculative endpoints are used.
+
+The verifier reads only explicitly returned, flat
 `polling_headers` and `polling_body` settings. It does not guess nested paths,
 use configured custom-field values, or interpret sanitized details as proof.
 
@@ -349,50 +364,102 @@ template strings. Rendered literals, masked values and any different string
 cannot match the pinned, unrendered source. No field text, account/plugin names,
 custom-field names/values, URLs, error response bodies or hashes are emitted.
 
-The exact archive comparator may resolve **only** a null/missing exported polling
-field for which this direct endpoint returns the exact nonempty source string.
-Every other setting, custom-field definition, unknown field and template byte
-remains compared. Archive differences stay visible in `content_comparison`;
-`content_matches` can reflect the combined archive-and-direct proof. A direct
-string disagreement remains a failure even if the archive agrees, including
-when the source string is empty. Remaining settings are compared as lossless
-canonical JSON, without JavaScript integer rounding, whether or not a polling
-omission is resolved. Publisher
-success output remains unchanged; it requests direct details only after the
-post-upload pull needs this exact omission check, and records a bounded
-`trmnl_definition_readback` event. If that request fails, it emits the preliminary
-archive `trmnl_content_comparison` evidence before returning the unchanged
-redacted details error. Neither inspection nor this GET uploads,
-updates configured values, retargets the immutable archive, or clears the ledger.
+When the source field is a string (including an empty string), a null/missing
+archive value is outside observable proof. Every returned archive string still
+compares exactly. Any directly observable string disagreement blocks even if
+the archive agrees, including a contradiction against an empty source string.
+Details are therefore required before successful publication even when the
+archive already agrees. Structured archive values, different strings and other
+meaningful drift still block; native success cannot waive them.
+
+Only when the source has `strategy: polling` and integer `refresh_interval: 15`,
+the following **source-absent** exported settings may take these exact values:
+
+| Exported field | Required YAML value/type |
+|---|---|
+| `static_data` | Empty string |
+| `serverless_language` | Empty string |
+| `oauth_enabled` | String `'false'`, not boolean false |
+| `oauth_pkce_enabled` | String `'no'`, not boolean false |
+| `refresh_interval_floor` | String `'15'`, not integer 15 |
+
+These are the five owner-observed editor/export baselines, not generalized
+provider defaults. Source-explicit settings remain strict even for these names.
+Wrong values/types, another cadence/context, unknown additions and extra files
+block. All four Liquid files remain byte-exact, and all other settings retain
+lossless recursive canonical comparison without JavaScript integer rounding.
+Raw archive differences remain visible in `content_comparison` even when
+accepted under this limited observable contract. The upload is never normalized:
+it uses the unchanged retained source/archive bytes, not Windows checkout bytes
+as a substitute for Git-blob reference evidence.
 
 The request uses only the existing publishing key, a fixed HTTPS service/path,
 GET, no redirects, a 15-second request/body deadline, a 1 MiB body bound and the
 operation's cancellation signal. HTTP 401/403/404 and malformed/oversized bodies
 fail explicitly with fixed `trmnl_details_*` codes. A details response or archive
 visibility does **not** establish ownership or authorize a different target.
-The public schema's archive documentation explicitly warns that another
-author's recipe omits polling headers/body. The instance PATCH endpoint changes
-name/description/refresh options, not polling definitions; no guessed PATCH,
-typed-configuration value path, new identity or permission is used here.
+Readback emits only the bounded `trmnl_definition_readback` event. On details
+failure after upload, the preliminary `trmnl_content_comparison` is retained
+before the redacted error. Neither inspection nor this GET changes the plugin.
 
-After human review/landing, run the existing **`inspect-trmnl`** operation before
-any further publication. It still selects the ledger's pinned corrected source.
-The necessary live fact is whether the details endpoint actually exposes the
-two exact strings with the existing token. The entire observed export shape
-(two null polling fields, four additional static/serverless/OAuth fields and one
-extra field) must still fail when those other differences remain unresolved,
-even if details prove both polling strings. The fixed comparison-name set now
-includes all remaining `PluginSetting` properties from the supplied schema
-(`sync`, `plugin_id`, `health_notification_enabled`, `icon_url`,
-`icon_content_type`, `read_only?`) for classification only, not ignored metadata
-or accepted defaults. Arbitrary unknown names remain hidden and blocking.
-This conditional verifier is not a claim that production activation is fixed.
+After observable checks pass, **publication/recovery must also** start native
+polling with `POST /api/plugin_settings/{plugin_setting_id}/refreshes`, no body,
+then GET `/api/plugin_settings/{plugin_setting_id}/refreshes/{id}` for that exact
+returned job. Both use the same validated plugin ID/publishing key, fixed
+`https://trmnl.com` origin, no redirects, strict JSON/UTF-8, at most 1 MiB per
+response, a 15-second request/body deadline, and a **60-second total native
+deadline**. Pending HTTP 202 is polled at one-second intervals, at most 60 reads.
+There is no admission retry that could start an untracked second job.
+Missing/render-only/malformed jobs, wrong job IDs, non-complete HTTP 200,
+unsuccessful jobs, warnings, unsupported responses, stale/error agendas,
+timeout and cancellation all block. Cancellation stops local waiting, not an
+already accepted remote job; the existing recovery-confirmation barrier remains.
+
+The native response's `data.variables` is **not the full HTTP payload**.
+Observed occurrence collections are provider summaries with `count` and `sample`,
+plus metadata; counts can exceed returned sample lengths. Verification requires
+nonnegative safe integer counts, nonempty samples for nonempty collections,
+sample length no greater than count, and count no greater than `eligible_total`.
+Only returned samples (or returned arrays) pass through existing `validateAgenda`;
+omitted occurrences are neither reconstructed nor validated. The result must be
+schema 2, `current`, with source age strictly below 15 minutes. Its generated time
+must be no earlier than job admission minus one second for timestamp granularity,
+and neither generated nor source time may be in the future at verification.
+Self-consistent old/replayed timestamps cannot certify fresh polling.
+Provider schema hints, polling URLs and logs are not treated as raw-wire proof.
+The serialized summary's size is **never** used to certify the native 100,000-byte
+limit. Existing producer HTTP/schema/size tests and guards remain unchanged.
+
+Results and persisted evidence explicitly use `scope: trmnl_functional_v1` with
+`observable_content_matches`, `native_refresh_succeeded`, `agenda_current`,
+`agenda_fresh` and `returned_samples_validated` true. They explicitly report
+`hidden_polling_templates_proven`, `full_native_payload_validated` and
+`native_payload_size_proven` **false**. Inspection uses the same scope but its
+four native-check fields are null (not performed); it can never certify a
+functional release. Publisher results no longer return an ambiguous deployed
+content `identity`.
+
+The service propagates this evidence; the controller rejects bare
+`verified: true`, incomplete evidence or exaggerated proof claims. Successful
+activation/release `target_verification.trmnl`, ordinary release attempts and
+repair attempts retain the evidence bound to `source_commit`, the unchanged
+retained `artifact_identity`, and verification `checked_at`. Status and execution
+results expose the scope and limits. Source/artifact identities identify inputs,
+not all deployed hidden bytes. Older records without this evidence remain
+unlabeled; verified historical targets are not replayed merely to relabel them.
+No provider logs, event titles/IDs/dates, configured values, keys, response bodies,
+endpoint URLs or credential-derived hashes enter diagnostics or these records.
+
+After human landing and required validation, inspect the pinned corrected source
+before any explicit production recovery. This implementation is not proof that
+the existing publishing key can access native refresh routes or that production
+activation is fixed; a permission failure blocks without replacing the key.
 
 #### Definition representation evidence (2026-10-31)
 
 The pinned publisher is [`trmnl_preview` 0.32.3 / tag v0.32.3](https://github.com/usetrmnl/trmnlp/tree/a7a813bc46358adf5b53e06004d6ab337e51d5a3).
-The following distinguishes documented/source behavior from observed cloud
-behavior; none permits coercing missing data into a verified target.
+The following is **historical investigation evidence**, predating the approved
+functional contract above; its unknowns are not retroactively marked proven.
 
 | Claim | Status and primary evidence | Remaining limitation |
 |---|---|---|
@@ -406,7 +473,8 @@ round-tripping and correct diagnostic signals for deliberately injected
 representations. It cannot establish the production export's types or prove
 that a cloud import preserved the required polling headers/body. In particular,
 null headers/body may indicate lost configuration rather than serialization
-noise; a mismatch remains a blocking failure.
+noise. Functional verification now deliberately gives up that hidden-byte proof;
+it does not reinterpret these earlier observations as successful verification.
 
 Publisher failures identify `source_settings`, `preflight_pull`, `preflight_settings`, `push`, `verify_pull`, or `verify_settings` rather than collapsing every tool error into `trmnl_publish_or_verify_failed`. Archive API failures include only an allowlisted HTTP status, such as `trmnl_preflight_pull_http_403`; absent tools, cancellation, timeouts and output limits have fixed codes. Tool output is captured in bounded memory only, never printed or retained as an artifact. Private settings, archive contents, credentials and response bodies stay out of logs. A push or post-push failure still requires stopped-mutation verification before recovery; a diagnostic code is not proof of rollback.
 

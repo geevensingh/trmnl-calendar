@@ -1,3 +1,17 @@
+{% assign agenda_contract_compatible = false %}
+{% assign day_names = "primary,secondary" | split: "," %}
+{% if schema_version == 3 %}
+  {% assign agenda_contract_compatible = true %}
+  {% for day_name in day_names %}
+    {% assign day = primary %}
+    {% if day_name == "secondary" %}{% assign day = secondary %}{% endif %}
+    {% for occurrence in day.occurrences %}
+      {% if occurrence contains "participation_expectation" %}
+        {% assign agenda_contract_compatible = false %}
+      {% endif %}
+    {% endfor %}
+  {% endfor %}
+{% endif %}
 <style>
   .trmnl .agenda-view .layout.agenda {
     flex: 1; height: auto; min-height: 0; margin-bottom: 0;
@@ -61,15 +75,19 @@
 </span>
 {% endcapture %}
 {% capture agenda_content %}
-<div class="layout layout--col layout--top agenda" data-agenda-state="{{ state | escape }}">
-  {% if state == "current" or state == "stale" %}
+<div class="layout layout--col layout--top agenda" data-agenda-state="{% if agenda_contract_compatible %}{{ state | escape }}{% else %}error{% endif %}">
+  {% if agenda_contract_compatible == false %}
+    <span class="title">Agenda unavailable</span>
+    <span class="label">Compatibility error</span>
+    <span class="description">The agenda contract is incompatible. Update the producer and display together.</span>
+    {{ agenda_source }}
+  {% elsif state == "current" or state == "stale" %}
     {% if state == "stale" %}
       <div class="agenda-warning" role="status">
         <span class="title">Stale agenda</span>
         {% if error %}<span class="label">{{ error.message | escape }}</span>{% endif %}
       </div>
     {% endif %}
-    {% assign day_names = "primary,secondary" | split: "," %}
     {% for day_name in day_names %}
       {% assign day = primary %}
       {% if day_name == "secondary" %}{% assign day = secondary %}{% endif %}

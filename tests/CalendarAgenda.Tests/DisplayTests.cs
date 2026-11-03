@@ -44,6 +44,57 @@ public sealed class DisplayTests
     }
 
     [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void Deployed_Liquid_shows_incompatible_schemas_without_agenda_events_or_counts(int schema)
+    {
+        var data = CurrentAgenda();
+        data["schema_version"] = schema;
+        data["primary"]!["occurrences"]![0]!["emphasis"] = "in_progress";
+        foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
+        {
+            var markup = RenderIncompatibleLiquid(data, placement);
+            Assert.DoesNotContain("Synthetic planning", markup);
+            Assert.Contains($"datetime=\"{data["source_succeeded_at"]!.GetValue<string>()}\"", markup);
+        }
+    }
+
+    [Theory]
+    [InlineData("primary", "timed", "unknown")]
+    [InlineData("primary", "all_day", "null")]
+    [InlineData("secondary", "timed", "unsupported")]
+    [InlineData("secondary", "all_day", "number")]
+    public void Deployed_Liquid_shows_retired_fields_as_incompatible_on_every_day_and_occurrence_kind(
+        string day, string timeKind, string valueKind)
+    {
+        var data = CurrentAgenda();
+        var occurrence = data["primary"]!["occurrences"]![0]!.DeepClone().AsObject();
+        if (timeKind == "all_day")
+        {
+            occurrence["time_kind"] = timeKind;
+            occurrence.Remove("start_at");
+            occurrence.Remove("end_at");
+            occurrence["start_date"] = data[day]!["date"]!.DeepClone();
+            occurrence["end_date_exclusive"] = "2026-10-27";
+        }
+        occurrence["participation_expectation"] = valueKind switch
+        {
+            "null" => null,
+            "number" => JsonValue.Create(1),
+            "unknown" => JsonValue.Create("unknown"),
+            _ => JsonValue.Create("CONFIDENTIAL_PARTICIPATION_MARKER")
+        };
+        data[day]!["occurrences"] = new JsonArray(occurrence);
+        data[day]!["eligible_total"] = 1;
+        foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
+        {
+            var markup = RenderIncompatibleLiquid(data, placement);
+            Assert.DoesNotContain("CONFIDENTIAL_PARTICIPATION_MARKER", markup);
+        }
+    }
+
+    [Theory]
     [InlineData("primary", "timed")]
     [InlineData("primary", "all_day")]
     [InlineData("secondary", "timed")]
@@ -488,6 +539,18 @@ public sealed class DisplayTests
         Assert.True(box.X >= screen.X && box.Y >= screen.Y
             && box.X + box.Width <= screen.X + screen.Width
             && box.Y + box.Height <= screen.Y + screen.Height, "Required content must fit inside the physical screen.");
+    }
+
+    private static string RenderIncompatibleLiquid(JsonObject data, string placement)
+    {
+        var markup = RunRuby(Path.Combine(Root, "tests", "render-liquid.rb"), data, placement);
+        Assert.Contains("data-agenda-state=\"error\"", markup);
+        Assert.Contains("Agenda unavailable", markup);
+        Assert.Contains("Compatibility error", markup);
+        Assert.DoesNotContain("<table", markup);
+        Assert.DoesNotContain("data-agenda-id=", markup);
+        Assert.DoesNotContain("class=\"label agenda-count\"", markup);
+        return markup;
     }
 
     internal static string Render(string mode, object variables, string device = "og",

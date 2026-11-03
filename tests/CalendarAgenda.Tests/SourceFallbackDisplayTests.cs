@@ -97,9 +97,8 @@ public sealed class SourceFallbackDisplayTests
         {
             Assert.DoesNotContain("CONFIDENTIAL", result.RootElement.GetRawText());
             Assert.DoesNotContain("participation_expectation", result.RootElement.GetRawText());
-            var markup = DisplayTests.Render(view.Placement, result.RootElement, view.Device);
-            Assert.DoesNotContain("CONFIDENTIAL", markup);
             await DisplayTests.Show(page, result.RootElement, view.Placement, view.Device);
+            Assert.DoesNotContain("CONFIDENTIAL", await page.ContentAsync());
             await AdaptiveDisplayTests.NativeBounds(page, view);
             var findings = await page.EvaluateAsync<JsonElement>("""
                 async input => {

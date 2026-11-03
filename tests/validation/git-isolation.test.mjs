@@ -11,10 +11,10 @@ import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 test("public process fixtures preserve exact directory identity under an aliased temporary root", async t => {
-  const directory = await mkdtemp(join(tmpdir(), "agenda temporary identity "));
+  const directory = await mkdtemp(join(tmpdir(), "agenda id "));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const target = join(directory, "canonical temporary directory");
-  const alias = join(directory, "temporary alias");
+  const target = join(directory, "real temp");
+  const alias = join(directory, "alias");
   await mkdir(target);
   await symlink(target, alias, process.platform === "win32" ? "junction" : "dir");
   const result = spawnSync(process.execPath, [

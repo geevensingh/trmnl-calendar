@@ -81,11 +81,11 @@ This is the RubyGems `install bundler` operation, independent of another install
 
 **`scripts\validate.ps1` is the authoritative validation procedure**, for manual use and GitHub Actions. Run the shared entrypoint rather than maintaining another list of checks.
 
-The checked-in [Full validation workflow](.github/workflows/full-validation.yml) runs genuine Full for PR creation, head updates (including documentation-only changes), reopening and **every edit, including title/body edits**, using a Windows runner and synthetic inputs. Each admitted event supersedes active validation for that PR. Historical exhaustive runs took roughly 40-45 minutes; the selected-policy duration is not yet established. The finite **60-minute job cap** allows setup/runner variability, not a completion promise. Draft/readiness activities are not triggers. Use issue comments for progress/acceptance updates rather than editing PR metadata, which restarts Full. Repository-managed automatic hooks are retired; existing installations need the explicit migration below. **Owner-authorized `main` protection is configured and read back; [#39](https://github.com/geevensingh/trmnl-calendar/issues/39) issue comments are the live acceptance ledger, with [PR #38](https://github.com/geevensingh/trmnl-calendar/pull/38) identifying the reviewed/current head and required genuine Full check.** See [Required CI and manual local validation](docs/ci-validation-design.md) for the stable check identity, provisioning, protection configuration and recorded evidence. Adding a workflow alone does not establish enforcement.
+The checked-in [Full validation workflow](.github/workflows/full-validation.yml) runs genuine Full for PR creation, head updates (including documentation-only changes), reopening and **every edit, including title/body edits**, using Windows runners and synthetic inputs. Each admitted event supersedes active validation for that PR. Execution is bounded to four isolated .NET jobs and one complete Node job, each capped at **60 minutes**, with separate planning and aggregation. These bounds allow setup/runner variability, not a completion or speedup promise. Draft/readiness activities are not triggers. Use issue comments for progress/acceptance updates rather than editing PR metadata, which restarts Full. Repository-managed automatic hooks are retired; existing installations need the explicit migration below. **Owner-authorized `main` protection is configured and read back; [#39](https://github.com/geevensingh/trmnl-calendar/issues/39) issue comments are the live acceptance ledger, with [PR #38](https://github.com/geevensingh/trmnl-calendar/pull/38) identifying the reviewed/current head and required genuine Full check.** See [Required CI and manual local validation](docs/ci-validation-design.md) for the stable check identity, provisioning, protection configuration and recorded evidence. Adding a workflow alone does not establish enforcement.
 
 The workflow also exposes **Required validation** as an additional, not-yet-required check. It accepts only this execution's successful genuine Full result and, for PRs, its successful event-pinned preparation report. It does not reduce coverage or change admission or the existing Full protection requirement. Failed, blocked, cancelled, missing or skipped Full work cannot pass the additional gate. See the [gate checkpoint and rollback](docs/ci-validation-design.md#additive-required-validation-checkpoint-77).
 
-Full runs **serially**, with Node delivery/guardrail tests before the expensive production-rendering suite. Formatting, build, syntax, browser or Node failures block that tail, rather than reporting unexecuted rendering as passed. Each invocation's `artifacts\validation\<scope>-<id>\summary.json` declares every expected component with `success`, `failure`, `blocked`, `cancelled` or `incomplete` outcomes and dependency reasons. A successful Full still requires the unfiltered .NET suite, every Node file, real raster evidence and all six native views. Reports bind the component contract and complete result inventory to evaluated input fingerprints; changing inputs during validation fails the execution. See the [serial component checkpoint](docs/ci-validation-design.md#serial-early-failure-and-component-checkpoint-83) for interrupted evidence, measurement limits and rollback.
+Ordinary local Full runs **serially**, with Node delivery/guardrail tests before the expensive production-rendering suite. Formatting, build, syntax, browser or Node failures block that tail, rather than reporting unexecuted rendering as passed. Each invocation's `artifacts\validation\<scope>-<id>\summary.json` declares every expected component with `success`, `failure`, `blocked`, `cancelled` or `incomplete` outcomes and dependency reasons. A successful Full still requires the unfiltered .NET suite, every Node file, real raster evidence and all six native views. Reports bind the component contract and complete result inventory to evaluated input fingerprints; changing inputs during validation fails the execution. See the [serial component checkpoint](docs/ci-validation-design.md#serial-early-failure-and-component-checkpoint-83) for interrupted evidence, measurement limits and rollback.
 
 ### Setup once per worktree
 
@@ -126,6 +126,58 @@ Check `az bicep version` and, only if missing, install the local compiler once w
 |---|---|---|
 | Fast (default) | Read-only C# whitespace formatting, production and test-project compilation with existing warnings-as-errors settings, PowerShell parsing, and Node syntax | Optional manual feedback |
 | Full | Complete read-only C# formatting, the Fast build/syntax checks, the unfiltered production .NET suite with the explicit **OG-first** adaptive view matrix (real Functions host, Liquid, framework/fonts and Chromium), and every delivery/guardrail `*.test.mjs` through Node's existing runner | PR CI and optional manual full feedback |
+
+#### Isolated hosted execution
+
+CI uses this same entrypoint's `-Scope Fast -Execution Plan`, then five
+`-Scope Full -Execution Worker -Component <d1|d2|d3|d4|node> -ExecutionPlan <plan>`
+invocations in independent Windows checkouts, followed by
+`-Scope Full -Execution Aggregate -ExecutionPlan <plan> -ReportsDirectory <transfers> -JobResults <JSON>`.
+Ordinary local Full is still complete without these options. Plan does not run Full and a
+successful Worker is only a component, never a successful Full check.
+
+The versioned `tests\validation-partitions.json` assigns every independently discovered
+.NET method/theory row exactly once. Four scenario wrappers preserve a canonical identity
+bridge for comparison with the preceding unpartitioned theory; no scenario, native view,
+assertion, Git-selector case or Node file is sampled. The selected OgFirst policy and
+explicit Exhaustive diagnostics are unchanged. Serial Full, each .NET worker and the
+discovery probe use the same pinned `tests\validation-partitions.runsettings` with at
+most two concurrent xUnit collections per .NET process. Serial Full remains unfiltered.
+Historical uncapped serial measurements are not measurements of this capped reference.
+The single Node worker executes every Node file and retains its real build, syntax and
+browser dependencies. Both shared Serial Full and Node Worker explicitly cap the
+top-level Node test-file runner at four concurrent files; this is not a four-child-process
+or execution-runner cap. Every file and assertion still runs, including all six
+lowercase-s raster views under the unchanged 90-second process deadline.
+Parallel scheduling removes only the serial Node-before-.NET
+feedback edge; the other dependencies remain.
+
+Every worker independently sets up/builds its checkout; build output and dependency setup
+are not transferred as test evidence. A Worker requires its own physical
+`.tools\playwright` selected through `PLAYWRIGHT_BROWSERS_PATH`, including Chromium's
+writable adjacent `debug.log`. Private marked scratch, tool configuration and native
+process trees are owned, deadline-bound and restored/terminated on exit. Scratch lives
+at the short worktree-local `.tools\run\<pid>-<sequence>` address, separately from
+report directories. A full random owner marker and collision/physical-path checks,
+not the short address, authorize cleanup; simultaneous scopes have separate directories.
+An empty bare Git boundary prevents repository-less child fixtures from discovering
+the owning checkout without breaking repository-independent Git commands; fixtures
+that initialize their own working repository remain independent.
+Native path checks must include nested Git object/quarantine paths, archive `mkdtemp`
+and testhost startup, not only the top-level Chromium profile. Local allocated
+experiments need real short roots: nested native Chromium profile creation has failed at
+249/252-character paths in prior diagnostics. This is not a universal Windows path limit,
+nor permission to reuse old lanes or silently choose shared scratch.
+
+Only the current run/attempt's plan/request and complete hash-inventoried raw reports are
+transferred. Aggregation redecodes TRX, Node and assertion/phase journals, reconstructs the
+source contract and requires all five actual execution jobs and exact expected identities
+to succeed on the same content/revision/run. Missing, stale, linked, duplicate, skipped,
+failed or cancelled work cannot pass **Full validation** or **Required validation**.
+Workflow-level supersession cancels the entire obsolete plan/worker/aggregate execution.
+No protection or event-admission change is included. Hosted equivalence, timing/cost and
+performance adoption remain separately allocated evidence, not results implied by this
+implementation; see [the scheduling checkpoint](docs/ci-validation-design.md#bounded-full-scheduling-85).
 
 #### OG-first display coverage
 

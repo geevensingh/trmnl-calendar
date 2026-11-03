@@ -24,9 +24,9 @@ Ordinary Full still runs every .NET test method and every Node file through the 
 
 Rollback is the isolated policy checkpoint or the explicit Exhaustive mode: existing test definitions and scenario files remain available. Revert selection, default/profile forwarding, evidence expectations and current documentation together; never weaken only the expected inventory. Leave component scheduling, caches, Git safeguards, protection and unrelated changes untouched. Human landing/publication and the coordinator's allocated genuine Full/performance samples remain separate pending gates.
 
-Workflow name **Full validation**, job ID **full** and literal job/check name **Full validation** are stable. Full remains one non-matrix job with one shared validation implementation and no job-level skip condition or dynamic metadata name. Configure that actual check-run context, produced by **GitHub Actions**, as required. Do not require a setup-step name, workflow-file path, concatenated display label or unrelated check with a similar name. A skipped/success substitute is not Full evidence. Changing the check identity requires a coordinated protection change.
+Workflow name **Full validation**, job ID **full** and literal job/check name **Full validation** are stable. Full is now the non-matrix, `always()` aggregate of the bounded execution below, using the same shared validator with no metadata-based successful skip or dynamic check name. Configure that actual check-run context, produced by **GitHub Actions**, as required. Do not require a setup-step name, workflow-file path, concatenated display label or unrelated check with a similar name. A skipped/success substitute is not Full evidence. Changing the check identity requires a coordinated protection change.
 
-Setup and Full execute in that same job with default failure propagation and a finite **60-minute timeout**. The former 45-minute cap cancelled run 40375647648 after the shared Full process had passed; 60 minutes provides headroom for observed setup/runner variability without reducing coverage. A failed action, setup command, missing prerequisite, blocked component or nonzero validation exits unsuccessfully. No `continue-on-error` or successful fallback permits an incomplete Full run to appear successful. Job-level concurrency uses one per-PR/ref group with `cancel-in-progress: true`: **title/body edits now cancel/supersede active Full just like head updates and base retargets**, even when content is unchanged. Historical exhaustive runs took roughly **40-45 minutes per admitted event**; that is neither a selected-policy measurement nor a guaranteed completion time. Use issue comments, not PR metadata edits, for acceptance/progress reporting. A dispatch run is diagnostic evidence, not a substitute for the required check on the PR revision.
+Setup and component execution run in each independent worker with default failure propagation and a finite **60-minute timeout**; planning and aggregation have separate finite bounds. The former serial 45-minute cap cancelled run 40375647648 after the shared Full process had passed; these bounds provide headroom for setup/runner variability without reducing coverage. A failed action, setup command, missing prerequisite, blocked component or nonzero validation exits unsuccessfully. No `continue-on-error` or successful fallback permits an incomplete Full run to appear successful. Workflow-level concurrency retains the per-PR/ref group with `cancel-in-progress: true`, covering planning, every worker and aggregation: **title/body edits supersede active Full just like head updates and base retargets**, even when content is unchanged. Historical exhaustive runs took roughly **40-45 minutes per admitted event**; that is neither a selected-policy measurement nor a guaranteed completion time. Use issue comments, not PR metadata edits, for acceptance/progress reporting. A dispatch run is diagnostic evidence, not a substitute for the required check on the PR revision.
 
 CI is validation, not landing. Humans still merge; no auto-merge, merge queue, reviewer-approval quota or permission for agents to advance `main` is introduced. Full remains available manually; Fast is optional early feedback, not a replacement required check. Contributors who skip local checks learn of failures after pushing instead of blocking a feature-branch backup on their local toolchain.
 
@@ -34,7 +34,7 @@ CI is validation, not landing. Humans still merge; no auto-merge, merge queue, r
 
 The additional job/check **Required validation** (`required`) depends on **this workflow execution's** `full` job and uses `always()` so unsuccessful or skipped dependencies cannot bypass its decision. `scripts\check-required-validation.mjs` accepts only literal `success` from `needs.full.result`. Full's existing preparation/setup/shared-validator commands and failure propagation remain in place; a blocked component makes the authoritative validator fail. Failure, cancellation, absence or an unexpected skip cannot become successful Required validation. A cancelled workflow may leave the gate cancelled rather than running; that is not success.
 
-For PRs, the gate also requires the successful JSON report emitted by `prepare-ci.mjs` in that same Full job. Head/base must match the independent event pins, evaluated commit/tree must be full object IDs, parents must match base/head, and the report must show a clean visible checkout and no preparation errors. After successful Full, the gate's separate checkout reconstructs the same pinned merge through the existing preparation interface, so its implementation includes base changes rather than assuming the head already contains newly introduced gate tooling. The accepted report records head/base/evaluated commit/tree and the literal `full` policy path. There is no lookup of previous green checks, mutable merge refs, or earlier artifacts. Dispatch still executes genuine Full on its selected pinned revision; it does not claim a classifiable PR diff. Local manual Full is unchanged.
+For PRs, the gate also requires the successful JSON report emitted by `prepare-ci.mjs` in this execution's planning job, forwarded by the successful Full aggregate. Head/base must match the independent event pins, evaluated commit/tree must be full object IDs, parents must match base/head, and the report must show a clean visible checkout and no preparation errors. Planning, every worker, aggregation and the gate independently reconstruct the same deterministic pinned merge through the existing preparation interface, so their implementations include base changes rather than assuming the head already contains newly introduced tooling. The accepted report records head/base/evaluated commit/tree and the literal `full` policy path. There is no lookup of previous green checks, mutable merge refs, or earlier artifacts. Dispatch still executes genuine Full on its selected pinned revision; it does not claim a classifiable PR diff. Local manual Full is unchanged.
 
 This is only the safe expansion checkpoint of [#76](https://github.com/geevensingh/trmnl-calendar/issues/76). **Full validation remains the required context; this implementation does not change protection or prove GitHub required-check eligibility.** All currently admitted events, including Markdown-only heads and title/body edits, still execute genuine Full under its selected coverage profile. Hosted coexistence and actual check eligibility remain evidence to collect under the owner's separate run/probe budget; public-process and disposable-Git tests are not a substitute. No dispatch or disposable probe is needed to implement this checkpoint.
 
@@ -47,6 +47,123 @@ Rollback before any separately approved protection migration: remove the additiv
 The local synthetic commit has the event base as its first parent and head as its second (one parent when the pins are identical), with deterministic identity/timestamps. Preparation verifies the recorded parents and merge tree, then the detached checkout's HEAD, index tree and clean state. Its JSON output records the exact `head_commit`, `base_commit`, `evaluated_commit`, `evaluated_tree` and actual `evaluated_parents`. All Git subprocesses have a 30-second bound and remove inherited `GIT_*` selectors/configuration. Normal on-disk system/global/repository configuration remains effective so status and checkout use the original checkout's line-ending normalization; disabling it can misclassify a clean Windows CRLF checkout as dirty. The bounded `checkout_state` booleans distinguish a nonempty status from hidden index flags without logging file contents, environment values or credentials. Checkout uses a command-local empty hooks directory; it neither executes nor changes installed hooks or on-disk Git configuration. It also uses `--no-overwrite-ignore`: a tracked incoming path colliding with an ignored foreign hook or other ignored file fails explicitly rather than overwriting that file. Only the disposable CI checkout and local Git objects change; no synthetic commit is pushed, and no token write permission or extra check implementation is introduced.
 
 The real disposable-Git/public-process regression starts with a stale advertised PR merge against the old base and an absent new-base sentinel, then verifies both submitted head content and the new-base sentinel after preparation, exact parents/tree, detached HEAD, unchanged named refs and repeatability. Further cases cover conflicts, incomplete history, invalid/missing pins, dirty/attached/hidden-index checkouts, ignored configured-hook collisions, native CRLF checkout under a synthetic on-disk global configuration (including rejection and preservation of real tracked edits), and byte-for-byte preservation of a foreign owner under inherited Git selectors. These tests join Full through its existing Node discovery. Dispatch remains diagnostic: it evaluates its selected revision without pretending to be a PR merge.
+
+### Bounded Full scheduling (#85)
+
+This checkpoint starts at `3c5c02e4f887262bc3549251958e47b9e8315cc1`, consuming
+the accepted serial component/failure contract and OgFirst policy. It does not implement
+the remaining admission, protection or final-combined sampling tickets in #76.
+The approved ceiling is **four isolated .NET execution jobs plus one complete Node
+execution job**, on standard `windows-2025` runners, with **two xUnit collections per
+.NET worker**. A separate 15-minute Plan job finishes before these five execution
+runners start; a separate 10-minute Full aggregate starts after they terminate. The
+five-runner ceiling concerns execution, not five additional controller runners running
+alongside the workload.
+
+`scripts\validate.ps1` owns all modes. Serial remains the complete ordinary local Full:
+eight components, unfiltered .NET suite and every Node file. Plan uses Fast prerequisites,
+format/build/syntax and an unfiltered pinned-xUnit discovery probe to materialize exact
+`(test_id, test_name, method, scenario)` cases, not historical totals or a CPU-derived
+shard count. `tests\validation-partitions.json` covers every discovered method once and
+distributes the complete catalogue among four named scenario wrappers. The discovery
+request includes a one-to-one bridge from each wrapper's actual adapter identity to
+the original canonical scenario identity. Dedicated view families, including all six
+lowercase-s raster rows, retain their existing identities and classification. New or
+unmapped cases fail planning instead of disappearing.
+
+Workers independently rebuild and rediscover the exact plan before execution. The
+same selected coverage policy expands all expected and intentionally omitted identities;
+only assigned successful assertion completions belong in each worker journal. Node
+remains one complete job with its real prerequisites/build/syntax/browser edges. Removing
+the serial Node-before-.NET policy edge is explicit in the plan; no other edge is removed.
+`tests\validation-partitions.runsettings` bounds Serial Full, each .NET worker and
+discovery to one test assembly and two conservative xUnit collection threads. Serial
+Full stays unfiltered: the cap is an explicit conservative application of the existing
+per-process resource bound, not a coverage selection or hidden launcher override.
+Historical uncapped serial samples remain historical; the fresh same-candidate serial
+reference uses this cap. Plan, worker and aggregate success are
+distinguished: only the successful Full aggregate certifies the complete workload.
+
+Public-process regressions exercise every worker ID through build, rediscovery,
+selected tests and evidence, plus Serial, Plan and missing-result Aggregate paths,
+using independently owned external-tool stubs rather than real rendering. Check-state
+locals must not shadow the public `Component` selector: PowerShell is case-insensitive
+and invoked check scriptblocks resolve caller-local variables dynamically. Missing
+results remain incomplete/failed; neither a successful build nor discovery probe is
+proof that a worker's assigned tests ran.
+
+The shared complete Node invocation explicitly uses `--test-concurrency=4` for
+Serial Full and Node Worker, without a name filter or file omission. This bounds
+top-level file scheduling, not child processes inside existing fixtures or execution
+runners. The coordinator selected four from measured controls, not apparent host CPU
+count or a new explicit owner choice. In the retained local complete-context diagnostic,
+default scheduling reproduced `spawnSync dotnet ETIMEDOUT` at 90 seconds; changing only
+file concurrency to four passed the exact same 483 identity multiset and all six real
+lowercase-s views in 68.366 seconds, retaining the 90-second deadline and assertion checks.
+The successful Node batch occupied about 7m22s; its failed default-scheduling comparison
+is not a successful Full speedup, stable percentile or hosted cost/reliability result.
+Independent rollback of this cap reverts the single argument, public-process expectation
+and these docs together, retaining complete inventory and all deadlines. It can restore
+the observed default-scheduling failure; never hide that result by skipping views or
+weakening evidence. Keep unrelated scheduling/resource/protection changes separate.
+
+Every execution has independently owned workspace, normal bin/obj layout, gems,
+framework, writable browser cache and artifact roots. Workspaces and generated paths
+must be physical, with linked outputs and inherited MSBuild output overrides rejected
+before work. Worker browser selection must be its own `.tools\playwright`; native
+`debug.log` is owned writable output, not a read-only shared dependency. Marked private
+TEMP/TMP/TMPDIR, SDK home, NuGet transient caches, Bundler and Azure configuration avoid
+process-state collisions. Native commands use a named input-environment policy, finite
+deadlines and Windows Job Objects: the tool cannot start before job assignment; timeout,
+owner death or exited launchers terminate owned descendants. Caller environment is
+restored and uncertain ownership fails cleanup rather than deleting foreign content.
+
+Private scratch is separate from the long report/launcher hierarchy:
+`.tools\run\<pid>-<sequence>` inside each physical worktree. The per-process sequence
+separates live scopes; an existing address fails rather than reusing it. The full
+random owner marker still controls cleanup, and reports keep their independent
+unique identities. Aggregation requires this owned scratch namespace, not arbitrary
+external TEMP. An empty bare `.git` boundary blocks upward discovery of the owning
+checkout from repository-less fixtures while still allowing repository-independent
+Git commands. It needs no inherited Git selectors or global configuration; nested
+fixtures still initialize their own working repositories.
+Known native consumers include Git object writes and incoming-object
+quarantine, nested alias fixtures, archive `mkdtemp`, and testhost `CreateProcess`;
+a passing Chromium path budget alone cannot establish their readiness. Alias
+regressions retain both distinct spellings, spaces, and all public fixture assertions
+without unnecessarily long descriptive directory labels.
+
+Plan/request and raw evidence transfers are single-run artifacts, not dependency caches.
+Each worker writes a bounded complete raw file inventory with byte lengths and SHA-256s.
+Full requires successful planning and **every actual matrix execution** (fail-fast is
+disabled), exactly the five named artifacts for this run/attempt, and independently
+reconstructs the plan from source plus the original discovery request. Its authoritative
+reader validates transfer bytes and decodes TRX, Node file/case events, rendering phases
+and selected/omitted/assertion identities afresh. Reconciliation checks content before
+and after, event/evaluated commits/tree, run/attempt, component contracts and nonoverlapping
+owned roots. Summary success alone, absent or extra artifacts, skipped/cancelled/failed
+jobs, incomplete theories and mismatched raw identities cannot pass Full or Required.
+The stable `full`/`required` checks and current PR triggers/protection remain unchanged.
+
+Compact evidence is retained for seven days; synthetic screenshots remain failure-only.
+Component time sums measure work, not workflow latency or billing. UTC component spans
+can include clock skew; complete hosted job timelines are needed for occupied runner
+minutes including setup, controllers and gates. Neither targeted protocol tests nor
+local readiness establishes genuine concurrent equivalence, reliability, under-15-minute
+success or the owner's 149.775 average-runner-minute ceiling. Every allocated native/
+hosted attempt, including failures and cancellations, must remain recorded; matched
+samples and causal limits are acceptance gates. Prior failed native attempts are retained,
+not recycled as successful runs. Local allocation must account for native mkdtemp path
+budgets and use fresh physical short roots and typed public parameter binding.
+
+Rollback scheduling independently by reverting this checkpoint's workflow, mode/partition/
+owned-process implementation, wrapper bridge, regressions and documentation together to
+the preceding complete serial flow at the fixed baseline. Preserve accepted OgFirst/
+Exhaustive policy, every current nonview/Git/raster assertion, dependency caches and all
+unrelated delivery tooling; never roll back only the expected inventory. No protection
+change, agent landing, old-lane cleanup or delivery-ticket closure is authorized here.
+Retain the explicit two-collection Serial Full bound when rolling back parallel
+scheduling; restoring historical uncapped execution would require its own decision.
 
 ## Runner provisioning and preserved coverage
 

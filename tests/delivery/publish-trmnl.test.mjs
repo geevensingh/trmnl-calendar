@@ -17,13 +17,12 @@ function nativeResult() {
   return {
     job_id: "synthetic-job", status: "complete", success: true,
     variables: {
-      schema_version: 2, state: "current", time_zone: "America/Los_Angeles",
+      schema_version: 3, state: "current", time_zone: "America/Los_Angeles",
       generated_at: timestamp, source_succeeded_at: timestamp,
       primary: {
         date: "2026-11-02", label: "Monday", eligible_total: 8,
         occurrences: { count: 8, sample: [{
           time_kind: "timed", id: "SYNTHETIC_PRIVATE_ID", title: "SYNTHETIC_PRIVATE_TITLE",
-          participation_expectation: "unknown",
           start_at: "2026-11-02T18:00:00Z", end_at: "2026-11-02T19:00:00Z"
         }], provider_metadata: "SYNTHETIC_PRIVATE_METADATA" }
       },
@@ -136,6 +135,7 @@ test("native failure, warnings, stale/error agendas, unsupported shapes and inva
     result => { result.variables.state = "stale"; result.variables.error = { code: "x", message: "private" }; },
     result => { result.variables.state = "error"; },
     result => { result.variables.schema_version = 1; },
+    result => { result.variables.schema_version = 2; },
     result => { result.variables.private_unknown_field = "private"; },
     result => { result.variables.primary.occurrences = { count: 8 }; },
     result => { result.variables.primary.occurrences.sample = []; },
@@ -144,7 +144,8 @@ test("native failure, warnings, stale/error agendas, unsupported shapes and inva
     result => { result.variables.primary.occurrences.count = "8"; },
     result => { result.variables.primary.occurrences.count = 0; },
     result => { result.variables.primary.occurrences.count = 9; },
-    result => { result.variables.primary.occurrences.sample[0].participation_expectation = "unsupported"; },
+    result => { result.variables.primary.occurrences.sample[0].participation_expectation = "unknown"; },
+    result => { result.variables.primary.occurrences.sample[0].participation_expectation = null; },
     result => { result.variables.primary.occurrences.sample[0].end_at = "private"; },
     result => { result.variables.secondary.occurrences.sample = [null]; },
     result => { result.variables.generated_at = "private"; },

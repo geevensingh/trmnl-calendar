@@ -406,13 +406,11 @@ public sealed partial class AgendaFunction
                         : start.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                     var id = Convert.ToHexStringLower(SHA256.HashData(
                         Encoding.UTF8.GetBytes($"{item.Uid}\n{key}")));
-                    // Known labels require accepted owner-authorized source evidence; this tracer stays Unknown-only.
-                    const ParticipationExpectation expectation = ParticipationExpectation.Unknown;
                     AgendaOccurrence occurrence = start.HasTime
                         ? new TimedOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
-                            new DateTimeOffset(start.AsUtc), new DateTimeOffset(end.AsUtc), expectation)
+                            new DateTimeOffset(start.AsUtc), new DateTimeOffset(end.AsUtc))
                         : new AllDayOccurrence(id, item.Summary ?? "(Untitled)", item.Location,
-                            DateOnly.FromDateTime(start.Value), DateOnly.FromDateTime(end.Value), expectation);
+                            DateOnly.FromDateTime(start.Value), DateOnly.FromDateTime(end.Value));
                     return (Occurrence: occurrence,
                         IsActive: item.IsActive && (!masters.TryGetValue(item.Uid!, out var master) || master.IsActive),
                         SourceTitle: item.Summary);
@@ -442,7 +440,7 @@ public sealed partial class AgendaFunction
             return Fail("source_invalid", "The calendar source could not be interpreted.");
         }
         occurrences = ApplyEmphasis(occurrences, now);
-        var result = new AgendaResult(2, AgendaState.Current, TimeZoneId, now, now,
+        var result = new AgendaResult(3, AgendaState.Current, TimeZoneId, now, now,
             SelectDay(primary, occurrences), SelectDay(secondary, occurrences), null);
         cancellationToken.ThrowIfCancellationRequested();
         return result;
@@ -579,7 +577,7 @@ public sealed partial class AgendaFunction
         var now = clock.GetUtcNow();
         var primary = NextWorkingDay(DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, AgendaTimeZone).DateTime));
         var secondary = NextWorkingDay(primary.AddDays(1));
-        return new AgendaResult(2, AgendaState.Error, TimeZoneId, now, sourceSucceededAt,
+        return new AgendaResult(3, AgendaState.Error, TimeZoneId, now, sourceSucceededAt,
             SelectDay(primary, []) with { EligibleTotal = null },
             SelectDay(secondary, []) with { EligibleTotal = null }, new AgendaError(code, message));
     }

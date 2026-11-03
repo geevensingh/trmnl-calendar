@@ -102,7 +102,7 @@ public sealed partial class AgendaHttpTests
     }
 
     [Fact]
-    public async Task Http_schema_two_mixed_occurrences_render_without_requiring_optional_emphasis()
+    public async Task Http_schema_three_mixed_occurrences_render_without_requiring_optional_emphasis()
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", CalendarWithEvents(
             "DTSTART;VALUE=DATE:20261019\nDTEND;VALUE=DATE:20261020\nSUMMARY:All-day planning",
@@ -123,7 +123,7 @@ public sealed partial class AgendaHttpTests
     }
 
     [Fact]
-    public async Task Http_schema_two_emphasis_and_participation_reach_strict_production_Liquid_while_schema_one_is_rejected()
+    public async Task Http_schema_three_is_label_free_with_emphasis_and_rejects_legacy_schemas()
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", CalendarWithEvents(
             "DTSTART:20261019T180000Z\nDTEND:20261019T190000Z\nSUMMARY:Current <meeting>"));
@@ -131,13 +131,14 @@ public sealed partial class AgendaHttpTests
         var html = DisplayTests.Render("full", current.RootElement);
         Assert.Contains("data-agenda-emphasis=\"in_progress\"", html);
         Assert.Contains("IN PROGRESS", html);
-        Assert.Contains("data-expectation=\"unknown\">Unknown</span>", html);
+        Assert.DoesNotContain("agenda-participation", html);
+        Assert.DoesNotContain("data-expectation", html);
         Assert.Contains("Current &lt;meeting&gt;", html);
         var ordinary = DisplayTests.CurrentAgenda();
-        Assert.Equal(2, ordinary["schema_version"]!.GetValue<int>());
+        Assert.Equal(3, ordinary["schema_version"]!.GetValue<int>());
         var ordinaryHtml = DisplayTests.Render("full", ordinary);
         Assert.Contains("Synthetic planning", ordinaryHtml);
-        Assert.Contains("data-expectation=\"likely\">Likely</span>", ordinaryHtml);
+        Assert.DoesNotContain("agenda-participation", ordinaryHtml);
         Assert.DoesNotContain("data-agenda-emphasis=", ordinaryHtml);
         Assert.DoesNotContain("IN PROGRESS", ordinaryHtml);
         ordinary["schema_version"] = 1;
@@ -147,25 +148,25 @@ public sealed partial class AgendaHttpTests
         invalid["schema_version"] = 1;
         Assert.Contains("Unsupported agenda schema",
             Assert.ThrowsAny<Exception>(() => DisplayTests.Render("full", invalid)).Message);
-        invalid["schema_version"] = 3;
+        invalid["schema_version"] = 2;
         Assert.Contains("Unsupported agenda schema",
             Assert.ThrowsAny<Exception>(() => DisplayTests.Render("full", invalid)).Message);
     }
 
     [Fact]
-    public async Task Http_agendas_explicitly_publish_schema_two_including_empty_and_error_results()
+    public async Task Http_agendas_explicitly_publish_schema_three_including_empty_and_error_results()
     {
         using var agenda = new AgendaHttp("2026-10-19T18:00:00Z", CalendarWithEvents(
             "DTSTART:20261019T180000Z\nDTEND:20261019T190000Z\nSUMMARY:Current meeting"));
         using var current = await agenda.Poll();
-        Assert.Equal(2, current.RootElement.GetProperty("schema_version").GetInt32());
+        Assert.Equal(3, current.RootElement.GetProperty("schema_version").GetInt32());
         Assert.Equal("in_progress", Emphasis(Assert.Single(PrimaryOccurrences(current))));
         using var empty = await agenda.PollOnly(
             """{"rules_json":"[{\"field\":\"title\",\"mode\":\"contains\",\"value\":\"meeting\"}]"}""");
-        Assert.Equal(2, empty.RootElement.GetProperty("schema_version").GetInt32());
+        Assert.Equal(3, empty.RootElement.GetProperty("schema_version").GetInt32());
         Assert.Empty(PrimaryOccurrences(empty));
         using var error = await agenda.PollOnly("{}");
-        Assert.Equal(2, error.RootElement.GetProperty("schema_version").GetInt32());
+        Assert.Equal(3, error.RootElement.GetProperty("schema_version").GetInt32());
         Assert.Equal("error", error.RootElement.GetProperty("state").GetString());
     }
 

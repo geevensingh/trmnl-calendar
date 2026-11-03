@@ -8,7 +8,7 @@ import { AgendaContractError, validateAgenda } from "../../scripts/agenda-contra
 
 const key = "SYNTHETIC_FUNCTION_SCOPED_KEY";
 const current = {
-  schema_version: 2,
+  schema_version: 3,
   state: "current",
   time_zone: "America/Los_Angeles",
   generated_at: "2026-10-19T18:00:00Z",
@@ -18,26 +18,44 @@ const current = {
   error: null
 };
 
-function agendaWithOccurrence(expectation = "unknown") {
+function agendaWithOccurrence() {
   const agenda = structuredClone(current);
   agenda.primary.eligible_total = 1;
   agenda.primary.occurrences = [{
     time_kind: "timed", id: "synthetic", title: "Synthetic event",
-    participation_expectation: expectation,
     start_at: "2026-10-19T19:00:00Z", end_at: "2026-10-19T20:00:00Z"
   }];
   return agenda;
 }
-test("agenda contract requires participation in schema 2 and permits independent timed emphasis", () => {
-  assert.equal(validateAgenda(structuredClone(current)).schema_version, 2);
+test("schema 3 is label-free and rejects legacy schemas and retired fields on both occurrence kinds", () => {
+  for (const time_kind of ["timed", "all_day"]) {
+    const agenda = agendaWithOccurrence();
+    const occurrence = agenda.primary.occurrences[0];
+    if (time_kind === "all_day") {
+      delete occurrence.start_at;
+      delete occurrence.end_at;
+      Object.assign(occurrence, { time_kind, start_date: "2026-10-19", end_date_exclusive: "2026-10-20" });
+    }
+    assert.equal(validateAgenda(agenda).schema_version, 3);
+    for (const schema_version of [1, 2, 4])
+      assert.throws(() => validateAgenda({ ...agenda, schema_version }), AgendaContractError);
+    for (const value of ["unknown", null, 1, "CONFIDENTIAL_RETIRED_FIELD"]) {
+      occurrence.participation_expectation = value;
+      assert.throws(() => validateAgenda(agenda), error =>
+        error instanceof AgendaContractError && !error.message.includes("CONFIDENTIAL"));
+    }
+  }
+});
+
+test("agenda contract permits independent timed emphasis", () => {
+  assert.equal(validateAgenda(structuredClone(current)).schema_version, 3);
   assert.throws(() => validateAgenda({ ...structuredClone(current), schema_version: 1 }), AgendaContractError);
   const ongoing = structuredClone(current);
-  ongoing.schema_version = 2;
   ongoing.primary.occurrences = [
-    { time_kind: "timed", id: "in-progress", title: "Current", participation_expectation: "definite",
+    { time_kind: "timed", id: "in-progress", title: "Current",
       start_at: "2026-10-19T17:00:00Z",
       end_at: "2026-10-19T19:00:00Z", emphasis: "in_progress" },
-    { time_kind: "all_day", id: "all-day", title: "Date-only", participation_expectation: "unknown",
+    { time_kind: "all_day", id: "all-day", title: "Date-only",
       start_date: "2026-10-19",
       end_date_exclusive: "2026-10-20" }
   ];
@@ -49,9 +67,8 @@ test("agenda contract requires participation in schema 2 and permits independent
   assert.throws(() => validateAgenda(legacy), AgendaContractError);
 
   const upcoming = structuredClone(current);
-  upcoming.schema_version = 2;
   upcoming.primary.occurrences = [
-    { time_kind: "timed", id: "upcoming", title: "Next", participation_expectation: "likely",
+    { time_kind: "timed", id: "upcoming", title: "Next",
       start_at: "2026-10-19T18:10:00Z",
       end_at: "2026-10-19T19:00:00Z", emphasis: "upcoming" }
   ];
@@ -227,7 +244,6 @@ test("unexpected current and stale states retain safe actual state without discl
     agenda.primary.eligible_total = 1;
     agenda.primary.occurrences = [{
       time_kind: "all_day", id: "CONFIDENTIAL_RECORD_ID", title: "CONFIDENTIAL_CALENDAR_TITLE",
-      participation_expectation: "unknown",
       location: "CONFIDENTIAL_LOCATION", start_date: "2026-10-19", end_date_exclusive: "2026-10-20"
     }];
     if (state === "stale") {
@@ -286,13 +302,15 @@ test("malformed or unknown first responses retain transport evidence but no unva
     ["invalid_polling_contract", [current]],
     ["invalid_polling_contract", { ...unavailable(), state: "private_calendar_state" }],
     ["invalid_polling_contract", { ...unavailable(), schema_version: 1 }],
-    ["invalid_polling_contract", { ...unavailable(), schema_version: 3 }],
+    ["invalid_polling_contract", { ...unavailable(), schema_version: 2 }],
+    ["invalid_polling_contract", { ...unavailable(), schema_version: 4 }],
     ["invalid_polling_contract", {
       ...agendaWithOccurrence(), primary: { ...agendaWithOccurrence().primary,
-        occurrences: [{ ...agendaWithOccurrence().primary.occurrences[0], participation_expectation: undefined }] }
+        occurrences: [{ ...agendaWithOccurrence().primary.occurrences[0], participation_expectation: null }] }
     }],
     ["invalid_polling_contract", {
-      ...agendaWithOccurrence("not-a-level"), primary: agendaWithOccurrence("not-a-level").primary
+      ...agendaWithOccurrence(), primary: { ...agendaWithOccurrence().primary,
+        occurrences: [{ ...agendaWithOccurrence().primary.occurrences[0], participation_expectation: "unknown" }] }
     }],
     ["invalid_polling_contract", { ...unavailable(), source_url: "CONFIDENTIAL_SOURCE_URL" }],
     ["invalid_polling_contract", { ...unavailable(), error: { code: { private: "CONFIDENTIAL" }, message: "CONFIDENTIAL" } }],
@@ -491,7 +509,6 @@ test("native single-URL combined polling data accepts 99,999 UTF-8 bytes and rej
   agenda.primary.eligible_total = 1;
   agenda.primary.occurrences = [{
     time_kind: "all_day", id: "synthetic", title: "", location: null,
-    participation_expectation: "unknown",
     start_date: "2026-10-19", end_date_exclusive: "2026-10-20"
   }];
   const overhead = Buffer.byteLength(JSON.stringify(agenda));

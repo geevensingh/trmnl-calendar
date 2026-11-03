@@ -2,7 +2,7 @@
 
 This is the participation-metadata shape and capability boundary of the **actual configured Outlook publication checked on 2026-11-02**. It is not a complete iCalendar schema, a guarantee about every Outlook publication, or the adapter's [HTTP/display contract](agenda-contract.md).
 
-**This is retained source evidence, not an active participation-classifier plan.** [#104](https://github.com/geevensingh/trmnl-calendar/issues/104) supersedes the earlier participation-label work and plans to retire the labels entirely, without replacing them with inferred attendance or availability labels. The existing production tracer still emits Unknown until that retirement is separately implemented. This document implements neither classification nor removal.
+**This is retained source evidence, not an active participation-classifier plan.** [#104](https://github.com/geevensingh/trmnl-calendar/issues/104) supersedes the earlier participation-label work. The [schema-3 agenda](agenda-contract.md#days-and-occurrences) retires the labels entirely, without replacing them with inferred attendance or availability labels. At this evidence checkpoint, the version-2 tracer emitted Unknown; that is historical behavior, not the current output contract. This document itself implements neither classification nor removal.
 
 These observations remain useful for understanding and diagnosing the publication. They do not establish physical presence, approachability, an available time slot, or a promise of availability to visitors. Further checks solely for the retired classifier are not prerequisites for #104.
 
@@ -76,7 +76,7 @@ The tested Free cases had consistent explicit Microsoft Free status together wit
 
 The inspected source did not supply the personal evidence sought by the retired Definite/Likely/Maybe classifier. Missing metadata must not become accepted or unanswered invitations, and a parser's default response is not explicitly supplied evidence. Subject text alone does not establish Follow state.
 
-The current tracer's Unknown value is not an error-recovery shortcut. Existing malformed-source, unsupported-calendar, storage, and configuration failures remain explicit errors. This note changes neither the current version-2 payload nor the coordinated contract transition required for #104.
+The historical version-2 tracer's Unknown value was not an error-recovery shortcut. Existing malformed-source, unsupported-calendar, storage, and configuration failures remain explicit errors in the label-free schema-3 agenda. These source observations do not change that output contract or introduce classification.
 
 The default title exclusion for `Following: ` remains a literal, editable exclusion preference. Its continued use does not assert that every matching title is genuinely followed, and source-capability findings do not change that exclusion.
 

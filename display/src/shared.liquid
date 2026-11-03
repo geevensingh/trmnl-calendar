@@ -1,3 +1,17 @@
+{% assign agenda_contract_compatible = false %}
+{% assign day_names = "primary,secondary" | split: "," %}
+{% if schema_version == 3 %}
+  {% assign agenda_contract_compatible = true %}
+  {% for day_name in day_names %}
+    {% assign day = primary %}
+    {% if day_name == "secondary" %}{% assign day = secondary %}{% endif %}
+    {% for occurrence in day.occurrences %}
+      {% if occurrence contains "participation_expectation" %}
+        {% assign agenda_contract_compatible = false %}
+      {% endif %}
+    {% endfor %}
+  {% endfor %}
+{% endif %}
 <style>
   .trmnl .agenda-view .layout.agenda {
     flex: 1; height: auto; min-height: 0; margin-bottom: 0;
@@ -27,8 +41,6 @@
   .agenda .agenda-event-heading {
     display: flex; align-items: baseline; gap: 8px; min-width: 0;
   }
-  .agenda .agenda-participation { flex: 0 0 auto; white-space: nowrap; }
-  .agenda .agenda-participation[data-expectation="definite"] { font-weight: bold; }
   .agenda .agenda-location {
     display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 16px; line-height: 1.4;
@@ -63,15 +75,19 @@
 </span>
 {% endcapture %}
 {% capture agenda_content %}
-<div class="layout layout--col layout--top agenda" data-agenda-state="{{ state | escape }}">
-  {% if state == "current" or state == "stale" %}
+<div class="layout layout--col layout--top agenda" data-agenda-state="{% if agenda_contract_compatible %}{{ state | escape }}{% else %}error{% endif %}">
+  {% if agenda_contract_compatible == false %}
+    <span class="title">Agenda unavailable</span>
+    <span class="label">Compatibility error</span>
+    <span class="description">The agenda contract is incompatible. Update the producer and display together.</span>
+    {{ agenda_source }}
+  {% elsif state == "current" or state == "stale" %}
     {% if state == "stale" %}
       <div class="agenda-warning" role="status">
         <span class="title">Stale agenda</span>
         {% if error %}<span class="label">{{ error.message | escape }}</span>{% endif %}
       </div>
     {% endif %}
-    {% assign day_names = "primary,secondary" | split: "," %}
     {% for day_name in day_names %}
       {% assign day = primary %}
       {% if day_name == "secondary" %}{% assign day = secondary %}{% endif %}
@@ -92,7 +108,7 @@
             <tbody>
               {% for occurrence in day.occurrences %}
                 {% assign occurrence_emphasis = nil %}
-                {% if schema_version == 2 and occurrence contains "emphasis" %}{% assign occurrence_emphasis = occurrence.emphasis %}{% endif %}
+                {% if schema_version == 3 and occurrence contains "emphasis" %}{% assign occurrence_emphasis = occurrence.emphasis %}{% endif %}
                 <tr hidden data-agenda-id="{{ occurrence.id | escape }}"{% if occurrence_emphasis %} class="agenda-emphasized" data-agenda-emphasis="{{ occurrence_emphasis | escape }}"{% endif %}>
                   <td class="agenda-time">
                     {% if occurrence.time_kind == "all_day" %}
@@ -106,13 +122,6 @@
                   <td>
                     <div class="agenda-event-heading">
                       <span class="title">{{ occurrence.title | escape }}</span>
-                      {% case occurrence.participation_expectation %}
-                        {% when "definite" %}<span class="label agenda-participation" data-expectation="definite">Definite</span>
-                        {% when "likely" %}<span class="label agenda-participation" data-expectation="likely">Likely</span>
-                        {% when "maybe" %}<span class="label agenda-participation" data-expectation="maybe">Maybe</span>
-                        {% when "unlikely" %}<span class="label agenda-participation" data-expectation="unlikely">Unlikely</span>
-                        {% when "unknown" %}<span class="label agenda-participation" data-expectation="unknown">Unknown</span>
-                      {% endcase %}
                     </div>
                     {% if occurrence_emphasis == "in_progress" %}
                       <span class="label agenda-status">IN PROGRESS</span>

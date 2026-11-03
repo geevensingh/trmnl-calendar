@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
+import { fixtureGit } from "./fixture-git.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -193,8 +194,7 @@ async function workbenchFixture(t) {
     ["-c", "user.name=Synthetic", "-c", "user.email=synthetic@invalid",
       "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Synthetic baseline"]
   ]) {
-    const result = spawnSync("git", args, { cwd: directory, env: environment, encoding: "utf8", timeout: 10_000 });
-    assert.equal(result.status, 0, result.stderr);
+    fixtureGit(args, { cwd: directory, env: environment });
   }
   const preload = join(directory, "external-ruby.mjs");
   await writeFile(preload, `

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import { isolatedGitEnvironment } from "../../scripts/git-environment.mjs";
+import { fixtureGit } from "./fixture-git.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -1400,14 +1401,12 @@ test("Fast emits bounded provenance and stage timings without claiming Full evid
 
 test("public reports bind exact event/evaluated identities and reject hidden working-tree identity", async t => {
   const fixture = await checkout(t);
-  const git = (...args) => {
-    const result = spawnSync("git", args, {
-      cwd: fixture.directory, encoding: "utf8", timeout: 10_000,
-      env: isolatedGitEnvironment({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(fixture.directory, "empty.gitconfig") })
-    });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
+  const git = (...args) => fixtureGit(args, {
+    cwd: fixture.directory,
+    env: isolatedGitEnvironment({
+      GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(fixture.directory, "empty.gitconfig")
+    })
+  });
   await writeFile(join(fixture.directory, ".gitignore"), "artifacts/\ncalls.jsonl\nenvironment.json\n");
   await writeFile(join(fixture.directory, "empty.gitconfig"), "");
   await writeFile(join(fixture.directory, "content.txt"), "synthetic evaluated input\n");

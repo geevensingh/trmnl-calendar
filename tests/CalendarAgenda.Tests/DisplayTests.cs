@@ -32,7 +32,7 @@ public sealed class DisplayTests
         await Assertions.Expect(page.GetByText("Friday, Oct 23", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Synthetic planning", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("Likely", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator(".agenda-participation, [data-expectation]")).ToHaveCountAsync(0);
         await Assertions.Expect(page.GetByText("11:00 AM - 12:00 PM", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Monday, Oct 26", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("0 of 3 events shown", new() { Exact = true })).ToBeVisibleAsync();
@@ -44,13 +44,64 @@ public sealed class DisplayTests
     }
 
     [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void Deployed_Liquid_shows_incompatible_schemas_without_agenda_events_or_counts(int schema)
+    {
+        var data = CurrentAgenda();
+        data["schema_version"] = schema;
+        data["primary"]!["occurrences"]![0]!["emphasis"] = "in_progress";
+        foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
+        {
+            var markup = RenderIncompatibleLiquid(data, placement);
+            Assert.DoesNotContain("Synthetic planning", markup);
+            Assert.Contains($"datetime=\"{data["source_succeeded_at"]!.GetValue<string>()}\"", markup);
+        }
+    }
+
+    [Theory]
+    [InlineData("primary", "timed", "unknown")]
+    [InlineData("primary", "all_day", "null")]
+    [InlineData("secondary", "timed", "unsupported")]
+    [InlineData("secondary", "all_day", "number")]
+    public void Deployed_Liquid_shows_retired_fields_as_incompatible_on_every_day_and_occurrence_kind(
+        string day, string timeKind, string valueKind)
+    {
+        var data = CurrentAgenda();
+        var occurrence = data["primary"]!["occurrences"]![0]!.DeepClone().AsObject();
+        if (timeKind == "all_day")
+        {
+            occurrence["time_kind"] = timeKind;
+            occurrence.Remove("start_at");
+            occurrence.Remove("end_at");
+            occurrence["start_date"] = data[day]!["date"]!.DeepClone();
+            occurrence["end_date_exclusive"] = "2026-10-27";
+        }
+        occurrence["participation_expectation"] = valueKind switch
+        {
+            "null" => null,
+            "number" => JsonValue.Create(1),
+            "unknown" => JsonValue.Create("unknown"),
+            _ => JsonValue.Create("CONFIDENTIAL_PARTICIPATION_MARKER")
+        };
+        data[day]!["occurrences"] = new JsonArray(occurrence);
+        data[day]!["eligible_total"] = 1;
+        foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
+        {
+            var markup = RenderIncompatibleLiquid(data, placement);
+            Assert.DoesNotContain("CONFIDENTIAL_PARTICIPATION_MARKER", markup);
+        }
+    }
+
+    [Theory]
     [InlineData("primary", "timed")]
     [InlineData("primary", "all_day")]
     [InlineData("secondary", "timed")]
     [InlineData("secondary", "all_day")]
-    public void Direct_renderer_rejects_missing_or_invalid_participation_on_every_occurrence(string day, string timeKind)
+    public void Direct_renderer_rejects_retired_participation_on_every_occurrence(string day, string timeKind)
     {
-        foreach (var invalid in new[] { "missing", "null", "unsupported", "number" })
+        foreach (var invalid in new[] { "unknown", "null", "unsupported", "number" })
         {
             var data = CurrentAgenda();
             var occurrence = data["primary"]!["occurrences"]![0]!.DeepClone().AsObject();
@@ -63,22 +114,20 @@ public sealed class DisplayTests
                 occurrence["start_date"] = data[day]!["date"]!.DeepClone();
                 occurrence["end_date_exclusive"] = "2026-10-27";
             }
-            if (invalid == "missing")
-                occurrence.Remove("participation_expectation");
-            else
-                occurrence["participation_expectation"] = invalid switch
-                {
-                    "null" => null,
-                    "number" => JsonValue.Create(1),
-                    _ => JsonValue.Create("CONFIDENTIAL_PARTICIPATION_MARKER")
-                };
+            occurrence["participation_expectation"] = invalid switch
+            {
+                "null" => null,
+                "number" => JsonValue.Create(1),
+                "unknown" => JsonValue.Create("unknown"),
+                _ => JsonValue.Create("CONFIDENTIAL_PARTICIPATION_MARKER")
+            };
             data[day]!["occurrences"] = new JsonArray(
                 data["primary"]!["occurrences"]![0]!.DeepClone(), occurrence);
             data[day]!["eligible_total"] = 2;
             foreach (var placement in new[] { "full", "half_horizontal", "half_vertical" })
             {
                 var error = Assert.ThrowsAny<Exception>(() => Render(placement, data));
-                Assert.Contains("Invalid participation expectation", error.Message);
+                Assert.Contains("Retired participation field", error.Message);
                 Assert.DoesNotContain("CONFIDENTIAL_PARTICIPATION_MARKER", error.Message);
             }
         }
@@ -435,10 +484,11 @@ public sealed class DisplayTests
                         await AdaptiveDisplayTests.VisibleInsideView(
                             preview.GetByText("Synthetic source meeting", new() { Exact = true }),
                             textMayBeTruncated: true);
-                        var participation = preview.Locator(".agenda-primary tbody tr")
-                            .Filter(new() { HasText = "Synthetic source meeting" }).Locator(".agenda-participation");
-                        await Assertions.Expect(participation).ToHaveTextAsync("Unknown");
-                        await AdaptiveDisplayTests.VisibleInsideView(participation);
+                        Assert.Equal(3, agenda["schema_version"]!.GetValue<int>());
+                        Assert.DoesNotContain("participation_expectation", agenda.ToJsonString());
+                        await Assertions.Expect(preview.Locator(".agenda-participation, [data-expectation]")).ToHaveCountAsync(0);
+                        Assert.DoesNotMatch(@"\b(Definite|Likely|Maybe|Unlikely|Unknown)\b",
+                            await preview.Locator(".agenda").InnerTextAsync());
                         foreach (var day in new[] { "primary", "secondary" })
                             await AdaptiveDisplayTests.VisibleInsideView(
                                 preview.GetByText(agenda[day]!["label"]!.GetValue<string>(), new() { Exact = true }));
@@ -489,6 +539,18 @@ public sealed class DisplayTests
         Assert.True(box.X >= screen.X && box.Y >= screen.Y
             && box.X + box.Width <= screen.X + screen.Width
             && box.Y + box.Height <= screen.Y + screen.Height, "Required content must fit inside the physical screen.");
+    }
+
+    private static string RenderIncompatibleLiquid(JsonObject data, string placement)
+    {
+        var markup = RunRuby(Path.Combine(Root, "tests", "render-liquid.rb"), data, placement);
+        Assert.Contains("data-agenda-state=\"error\"", markup);
+        Assert.Contains("Agenda unavailable", markup);
+        Assert.Contains("Compatibility error", markup);
+        Assert.DoesNotContain("<table", markup);
+        Assert.DoesNotContain("data-agenda-id=", markup);
+        Assert.DoesNotContain("class=\"label agenda-count\"", markup);
+        return markup;
     }
 
     internal static string Render(string mode, object variables, string device = "og",

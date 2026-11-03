@@ -49,7 +49,7 @@ public sealed partial class AgendaHttpTests
     }
 
     [Fact]
-    public async Task Recurring_overrides_remain_unknown_until_source_evidence_is_accepted()
+    public async Task Recurring_overrides_retain_titles_without_participation_fields()
     {
         var calendar = CalendarWithEvent(
             "DTSTART:20261019T190000Z\nDTEND:20261019T200000Z\nRRULE:FREQ=DAILY;COUNT=2\n"
@@ -70,8 +70,8 @@ public sealed partial class AgendaHttpTests
             .GetProperty("occurrences").EnumerateArray());
         var secondary = Assert.Single(result.RootElement.GetProperty("secondary")
             .GetProperty("occurrences").EnumerateArray());
-        Assert.Equal("unknown", primary.GetProperty("participation_expectation").GetString());
-        Assert.Equal("unknown", secondary.GetProperty("participation_expectation").GetString());
+        Assert.False(primary.TryGetProperty("participation_expectation", out _));
+        Assert.False(secondary.TryGetProperty("participation_expectation", out _));
         Assert.Equal("Changed occurrence", secondary.GetProperty("title").GetString());
         Assert.DoesNotContain("owner@example.invalid", result.RootElement.GetRawText(), StringComparison.OrdinalIgnoreCase);
     }

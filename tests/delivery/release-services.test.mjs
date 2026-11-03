@@ -64,7 +64,7 @@ test("release services publish unchanged retained bytes and propagate only scope
     return Response.json({ data: {
       job_id: "job", status: "complete", success: nativeSuccess,
       variables: {
-        schema_version: 2, state: "current", time_zone: "America/Los_Angeles",
+        schema_version: 3, state: "current", time_zone: "America/Los_Angeles",
         generated_at: timestamp, source_succeeded_at: timestamp, error: null,
         primary: { date: "2026-11-02", label: "Monday", eligible_total: 0, occurrences: { count: 0, sample: [] } },
         secondary: { date: "2026-11-03", label: "Tuesday", eligible_total: 0, occurrences: { count: 0, sample: [] } }

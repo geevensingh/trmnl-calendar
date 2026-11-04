@@ -123,16 +123,21 @@ public sealed class TypographyDisplayTests
                   return { text, x: box.x, y: box.y, width: box.width, height: box.height };
                 })
                 """);
-            var regions = glyphs.EnumerateArray().SelectMany(glyph =>
-                Enumerable.Range((int)Math.Floor(glyph.GetProperty("y").GetDouble()),
-                    (int)Math.Ceiling(glyph.GetProperty("y").GetDouble() + glyph.GetProperty("height").GetDouble())
-                    - (int)Math.Floor(glyph.GetProperty("y").GetDouble()))
+            var glyphRows = glyphs.EnumerateArray().Select(glyph =>
+            {
+                var y = glyph.GetProperty("y").GetDouble();
+                var firstRow = (int)Math.Floor(y);
+                var rowCount = (int)Math.Ceiling(y + glyph.GetProperty("height").GetDouble()) - firstRow;
+                return (glyph, firstRow, rowCount);
+            }).ToArray();
+            var regions = glyphRows.SelectMany(item =>
+                Enumerable.Range(item.firstRow, item.rowCount)
                     .Select(y => new
                     {
-                        text = glyph.GetProperty("text").GetString(),
-                        x = glyph.GetProperty("x").GetDouble(),
+                        text = item.glyph.GetProperty("text").GetString(),
+                        x = item.glyph.GetProperty("x").GetDouble(),
                         y,
-                        width = glyph.GetProperty("width").GetDouble(),
+                        width = item.glyph.GetProperty("width").GetDouble(),
                         height = 1
                     })).ToArray();
             using var raster = JsonDocument.Parse(DisplayTests.RunRuby(
@@ -145,18 +150,16 @@ public sealed class TypographyDisplayTests
             var offset = 0;
             var heights = new List<int>();
             var ink = new List<int>();
-            foreach (var glyph in glyphs.EnumerateArray())
+            foreach (var item in glyphRows)
             {
-                var count = (int)Math.Ceiling(glyph.GetProperty("y").GetDouble() + glyph.GetProperty("height").GetDouble())
-                    - (int)Math.Floor(glyph.GetProperty("y").GetDouble());
-                var strips = raster.RootElement.EnumerateArray().Skip(offset).Take(count).ToArray();
+                var strips = raster.RootElement.EnumerateArray().Skip(offset).Take(item.rowCount).ToArray();
                 var painted = strips.Select((strip, index) => (strip, index))
                     .Where(item => item.strip.GetProperty("different_pixels").GetInt32() > 0)
                     .Select(item => item.index).ToArray();
                 Assert.NotEmpty(painted);
                 heights.Add(painted[^1] - painted[0] + 1);
                 ink.Add(strips.Sum(strip => strip.GetProperty("dark_pixels").GetInt32()));
-                offset += count;
+                offset += item.rowCount;
             }
             Assert.InRange(Math.Abs(heights[0] - heights[1]), 0, Math.Ceiling(view.Density));
             Assert.True(ink[0] > ink[1], $"Matching bold title glyphs must paint stronger strokes: {ink[0]} / {ink[1]}.");
@@ -246,19 +249,9 @@ public sealed class TypographyDisplayTests
     private static async Task<string> EffectiveFont(IPage page, ILocator role)
     {
         await role.EvaluateAsync("node => node.setAttribute('data-typography-probe', '')");
-        var session = await page.Context.NewCDPSessionAsync(page);
         try
         {
-            await session.SendAsync("DOM.enable");
-            await session.SendAsync("CSS.enable");
-            var document = (await session.SendAsync("DOM.getDocument"))!.Value;
-            var node = (await session.SendAsync("DOM.querySelector", new Dictionary<string, object>
-            {
-                ["nodeId"] = document.GetProperty("root").GetProperty("nodeId").GetInt32(),
-                ["selector"] = "[data-typography-probe]"
-            }))!.Value.GetProperty("nodeId").GetInt32();
-            var fonts = (await session.SendAsync("CSS.getPlatformFontsForNode",
-                new Dictionary<string, object> { ["nodeId"] = node }))!.Value.GetProperty("fonts");
+            var fonts = Assert.Single(await DisplayTests.PlatformFonts(page, "[data-typography-probe]"));
             var font = Assert.Single(fonts.EnumerateArray());
             Assert.True(font.GetProperty("isCustomFont").GetBoolean());
             Assert.True(font.GetProperty("glyphCount").GetInt32() > 0);
@@ -266,7 +259,6 @@ public sealed class TypographyDisplayTests
         }
         finally
         {
-            await session.DetachAsync();
             await role.EvaluateAsync("node => node.removeAttribute('data-typography-probe')");
         }
     }

@@ -158,34 +158,18 @@ internal static class NativeReferenceCapture
                     regions
                 }));
             var roles = new List<JsonObject>();
-            var session = await page.Context.NewCDPSessionAsync(page);
-            try
+            var platformFonts = await DisplayTests.PlatformFonts(page, Roles);
+            Assert.Equal(regions.GetArrayLength(), platformFonts.Length);
+            for (var index = 0; index < platformFonts.Length; index++)
             {
-                await session.SendAsync("DOM.enable");
-                await session.SendAsync("CSS.enable");
-                var document = (await session.SendAsync("DOM.getDocument"))!.Value;
-                var nodes = (await session.SendAsync("DOM.querySelectorAll", new Dictionary<string, object>
-                {
-                    ["nodeId"] = document.GetProperty("root").GetProperty("nodeId").GetInt32(),
-                    ["selector"] = Roles
-                }))!.Value.GetProperty("nodeIds");
-                Assert.Equal(regions.GetArrayLength(), nodes.GetArrayLength());
-                for (var index = 0; index < nodes.GetArrayLength(); index++)
-                {
-                    var fonts = (await session.SendAsync("CSS.getPlatformFontsForNode",
-                        new Dictionary<string, object> { ["nodeId"] = nodes[index].GetInt32() }))!.Value.GetProperty("fonts");
-                    Assert.NotEmpty(fonts.EnumerateArray());
-                    Assert.Contains(fonts.EnumerateArray(), font => font.GetProperty("isCustomFont").GetBoolean()
-                        && font.GetProperty("glyphCount").GetInt32() > 0);
-                    var role = JsonNode.Parse(regions[index].GetRawText())!.AsObject();
-                    role["effective_fonts"] = JsonNode.Parse(fonts.GetRawText());
-                    role["raster"] = JsonNode.Parse(raster.RootElement[index].GetRawText());
-                    roles.Add(role);
-                }
-            }
-            finally
-            {
-                await session.DetachAsync();
+                var fonts = platformFonts[index];
+                Assert.NotEmpty(fonts.EnumerateArray());
+                Assert.Contains(fonts.EnumerateArray(), font => font.GetProperty("isCustomFont").GetBoolean()
+                    && font.GetProperty("glyphCount").GetInt32() > 0);
+                var role = JsonNode.Parse(regions[index].GetRawText())!.AsObject();
+                role["effective_fonts"] = JsonNode.Parse(fonts.GetRawText());
+                role["raster"] = JsonNode.Parse(raster.RootElement[index].GetRawText());
+                roles.Add(role);
             }
             var readiness = await page.EvaluateAsync<JsonElement>("""
                 ({ framework: window.TRMNL_PLUGINS_READY === true,

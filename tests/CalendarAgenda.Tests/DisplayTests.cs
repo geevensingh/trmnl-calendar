@@ -541,6 +541,31 @@ public sealed class DisplayTests
             && box.Y + box.Height <= screen.Y + screen.Height, "Required content must fit inside the physical screen.");
     }
 
+    internal static async Task<JsonElement[]> PlatformFonts(IPage page, string selector)
+    {
+        var session = await page.Context.NewCDPSessionAsync(page);
+        try
+        {
+            await session.SendAsync("DOM.enable");
+            await session.SendAsync("CSS.enable");
+            var document = (await session.SendAsync("DOM.getDocument"))!.Value;
+            var nodes = (await session.SendAsync("DOM.querySelectorAll", new Dictionary<string, object>
+            {
+                ["nodeId"] = document.GetProperty("root").GetProperty("nodeId").GetInt32(),
+                ["selector"] = selector
+            }))!.Value.GetProperty("nodeIds");
+            var fonts = new List<JsonElement>();
+            foreach (var node in nodes.EnumerateArray())
+                fonts.Add((await session.SendAsync("CSS.getPlatformFontsForNode",
+                    new Dictionary<string, object> { ["nodeId"] = node.GetInt32() }))!.Value.GetProperty("fonts").Clone());
+            return fonts.ToArray();
+        }
+        finally
+        {
+            await session.DetachAsync();
+        }
+    }
+
     private static string RenderIncompatibleLiquid(JsonObject data, string placement)
     {
         var markup = RunRuby(Path.Combine(Root, "tests", "render-liquid.rb"), data, placement);

@@ -153,7 +153,10 @@ The single Node worker executes every Node file and retains its real build, synt
 browser dependencies. Both shared Serial Full and Node Worker explicitly cap the
 top-level Node test-file runner at four concurrent files; this is not a four-child-process
 or execution-runner cap. Every file and assertion still runs, including all six
-lowercase-s raster views under the unchanged 90-second process deadline.
+lowercase-s raster views under an owner-approved 180-second outer test-process
+budget. Only this six-view family uses that budget; other focused harness runs
+retain 90 seconds and discovery retains 30 seconds. Renderer and production
+timeouts and all six native assertions are unchanged.
 Parallel scheduling removes only the serial Node-before-.NET
 feedback edge; the other dependencies remain.
 

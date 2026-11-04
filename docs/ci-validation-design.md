@@ -130,6 +130,17 @@ and these docs together, retaining complete inventory and all deadlines. It can 
 the observed default-scheduling failure; never hide that result by skipping views or
 weakening evidence. Keep unrelated scheduling/resource/protection changes separate.
 
+After hosted run `41759540997` attempt 2 exhausted that six-view family's outer
+90-second process budget with five view passes and the sixth uncertified, the
+owner explicitly approved 180 seconds for this family only. Its `runHarness`
+call selects that outer budget; other focused harness calls retain 90 seconds
+and discovery retains 30 seconds. All six exact native/raster assertions,
+renderer and production deadlines, file concurrency and worker boundaries are
+unchanged. Failed harness output records the selected budget, elapsed time,
+spawn error/code and signal without overriding the failure. Both failed hosted
+attempts remain evidence; this scoped test-budget exception is not a speedup or
+a claim about the unproved resource factor behind the duration.
+
 Every execution has independently owned workspace, normal bin/obj layout, gems,
 framework, writable browser cache and artifact roots. Workspaces and generated paths
 must be physical, with linked outputs and inherited MSBuild output overrides rejected

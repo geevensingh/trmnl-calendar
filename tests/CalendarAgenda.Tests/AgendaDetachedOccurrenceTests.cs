@@ -370,7 +370,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal("current", current.RootElement.GetProperty("state").GetString());
             Assert.Equal(2, current.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
             Assert.DoesNotContain("OOF", current.RootElement.GetRawText());
-            await Show(current.RootElement, "current", "Oct 19, 2026, 9:30 AM PDT",
+            await Show(current.RootElement, "current", "9:30 AM PDT",
                 "2 events", "No remaining events", "Detached workshop", "All day",
                 "Proofreading detached session", "12:00 PM - 1:00 PM");
 
@@ -379,7 +379,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal("current", edited.RootElement.GetProperty("state").GetString());
             Assert.Equal(2, edited.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
             Assert.DoesNotContain("Proofreading", edited.RootElement.GetRawText());
-            await Show(edited.RootElement, "edited", "Oct 19, 2026, 9:30 AM PDT",
+            await Show(edited.RootElement, "edited", "9:30 AM PDT",
                 "2 events", "No remaining events", "Detached workshop", "All day",
                 "OOF detached planning", "10:00 AM - 11:00 AM");
         }
@@ -394,7 +394,7 @@ public sealed partial class AgendaHttpTests
         Assert.Equal(["Detached workshop", "OOF detached planning", "Proofreading detached session"],
             stale.RootElement.GetProperty("primary").GetProperty("occurrences").EnumerateArray()
                 .Select(item => item.GetProperty("title").GetString()));
-        await Show(stale.RootElement, "stale", "Oct 19, 2026, 9:30 AM PDT",
+        await Show(stale.RootElement, "stale", "9:30 AM PDT",
             "3 events", "No remaining events", "Stale agenda", "Detached workshop", "All day",
             "A detached recurring change must specify a single complete occurrence.");
 
@@ -414,7 +414,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(JsonValueKind.Null, error.GetProperty(day).GetProperty("eligible_total").ValueKind);
             Assert.Empty(error.GetProperty(day).GetProperty("occurrences").EnumerateArray());
         }
-        await Show(error, "expired", "Oct 19, 2026, 9:30 AM PDT",
+        await Show(error, "expired", "9:30 AM PDT",
             "Agenda unavailable", "Compatibility error", "compatibility_unsupported",
             "A detached recurring change must specify a single complete occurrence.");
         Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());

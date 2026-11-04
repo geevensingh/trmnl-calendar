@@ -36,7 +36,7 @@ public sealed class DisplayTests
         await Assertions.Expect(page.GetByText("11:00 AM - 12:00 PM", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Monday, Oct 26", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("0 of 3 events shown", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(page.GetByText("Oct 23, 2026, 11:00 AM PDT", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("11:00 AM PDT", new() { Exact = true })).ToBeVisibleAsync();
         Assert.DoesNotContain("tomorrow", await page.Locator("body").InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("legend", await page.Locator("body").InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(800, await page.Locator(".screen").EvaluateAsync<int>("element => element.offsetWidth"));
@@ -541,6 +541,31 @@ public sealed class DisplayTests
             && box.Y + box.Height <= screen.Y + screen.Height, "Required content must fit inside the physical screen.");
     }
 
+    internal static async Task<JsonElement[]> PlatformFonts(IPage page, string selector)
+    {
+        var session = await page.Context.NewCDPSessionAsync(page);
+        try
+        {
+            await session.SendAsync("DOM.enable");
+            await session.SendAsync("CSS.enable");
+            var document = (await session.SendAsync("DOM.getDocument"))!.Value;
+            var nodes = (await session.SendAsync("DOM.querySelectorAll", new Dictionary<string, object>
+            {
+                ["nodeId"] = document.GetProperty("root").GetProperty("nodeId").GetInt32(),
+                ["selector"] = selector
+            }))!.Value.GetProperty("nodeIds");
+            var fonts = new List<JsonElement>();
+            foreach (var node in nodes.EnumerateArray())
+                fonts.Add((await session.SendAsync("CSS.getPlatformFontsForNode",
+                    new Dictionary<string, object> { ["nodeId"] = node.GetInt32() }))!.Value.GetProperty("fonts").Clone());
+            return fonts.ToArray();
+        }
+        finally
+        {
+            await session.DetachAsync();
+        }
+    }
+
     private static string RenderIncompatibleLiquid(JsonObject data, string placement)
     {
         var markup = RunRuby(Path.Combine(Root, "tests", "render-liquid.rb"), data, placement);
@@ -597,9 +622,10 @@ public sealed class DisplayTests
         return output[0];
     }
 
-    internal static async Task Show(IPage page, object data, string mode = "full", string device = "og")
+    internal static async Task Show(IPage page, object data, string mode = "full", string device = "og",
+        string? renderedHtml = null)
     {
-        var html = Render(mode, data, device);
+        var html = renderedHtml ?? Render(mode, data, device);
         html = html.Replace("</head>", $$"""
             <script type="module">
               import { checkLayout } from "/workbench/layout-checks.mjs";

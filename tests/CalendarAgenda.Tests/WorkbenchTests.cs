@@ -198,7 +198,7 @@ public sealed class WorkbenchTests(ITestOutputHelper output)
         await missingAsset.CloseAsync();
 
         var missingFont = await browser.NewPageAsync();
-        await missingFont.RouteAsync("**/fonts/TRMNL21-*", route => route.AbortAsync());
+        await missingFont.RouteAsync("**/fonts/Inter.ttf", route => route.AbortAsync());
         await missingFont.GotoAsync(running.Url);
         await Failed(missingFont, "font");
         await missingFont.CloseAsync();

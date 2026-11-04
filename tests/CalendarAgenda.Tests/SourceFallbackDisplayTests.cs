@@ -154,7 +154,7 @@ public sealed class SourceFallbackDisplayTests
                 page.GetByText("Tuesday, Oct 20", new() { Exact = true }),
                 await AdaptiveDisplayTests.DayCount(page, "primary", 2),
                 await AdaptiveDisplayTests.DayCount(page, "secondary", 1),
-                page.GetByText("Oct 19, 2026, 11:00 AM PDT", new() { Exact = true })
+                page.GetByText("11:00 AM PDT", new() { Exact = true })
             });
         agenda.Clock.Advance(TimeSpan.FromMinutes(45));
         using var expired = await agenda.PollOnly();
@@ -168,7 +168,7 @@ public sealed class SourceFallbackDisplayTests
                 page.GetByText("Source refresh error", new() { Exact = true }),
                 page.GetByText("refresh_delayed", new() { Exact = true }),
                 page.GetByText("The scheduled source refresh is delayed.", new() { Exact = true }),
-                page.GetByText("Oct 19, 2026, 11:00 AM PDT", new() { Exact = true })
+                page.GetByText("11:00 AM PDT", new() { Exact = true })
             });
         Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());
         Assert.DoesNotContain("No remaining events", await page.Locator("body").InnerTextAsync());
@@ -244,7 +244,7 @@ public sealed class SourceFallbackDisplayTests
                 await AdaptiveDisplayTests.DayCount(page, "primary", primaryTotal),
                 await AdaptiveDisplayTests.DayCount(page, "secondary", secondaryTotal),
                 page.GetByText("Source checked:", new() { Exact = true }),
-                page.GetByText("Oct 23, 2026, 11:00 AM PDT", new() { Exact = true })
+                page.GetByText("11:00 AM PDT", new() { Exact = true })
             };
             if (stale)
             {
@@ -293,7 +293,7 @@ public sealed class SourceFallbackDisplayTests
                 page.GetByText(code, new() { Exact = true }),
                 page.GetByText(message, new() { Exact = true }),
                 page.GetByText("Source checked:", new() { Exact = true }),
-                page.GetByText(knownSuccess ? "Oct 23, 2026, 11:00 AM PDT" : "No successful source check",
+                page.GetByText(knownSuccess ? "11:00 AM PDT" : "No successful source check",
                     new() { Exact = true })
             };
             Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());

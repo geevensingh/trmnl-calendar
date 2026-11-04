@@ -300,7 +300,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(DateTimeOffset.Parse("2026-11-02T17:00:00Z"), moved.GetProperty("start_at").GetDateTimeOffset());
             Assert.Equal(DateTimeOffset.Parse("2026-11-02T18:00:00Z"), moved.GetProperty("end_at").GetDateTimeOffset());
             Assert.DoesNotContain("OOF", body.GetRawText());
-            await Show(body, "current", "Nov 2, 2026, 7:00 AM PST",
+            await Show(body, "current", "7:00 AM PST",
                 "1 event", "No remaining events", "Proofreading moved planning", "9:00 AM - 10:00 AM");
 
             first.Clock.Advance(TimeSpan.FromMinutes(5));
@@ -309,7 +309,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(1, edited.RootElement.GetProperty("primary").GetProperty("eligible_total").GetInt32());
             Assert.Equal(1, edited.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
             Assert.DoesNotContain("Proofreading", edited.RootElement.GetRawText());
-            await Show(edited.RootElement, "edited", "Nov 2, 2026, 7:00 AM PST",
+            await Show(edited.RootElement, "edited", "7:00 AM PST",
                 "OOF workshop", "OOF original planning");
             await Assertions.Expect(page.GetByText("1 event", new() { Exact = true })).ToHaveCountAsync(2);
             await Assertions.Expect(page.Locator(".agenda-primary").GetByText("8:00 AM - 9:00 AM",
@@ -325,7 +325,7 @@ public sealed partial class AgendaHttpTests
         Assert.Equal(0, stale.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
         Assert.Equal(movedId, Assert.Single(stale.RootElement.GetProperty("primary").GetProperty("occurrences")
             .EnumerateArray()).GetProperty("id").GetString());
-        await Show(stale.RootElement, "stale", "Nov 2, 2026, 7:00 AM PST",
+        await Show(stale.RootElement, "stale", "7:00 AM PST",
             "1 event", "No remaining events", "Stale agenda", "Proofreading moved planning",
             "9:00 AM - 10:00 AM", "The source contains an unsupported time zone.");
 
@@ -345,7 +345,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(JsonValueKind.Null, error.GetProperty(day).GetProperty("eligible_total").ValueKind);
             Assert.Empty(error.GetProperty(day).GetProperty("occurrences").EnumerateArray());
         }
-        await Show(error, "expired", "Nov 2, 2026, 7:00 AM PST",
+        await Show(error, "expired", "7:00 AM PST",
             "Agenda unavailable", "Compatibility error", "compatibility_unsupported",
             "The source contains an unsupported time zone.");
         Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());

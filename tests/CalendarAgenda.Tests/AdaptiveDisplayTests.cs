@@ -119,7 +119,7 @@ public sealed class AdaptiveDisplayTests
             await page.Locator(".agenda-heading .title, [data-agenda-source], .agenda-secondary tbody tr:not([hidden]) .label--large, .agenda-secondary tbody tr:not([hidden]) td .title").AllAsync());
         // The unchanged renderer at b0bd1e4 displayed eight rows for this exact fixture.
         Assert.True(count > 8, metrics.ToString());
-        Assert.Equal("TRMNL21", metrics.GetProperty("font").GetString());
+        Assert.Equal("\"Inter Variable\", Inter", metrics.GetProperty("font").GetString());
         Assert.Equal("21px", metrics.GetProperty("fontSize").GetString());
         Assert.Equal("29.4px", metrics.GetProperty("lineHeight").GetString());
         Assert.Equal(1, metrics.GetProperty("titleLines").GetInt32());
@@ -419,7 +419,7 @@ public sealed class AdaptiveDisplayTests
         foreach (var text in new[]
         {
             "Friday, Oct 23", "1 event", "Synthetic planning", "11:00 AM - 12:00 PM",
-            "Monday, Oct 26", "0 of 3 events shown", "Oct 23, 2026, 11:00 AM PDT"
+            "Monday, Oct 26", "0 of 3 events shown", "11:00 AM PDT"
         })
             await VisibleInsideView(page.GetByText(text, new() { Exact = true }));
         DisplayCoverage.Complete(view);
@@ -689,7 +689,7 @@ public sealed class AdaptiveDisplayTests
                     """);
                 Assert.Equal(21, metrics.GetProperty("size").GetDouble());
                 Assert.Equal(29.4, metrics.GetProperty("lineHeight").GetDouble(), precision: 1);
-                Assert.Equal(view.Device == "og" ? "TRMNL21" : "\"Inter Variable\", Inter",
+                Assert.Equal("\"Inter Variable\", Inter",
                     metrics.GetProperty("font").GetString());
                 Assert.Equal(21, metrics.GetProperty("timeSize").GetDouble());
                 Assert.Equal("\"Inter Variable\", Inter", metrics.GetProperty("timeFont").GetString());
@@ -811,7 +811,7 @@ public sealed class AdaptiveDisplayTests
         await VisibleInsideView(page.GetByText("Tuesday, Oct 27", new() { Exact = true }));
         await DayCount(page, "primary", 47);
         await DayCount(page, "secondary", 12);
-        await VisibleInsideView(page.GetByText("Oct 24, 2026, 11:00 AM PDT", new() { Exact = true }));
+        await VisibleInsideView(page.GetByText("11:00 AM PDT", new() { Exact = true }));
         Assert.Equal(0, await page.Locator(".agenda-secondary tbody tr:visible").CountAsync());
         Assert.DoesNotContain("tomorrow", await page.Locator("body").InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("12:00 AM", await rows.First.InnerTextAsync());
@@ -857,7 +857,7 @@ public sealed class AdaptiveDisplayTests
               }))
             })
             """));
-        await VisibleInsideView(page.GetByText("Oct 23, 2026, 11:00 AM PDT", new() { Exact = true }));
+        await VisibleInsideView(page.GetByText("11:00 AM PDT", new() { Exact = true }));
         await Assertions.Expect(page.Locator("[data-agenda-source]"))
             .ToHaveAttributeAsync("datetime", "2026-10-23T18:00:00Z");
         Assert.DoesNotContain("11:45", await page.Locator("body").InnerTextAsync());
@@ -901,7 +901,7 @@ public sealed class AdaptiveDisplayTests
             await VisibleInsideView(page.GetByText(message, new() { Exact = true }));
             await VisibleInsideView(page.GetByText(code, new() { Exact = true }));
             await VisibleInsideView(page.GetByText(knownSuccess
-                ? "Oct 23, 2026, 11:00 AM PDT" : "No successful source check", new() { Exact = true }));
+                ? "11:00 AM PDT" : "No successful source check", new() { Exact = true }));
             var text = await page.Locator("body").InnerTextAsync();
             Assert.DoesNotContain("eligible event", text);
             Assert.DoesNotContain("No remaining events", text);

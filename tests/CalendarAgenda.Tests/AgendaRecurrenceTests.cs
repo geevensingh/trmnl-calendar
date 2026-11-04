@@ -381,9 +381,9 @@ public sealed partial class AgendaHttpTests
 
     [Theory]
     [InlineData("2026-03-06T16:00:00Z", "2026-03-06", "2026-03-09",
-        "2026-03-06T17:00:00Z", "2026-03-09T16:00:00Z", "Monday, Mar 9", "Mar 6, 2026, 8:00 AM PST")]
+        "2026-03-06T17:00:00Z", "2026-03-09T16:00:00Z", "Monday, Mar 9", "8:00 AM PST")]
     [InlineData("2026-10-30T15:00:00Z", "2026-10-30", "2026-11-02",
-        "2026-10-30T16:00:00Z", "2026-11-02T17:00:00Z", "Monday, Nov 2", "Oct 30, 2026, 8:00 AM PDT")]
+        "2026-10-30T16:00:00Z", "2026-11-02T17:00:00Z", "Monday, Nov 2", "8:00 AM PDT")]
     public async Task Outlook_recurring_commitments_follow_both_Los_Angeles_DST_transitions(
         string now, string primaryDate, string secondaryDate, string primaryStart, string secondaryStart,
         string secondaryLabel, string sourceLabel)

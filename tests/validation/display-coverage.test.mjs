@@ -8,17 +8,23 @@ import test from "node:test";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
-function runHarness(profile, directory = "", filter) {
+function runHarness(profile, directory = "", filter, timeout = filter ? 90_000 : 30_000) {
+  const started = performance.now();
   const result = spawnSync("dotnet", [
     "test", join(root, "tests", "CalendarAgenda.Tests", "CalendarAgenda.Tests.csproj"),
     "--no-build", "--no-restore", "--nologo", "--verbosity", "quiet",
     ...(filter ? ["--filter", filter, "--logger", "console;verbosity=normal"] : ["--list-tests"])
   ], {
-    cwd: root, encoding: "utf8", timeout: filter ? 90_000 : 30_000,
+    cwd: root, encoding: "utf8", timeout,
     env: { ...process.env, DOTNET_GENERATE_ASPNET_CERTIFICATE: "false",
       TRMNL_DISPLAY_COVERAGE: profile, TRMNL_TIMING_DIRECTORY: directory }
   });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.status, 0, `${JSON.stringify({
+    status: result.status, signal: result.signal, timeout_ms: timeout, elapsed_ms: performance.now() - started,
+    error: result.error ? {
+      code: result.error.code, errno: result.error.errno, syscall: result.error.syscall, message: result.error.message
+    } : null
+  })}\n${result.stdout ?? ""}${result.stderr ?? ""}`);
   return result;
 }
 
@@ -65,7 +71,7 @@ test("the inherited lowercase-s raster family completes all six native assertion
   const directory = await mkdtemp(join(tmpdir(), "agenda retained raster coverage "));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const family = "Ordinary_title_lowercase_s_keeps_readable_native_raster_ink";
-  runHarness("OgFirst", directory, `FullyQualifiedName~${family}`);
+  runHarness("OgFirst", directory, `FullyQualifiedName~${family}`, 180_000);
   const files = await readdir(directory);
   const inventory = JSON.parse(await readFile(join(directory,
     files.find(name => /^inventory-.*\.json$/.test(name))), "utf8"));

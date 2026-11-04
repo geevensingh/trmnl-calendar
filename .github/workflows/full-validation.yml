@@ -8,25 +8,98 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ format('full-validation-{0}', github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  AZURE_BICEP_CHECK_VERSION: 'false'
+  PR_HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+  PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+  DISPLAY_COVERAGE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && 'Exhaustive' || 'OgFirst' }}
+
 jobs:
-  full:
-    name: Full validation
+  plan:
+    name: Plan complete Full
     outputs:
       preparation: ${{ steps.prepare.outputs.revision }}
-    concurrency:
-      group: ${{ format('full-validation-{0}', github.event.pull_request.number || github.ref) }}
-      cancel-in-progress: true
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the event-pinned head or dispatch revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Prepare and verify the event-pinned PR merge
+        id: prepare
+        if: github.event_name == 'pull_request'
+        run: |
+          $revision = node .\scripts\prepare-ci.mjs --head-commit "$env:PR_HEAD_COMMIT" --base-commit "$env:PR_BASE_COMMIT"
+          if ($LASTEXITCODE -ne 0) { throw 'Event-pinned PR preparation failed.' }
+          $revision
+          "revision=$revision" >> $env:GITHUB_OUTPUT
+
+      - name: Set up the selected .NET SDK and host runtime
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          dotnet-version: 8.0.x
+
+      - name: Restore the independent planning harness
+        run: |
+          dotnet restore .\tests\CalendarAgenda.Tests\CalendarAgenda.Tests.csproj --nologo --verbosity quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Planning harness restore failed.' }
+
+      - name: Bind the complete inventory to this revision and run
+        id: inventory
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Fast -Execution Plan -DisplayCoverage "$env:DISPLAY_COVERAGE_PROFILE"
+
+      - name: Transfer the immutable execution plan and discovery request
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.inventory.outputs.report_directory }}/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Retain planning failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-plan-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/validation/
+          retention-days: 7
+          if-no-files-found: warn
+
+  execute:
+    name: Full component (${{ matrix.component }})
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        component: [d1, d2, d3, d4, node]
     runs-on: windows-2025
     timeout-minutes: 60
     defaults:
       run:
         shell: pwsh
     env:
-      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
-      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
-      AZURE_BICEP_CHECK_VERSION: 'false'
-      PR_HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-      PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.tools\playwright
+      VALIDATION_COMPONENT: ${{ matrix.component }}
     steps:
       - name: Check out the event-pinned head or dispatch revision
         uses: actions/checkout@v6
@@ -51,6 +124,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Event-pinned PR preparation failed.' }
           $revision
           "revision=$revision" >> $env:GITHUB_OUTPUT
+
+      - name: Download this execution's immutable plan
+        uses: actions/download-artifact@v4
+        with:
+          name: validation-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/incoming-plan
 
       - name: Set up the selected .NET SDK and host runtime
         uses: actions/setup-dotnet@v5
@@ -165,18 +244,27 @@ jobs:
           key: ${{ steps.cache_plan.outputs.framework_key }}
           path: ${{ steps.cache_plan.outputs.framework_paths }}
 
-      - name: Run the shared Full validation
+      - name: Run the assigned complete component through the shared validator
+        id: worker
         env:
           TRMNL_GEMS_CACHE_STATE: ${{ steps.cache_evidence.outputs.gems_state }}
           TRMNL_FRAMEWORK_CACHE_STATE: ${{ steps.cache_evidence.outputs.framework_state }}
-          DISPLAY_COVERAGE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && 'Exhaustive' || 'OgFirst' }}
-        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full -DisplayCoverage "$env:DISPLAY_COVERAGE_PROFILE"
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File .\scripts\validate.ps1 -Scope Full -Execution Worker -Component "$env:VALIDATION_COMPONENT" -ExecutionPlan .\artifacts\incoming-plan\execution-plan.json -DisplayCoverage "$env:DISPLAY_COVERAGE_PROFILE"
+
+      - name: Transfer this component's complete raw evidence
+        if: always() && steps.worker.outputs.report_directory != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-component-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.worker.outputs.report_directory }}/
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Retain compact timing and test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: validation-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          name: validation-timings-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/validation/
           retention-days: 7
           if-no-files-found: warn
@@ -185,10 +273,111 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: validation-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          name: validation-screenshots-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*.png
           retention-days: 7
           if-no-files-found: ignore
+
+  full:
+    name: Full validation
+    needs: [plan, execute]
+    if: ${{ always() }}
+    outputs:
+      preparation: ${{ needs.plan.outputs.preparation }}
+    runs-on: windows-2025
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the event-pinned head or dispatch revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Prepare the same pinned revision for aggregation
+        if: github.event_name == 'pull_request'
+        run: |
+          node .\scripts\prepare-ci.mjs --head-commit "$env:PR_HEAD_COMMIT" --base-commit "$env:PR_BASE_COMMIT"
+          if ($LASTEXITCODE -ne 0) { throw 'Aggregate pinned preparation failed.' }
+
+      - name: Download this execution's immutable plan
+        if: ${{ always() }}
+        uses: actions/download-artifact@v4
+        with:
+          name: validation-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/incoming-plan
+
+      - name: Download each expected component without merging identities
+        if: ${{ always() }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: validation-component-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/incoming-components
+          merge-multiple: false
+
+      - name: Reconcile complete raw evidence as genuine Full
+        if: ${{ always() }}
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          EXECUTION_RESULT: ${{ needs.execute.result }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force artifacts\validation | Out-Null
+          [ordered]@{
+            plan = $env:PLAN_RESULT
+            execution_matrix = $env:EXECUTION_RESULT
+            individual_job_results = if ($env:EXECUTION_RESULT -ceq 'success') {
+              'All five actual matrix executions succeeded.'
+            } else {
+              'Unavailable from a failed matrix; never inferred from successful summary claims.'
+            }
+          } | ConvertTo-Json | Set-Content artifacts\validation\execution-jobs.json
+          if ($env:PLAN_RESULT -cne 'success') {
+            throw 'Genuine Full requires this execution''s successful complete plan; available failure evidence is retained.'
+          }
+          $incoming = Join-Path $PWD 'artifacts\incoming-components'
+          $reports = Join-Path $PWD 'artifacts\component-reports'
+          if (Test-Path -LiteralPath $reports) { throw 'Aggregate destination already exists.' }
+          New-Item -ItemType Directory -Path $reports | Out-Null
+          $ids = @('d1', 'd2', 'd3', 'd4', 'node')
+          $entries = @(Get-ChildItem -LiteralPath $incoming -Force)
+          $expected = @($ids | ForEach-Object { "validation-component-$_-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" })
+          if ($entries.Count -ne 5 -or @(Compare-Object @($entries.Name) $expected -CaseSensitive).Count) {
+            throw 'Downloaded component artifacts are missing or foreign.'
+          }
+          $jobs = [ordered]@{}
+          foreach ($id in $ids) {
+            $source = Join-Path $incoming "validation-component-$id-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+            $summary = Get-Content -LiteralPath (Join-Path $source 'summary.json') -Raw | ConvertFrom-Json
+            if ($summary.execution.component -cne $id) { throw 'Transferred component identity mismatch.' }
+            $directory = Join-Path $reports "$id\component-transferred"
+            New-Item -ItemType Directory -Path (Split-Path $directory -Parent) | Out-Null
+            Move-Item -LiteralPath $source -Destination $directory
+            $jobs[$id] = if ($env:EXECUTION_RESULT -ceq 'success') { 'success' } else { 'unavailable' }
+          }
+          $results = $jobs | ConvertTo-Json -Compress
+          & .\scripts\validate.ps1 -Scope Full -Execution Aggregate -ExecutionPlan .\artifacts\incoming-plan\execution-plan.json -ReportsDirectory $reports -JobResults $results -DisplayCoverage "$env:DISPLAY_COVERAGE_PROFILE"
+          if ($LASTEXITCODE -ne 0) { throw 'Complete Full raw aggregation failed.' }
+
+      - name: Retain aggregate and transferred raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/validation/
+            artifacts/incoming-plan/
+            artifacts/component-reports/
+          retention-days: 7
+          if-no-files-found: warn
 
   required:
     name: Required validation

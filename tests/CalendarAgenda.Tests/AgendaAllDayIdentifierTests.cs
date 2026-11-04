@@ -339,7 +339,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal("2026-10-20", moved.GetProperty("start_date").GetString());
             Assert.Equal("2026-10-21", moved.GetProperty("end_date_exclusive").GetString());
             Assert.DoesNotContain("OOF", body.GetRawText());
-            await Show(body, "current", "Oct 19, 2026, 11:00 AM PDT", 1, 1);
+            await Show(body, "current", "11:00 AM PDT", 1, 1);
             await Assertions.Expect(page.GetByText("Proofreading moved workshop", new() { Exact = true })).ToBeVisibleAsync();
 
             first.Clock.Advance(TimeSpan.FromMinutes(5));
@@ -349,7 +349,7 @@ public sealed partial class AgendaHttpTests
             Assert.Equal(0, edited.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
             Assert.Contains("OOF reservation", edited.RootElement.GetRawText());
             Assert.DoesNotContain("Proofreading", edited.RootElement.GetRawText());
-            await Show(edited.RootElement, "edited", "Oct 19, 2026, 11:00 AM PDT", 2, 0);
+            await Show(edited.RootElement, "edited", "11:00 AM PDT", 2, 0);
             await Assertions.Expect(page.GetByText("OOF reservation", new() { Exact = true })).ToBeVisibleAsync();
         }
 
@@ -363,7 +363,7 @@ public sealed partial class AgendaHttpTests
         Assert.Equal(1, stale.RootElement.GetProperty("secondary").GetProperty("eligible_total").GetInt32());
         Assert.Equal(movedId, Assert.Single(stale.RootElement.GetProperty("secondary").GetProperty("occurrences")
             .EnumerateArray()).GetProperty("id").GetString());
-        await Show(stale.RootElement, "stale", "Oct 19, 2026, 11:00 AM PDT", 1, 1);
+        await Show(stale.RootElement, "stale", "11:00 AM PDT", 1, 1);
         await Assertions.Expect(page.GetByText("Stale agenda", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Proofreading moved workshop", new() { Exact = true })).ToBeVisibleAsync();
 
@@ -389,7 +389,7 @@ public sealed partial class AgendaHttpTests
         await AdaptiveDisplayTests.NativeBounds(page, view);
         await AdaptiveDisplayTests.VisibleInk(page, "midnight-all-day-og-full-expired", view,
             new[] { "Agenda unavailable", "Compatibility error", "compatibility_unsupported",
-                "A recurring change uses a different identifier date type.", "Oct 19, 2026, 11:00 AM PDT" }
+                "A recurring change uses a different identifier date type.", "11:00 AM PDT" }
                 .Select(text => page.GetByText(text, new() { Exact = true })));
         Assert.DoesNotContain("eligible event", await page.Locator("body").InnerTextAsync());
 

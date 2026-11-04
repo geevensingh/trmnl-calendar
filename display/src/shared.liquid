@@ -19,10 +19,16 @@
   }
   .agenda .agenda-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; width: 100%; flex-shrink: 0; }
   .agenda .agenda-day-label { display: flex; align-items: baseline; gap: 8px; min-width: 0; max-width: 100%; white-space: nowrap; }
-  .agenda .agenda-day-label > .title { flex-shrink: 0; }
+  .agenda .agenda-day-label > .title {
+    --title-font-weight: 700;
+    flex-shrink: 0; font-weight: 700; font-variation-settings: "wght" 700;
+  }
+  .agenda .agenda-day-label > .label {
+    font-family: "Inter Variable", Inter; font-weight: 400; font-variation-settings: "wght" 400;
+  }
   .agenda .agenda-count { white-space: normal; }
   .agenda .agenda-warning { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; flex-shrink: 0; }
-  .agenda .title { font-size: 21px; line-height: 1.4; }
+  .agenda .title { font-family: "Inter Variable", Inter; font-size: 21px; line-height: 1.4; }
   .agenda .label { line-height: 1.4; }
   .agenda .description { line-height: 1.4; overflow-wrap: anywhere; }
   .agenda > .title, .agenda > .label, .agenda > .description { flex-shrink: 0; }
@@ -34,6 +40,7 @@
   .agenda .agenda-day td .title {
     --title-font-weight: 700;
     font-weight: var(--title-font-weight);
+    font-variation-settings: "wght" var(--title-font-weight);
     display: block; flex: 1 1 auto; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
@@ -46,6 +53,9 @@
     font-size: 16px; line-height: 1.4;
   }
   .agenda .agenda-time { width: 230px; white-space: nowrap; }
+  .agenda .agenda-day tr:not(.agenda-emphasized) .agenda-time .label {
+    font-weight: 400; font-variation-settings: "wght" 400;
+  }
   .agenda .agenda-day tr.agenda-emphasized td {
     padding: 4px 8px; background-color: #000; color: #fff;
   }
@@ -59,6 +69,7 @@
   .agenda .agenda-source {
     display: flex; flex-wrap: wrap; justify-content: flex-end; column-gap: 4px;
     flex-shrink: 0; white-space: nowrap; font-size: 16px; line-height: 1.4;
+    font-family: "Inter Variable", Inter; font-weight: 400; font-variation-settings: "wght" 400;
   }
   .agenda-view[data-agenda-compact] .agenda-heading { flex-direction: column; gap: 0; }
   .agenda-view[data-agenda-compact] .agenda-source { align-self: flex-end; }
@@ -75,7 +86,7 @@
 </span>
 {% endcapture %}
 {% capture agenda_content %}
-<div class="layout layout--col layout--top agenda" data-agenda-state="{% if agenda_contract_compatible %}{{ state | escape }}{% else %}error{% endif %}">
+<div class="layout layout--col layout--top agenda" data-agenda-generated="{{ generated_at | escape }}" data-agenda-state="{% if agenda_contract_compatible %}{{ state | escape }}{% else %}error{% endif %}">
   {% if agenda_contract_compatible == false %}
     <span class="title">Agenda unavailable</span>
     <span class="label">Compatibility error</span>
@@ -163,10 +174,16 @@
     }
     const source = view.querySelector("[data-agenda-source]");
     if (source && source.dateTime) {
+      const sourceDate = new Date(source.dateTime);
+      const localDate = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Los_Angeles", year: "numeric", month: "numeric", day: "numeric"
+      });
+      const sameDate = localDate.format(sourceDate) === localDate.format(new Date(agenda.dataset.agendaGenerated));
       source.textContent = new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/Los_Angeles", month: "short", day: "numeric", year: "numeric",
+        timeZone: "America/Los_Angeles",
+        ...(sameDate ? {} : { month: "short", day: "numeric", year: "numeric" }),
         hour: "numeric", minute: "2-digit", hour12: true, timeZoneName: "short"
-      }).format(new Date(source.dateTime));
+      }).format(sourceDate);
     }
     const fit = () => {
       view.toggleAttribute("data-agenda-compact", view.clientWidth < 600);

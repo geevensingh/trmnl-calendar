@@ -86,6 +86,37 @@ The isolated capture does not alter ordinary workbench use or supported layouts.
 Use `.\scripts\validate.ps1 -Scope Full -DisplayCoverage Exhaustive` for the
 complete retained native family; this focused OG workflow is not that proof.
 
+## Typography candidate comparison
+
+The #116 candidate reuses the installed Inter Variable font for date/count and
+ordinary title/time roles. Ordinary rows retain their initial 21px size and
+single-line end ellipsis; titles are bold (OG 700, existing X semibold 600) and
+times normal 400. Dates are bold 700 with smaller normal-weight counts on the
+same typographic baseline, not aligned by lowest ink pixels. Source metadata
+keeps 16px and its placement, using normal-weight Inter rather than arbitrary
+shrinking. Inverse cards retain larger bold titles and bold time/status.
+
+Compare effective custom-font glyph identities, readiness-complete PNGs, and
+the five same-input layout records rather than CSS family/weight declarations
+alone. `TypographyDisplayTests` additionally observes actual Chromium fonts,
+header baseline markers and identical title/time glyphs ("All day" and
+"11:00 AM") in native screenshots across all six layouts. Horizontal raster
+strips from the existing PNG inspector measure painted glyph height and dark
+stroke counts. These controlled same-glyph measurements are distinct from
+whole-string ink totals and from a claim about physical-panel crispness.
+The existing lowercase-s and ellipsis raster thresholds remain required.
+
+Record before/after displayed/eligible totals, displayed IDs, admitted optional
+locations and truncated titles for each same-input scenario. A shorter
+same-date source label or wider Inter title can change room/truncation without
+changing eligibility or admission priorities. The reference is `generated_at`
+in Los Angeles, not the browser clock or primary working day: same-date
+source checks show time/timezone; all different-date checks include the year.
+Keep missing/stale/error provenance visible. Pin candidate captures to the full
+accepted presentation commit while retaining the initial input commit above.
+Native implementation readiness does not satisfy downstream #117 physical
+appearance acceptance, human landing or publication.
+
 ## Owner-controlled separate synthetic test plugin
 
 These are instructions, **not authorization for an agent to perform account,

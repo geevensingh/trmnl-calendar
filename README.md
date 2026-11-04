@@ -250,6 +250,11 @@ The shared version-controlled JSON catalogue in `display\scenarios` supplies the
 
 ## Local agenda UI workbench
 
+For immutable OG Full PNGs and matched synthetic test-plugin preparation, use
+the [native reference capture workflow](docs/native-reference-captures.md).
+These readiness-complete, native-sized references are distinct from scaled
+workbench convenience previews and from physical-device appearance acceptance.
+
 **Readiness first:** Review the [local prerequisites](#local-prerequisites) and [display setup](#setup-once-per-worktree) before choosing a preview approach, and check the available native tools and worktree-local assets. Keep missing prerequisites explicit. This navigation route does not authorize installations/repairs, new worktrees, commits, or production-template changes; existing task scope and permission requirements still apply.
 
 **Illustrative, sketch-only fallback:** When native tooling is unavailable or inappropriate for a quick layout question, label any mockup as a sketch and state the missing prerequisites or reason for using it. Its fonts, geometry, scaling, or event counts are not evidence of production native fitting, capacity, or capture readiness.

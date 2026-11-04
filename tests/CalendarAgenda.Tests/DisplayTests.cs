@@ -597,9 +597,10 @@ public sealed class DisplayTests
         return output[0];
     }
 
-    internal static async Task Show(IPage page, object data, string mode = "full", string device = "og")
+    internal static async Task Show(IPage page, object data, string mode = "full", string device = "og",
+        string? renderedHtml = null)
     {
-        var html = Render(mode, data, device);
+        var html = renderedHtml ?? Render(mode, data, device);
         html = html.Replace("</head>", $$"""
             <script type="module">
               import { checkLayout } from "/workbench/layout-checks.mjs";

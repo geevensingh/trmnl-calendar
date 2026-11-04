@@ -49,9 +49,26 @@ function contains(parent, child) {
   return child === parent || child.startsWith(`${parent}\\`);
 }
 
-function validateIsolation(isolation) {
+function validateIsolation(isolation, context) {
   requireCondition(isolation && typeof isolation.host_id === "string" &&
     /^[A-Za-z0-9._-]{1,128}$/.test(isolation.host_id), "execution_host_identity_required");
+  const environment = isolation.execution_environment;
+  requireCondition(environment && ["physical-host", "github-hosted"].includes(environment.kind),
+    "execution_environment_identity_required");
+  let host = JSON.stringify(["physical-host", isolation.host_id.toLowerCase()]);
+  if (environment.kind === "github-hosted") {
+    requireCondition(same(Object.keys(environment).sort(), ["kind", "run_attempt", "run_id", "runner_name"]) &&
+      typeof environment.runner_name === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$/.test(environment.runner_name) &&
+      environment.runner_name.trim() === environment.runner_name &&
+      /^[1-9]\d{0,31}$/.test(environment.run_id) && /^[1-9]\d{0,31}$/.test(environment.run_attempt) &&
+      environment.run_id === context.run_id && environment.run_attempt === context.run_attempt,
+    "execution_environment_context_mismatch");
+    host = JSON.stringify(["github-hosted", environment.run_id, environment.run_attempt,
+      environment.runner_name.toLowerCase()]);
+  } else {
+    requireCondition(same(Object.keys(environment), ["kind"]), "execution_environment_identity_required");
+  }
   const workspace = windowsPath(isolation.workspace_root);
   requireCondition(workspace.length > 2, "workspace_drive_root_forbidden");
   const artifacts = windowsPath(isolation.artifact_root);
@@ -67,7 +84,7 @@ function validateIsolation(isolation) {
   requireCondition(Array.isArray(isolation.build_roots) &&
     same(isolation.build_roots.map(windowsPath).sort(), expectedBuildRoots.sort()),
   "independent_normal_build_layout_required");
-  return { host: isolation.host_id.toLowerCase(), workspace };
+  return { host, workspace };
 }
 
 export function createExecutionPlan(partitions, coverage, serial, context, nodeFiles) {
@@ -250,7 +267,7 @@ export function reconcileExecution(plan, reports, jobResults) {
         Array.isArray(component.blocked_by) && component.blocked_by.length === 0 &&
         (component.evidence_outcome === null || component.evidence_outcome === "success")),
     "component_contract_or_outcome_incomplete");
-    const own = validateIsolation(report.execution.isolation);
+    const own = validateIsolation(report.execution.isolation, plan.context);
     requireCondition(isolation.every(other => other.host !== own.host ||
       (!contains(other.workspace, own.workspace) && !contains(own.workspace, other.workspace))),
     "execution_workspaces_overlap");

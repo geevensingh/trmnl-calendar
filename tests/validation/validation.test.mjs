@@ -437,6 +437,7 @@ exit 0
             'TEMP', 'TMP', 'TMPDIR', 'DOTNET_CLI_HOME', 'DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER',
             'MSBUILDDISABLENODEREUSE', 'UseSharedCompilation', 'DOTNET_CLI_TELEMETRY_OPTOUT', 'DOTNET_NOLOGO',
             'DOTNET_ADD_GLOBAL_TOOLS_TO_PATH',
+            'RUNNER_ENVIRONMENT', 'RUNNER_NAME', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
             'NUGET_HTTP_CACHE_PATH', 'NUGET_PLUGINS_CACHE_PATH', 'NUGET_SCRATCH', 'AZURE_CONFIG_DIR',
             'AZURE_BICEP_USE_BINARY_FROM_PATH', 'AZURE_EXTENSION_USE_DYNAMIC_INSTALL',
             'GeneratedMSBuildEditorConfigFile', 'DOTNET_EnableEventPipe', 'DOTNET_EventPipeOutputPath')
@@ -486,6 +487,7 @@ public class ExternalToolFixture {
             "DOTNET_CLI_HOME", "DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER", "MSBUILDDISABLENODEREUSE",
             "UseSharedCompilation", "DOTNET_CLI_TELEMETRY_OPTOUT", "DOTNET_NOLOGO",
             "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH",
+            "RUNNER_ENVIRONMENT", "RUNNER_NAME", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
             "NUGET_HTTP_CACHE_PATH", "NUGET_PLUGINS_CACHE_PATH", "NUGET_SCRATCH", "BUNDLE_USER_HOME",
             "BUNDLE_USER_CACHE", "AZURE_CONFIG_DIR", "AZURE_BICEP_USE_BINARY_FROM_PATH",
             "AZURE_EXTENSION_USE_DYNAMIC_INSTALL", "PATH", "GeneratedMSBuildEditorConfigFile",
@@ -620,6 +622,7 @@ Add-Type -Path (Join-Path $Directory 'host.cs') -OutputAssembly (Join-Path $Dire
       VALIDATION_SELECTION: JSON.stringify(selection),
       ...(owned ? { PLAYWRIGHT_BROWSERS_PATH: join(directory, ".tools", "playwright"),
         GITHUB_RUN_ID: "", GITHUB_RUN_ATTEMPT: "", GITHUB_OUTPUT: "", PR_HEAD_COMMIT: "", PR_BASE_COMMIT: "",
+        RUNNER_ENVIRONMENT: "", RUNNER_NAME: "",
         GITHUB_SHA: "", GITHUB_REF: "", GITHUB_HEAD_REF: "", GITHUB_BASE_REF: "",
         GITHUB_WORKSPACE: "", GITHUB_EVENT_NAME: "", GITHUB_EVENT_PATH: "" } : {}),
       VALIDATION_ENVIRONMENT: join(directory, "environment.json"), ...environment
@@ -679,11 +682,14 @@ Add-Type -Path (Join-Path $Directory 'host.cs') -OutputAssembly (Join-Path $Dire
 
 test("owned public fixture planning is local even when its caller carries hosted run metadata", async t => {
   const fixture = await checkout(t, { owned: true });
-  const names = ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "PR_HEAD_COMMIT", "PR_BASE_COMMIT", "GITHUB_OUTPUT"];
+  const names = ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "PR_HEAD_COMMIT", "PR_BASE_COMMIT", "GITHUB_OUTPUT",
+    "RUNNER_ENVIRONMENT", "RUNNER_NAME"];
   const before = Object.fromEntries(names.map(name => [name, process.env[name]]));
   try {
     process.env.GITHUB_RUN_ID = "41563631726";
     process.env.GITHUB_RUN_ATTEMPT = "1";
+    process.env.RUNNER_ENVIRONMENT = "github-hosted";
+    process.env.RUNNER_NAME = "GitHubActions1000023469";
     process.env.PR_HEAD_COMMIT = "a648e579ab88df2f04d2333f8308c6e1b922105d";
     process.env.PR_BASE_COMMIT = "0c64e6d03f3fce6f43c0fdd460a9b0ffa3530680";
     delete process.env.GITHUB_OUTPUT;
@@ -846,6 +852,111 @@ test("public Worker classifies identity-complete failed TRX as known failure rat
   assert.equal(report.components.find(item => item.id === "dotnet").evidence_outcome, "failure");
   assert.equal(report.components.find(item => item.id === "dotnet").outcome, "failure");
   assert.ok(!report.unavailable.includes("complete .NET TRX results"));
+});
+
+test("public hosted modes bind runner allocations before tools and aggregate identical physical path spellings", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const hosted = {
+    RUNNER_ENVIRONMENT: "github-hosted", RUNNER_NAME: "GitHubActions1000023468",
+    GITHUB_RUN_ID: "41902107179", GITHUB_RUN_ATTEMPT: "1", VALIDATION_TIMEOUT_MS: "60000"
+  };
+  const planned = fixture.run("Fast", hosted, { Execution: "Plan" });
+  assert.equal(planned.status, 0, processEvidence(planned));
+  const planPath = join(fixture.reportDirectory(), "execution-plan.json");
+  const environment = runner_name => ({
+    kind: "github-hosted", run_id: "41902107179", run_attempt: "1", runner_name
+  });
+  assert.deepEqual((await fixture.report()).execution.isolation.execution_environment,
+    environment(hosted.RUNNER_NAME));
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+  const incoming = join(fixture.directory, "artifacts", "hosted-components");
+  await mkdir(incoming);
+  const original = {};
+  const ids = ["d1", "d2", "d3", "d4", "node"];
+  for (const [index, id] of ids.entries()) {
+    const runner = `GitHubActions${1000023469 + index}`;
+    const worker = fixture.run("Full", { ...hosted, RUNNER_NAME: runner }, {
+      Execution: "Worker", Component: id, ExecutionPlan: planPath
+    });
+    assert.equal(worker.status, 0, processEvidence(worker));
+    const report = await fixture.report();
+    assert.deepEqual(report.execution.isolation.execution_environment, environment(runner));
+    assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+    assert.equal(report.execution.isolation.workspace_root, fixture.directory);
+    const destination = join(incoming, id, fixture.reportDirectory().split(/[\\/]/).at(-1));
+    await mkdir(dirname(destination), { recursive: true });
+    await cp(fixture.reportDirectory(), destination, { recursive: true });
+    original[id] = destination;
+  }
+  const jobs = JSON.stringify(Object.fromEntries(ids.map(id => [id, "success"])));
+  const aggregate = fixture.run("Full", hosted, {
+    Execution: "Aggregate", ExecutionPlan: planPath, ReportsDirectory: incoming, JobResults: jobs
+  });
+  assert.equal(aggregate.status, 0, processEvidence(aggregate));
+  const combined = await fixture.report();
+  assert.equal(combined.outcome, "passed");
+  assert.equal(combined.evidence.status, "complete");
+  assert.deepEqual(combined.execution.controller_isolation.execution_environment,
+    environment(hosted.RUNNER_NAME));
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+  assert.equal(new Set(combined.execution.components.map(report => report.execution.isolation.host_id)).size, 1);
+  const calls = await fixture.calls();
+  assert.ok(calls.some(call => call.environment?.RUNNER_NAME === "GitHubActions1000023469"));
+  assert.ok(calls.filter(call => call.environment).every(call =>
+    call.environment.RUNNER_ENVIRONMENT === "github-hosted" && call.environment.GITHUB_RUN_ID === hosted.GITHUB_RUN_ID &&
+    call.environment.GITHUB_RUN_ATTEMPT === hosted.GITHUB_RUN_ATTEMPT));
+  const originalSummary = await readFile(join(original.d2, "summary.json"));
+  for (const fault of ["duplicate-runner", "foreign-attempt", "missing-identity"]) {
+    const copy = join(fixture.directory, "artifacts", `hosted-negative-${fault}`);
+    await cp(incoming, copy, { recursive: true });
+    const component = join(copy, "d2", original.d2.split(/[\\/]/).at(-1));
+    const summary = JSON.parse(originalSummary);
+    if (fault === "duplicate-runner")
+      summary.execution.isolation.execution_environment.runner_name = "GitHubActions1000023469";
+    if (fault === "foreign-attempt") summary.execution.isolation.execution_environment.run_attempt = "2";
+    if (fault === "missing-identity") delete summary.execution.isolation.execution_environment;
+    await writeFile(join(component, "summary.json"), JSON.stringify(summary));
+    const bytes = await readFile(join(component, "summary.json"));
+    const manifest = JSON.parse(await readFile(join(component, "raw-manifest.json"), "utf8"));
+    const entry = manifest.files.find(file => file.path === "summary.json");
+    entry.length = bytes.length;
+    entry.sha256 = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(join(component, "raw-manifest.json"), JSON.stringify(manifest));
+    const rejected = fixture.run("Full", hosted, {
+      Execution: "Aggregate", ExecutionPlan: planPath, ReportsDirectory: copy, JobResults: jobs
+    });
+    assert.equal(rejected.status, 1, fault + processEvidence(rejected));
+    assert.match(rejected.stdout + rejected.stderr, fault === "duplicate-runner"
+      ? /execution_workspaces_overlap/ : /execution_environment/);
+    assert.deepEqual(await readFile(join(original.d2, "summary.json")), originalSummary);
+  }
+});
+
+test("public Plan rejects ambiguous hosted allocation metadata before tools and retains physical host semantics locally", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const hosted = {
+    RUNNER_ENVIRONMENT: "github-hosted", RUNNER_NAME: "GitHubActions1000023469",
+    GITHUB_RUN_ID: "41902107179", GITHUB_RUN_ATTEMPT: "1"
+  };
+  for (const override of [
+    { RUNNER_NAME: "" }, { RUNNER_NAME: "runner\nforeign" }, { RUNNER_NAME: " runner " },
+    { GITHUB_RUN_ID: "" }, { GITHUB_RUN_ID: "local-foreign" }, { GITHUB_RUN_ATTEMPT: "0" },
+    { RUNNER_ENVIRONMENT: "" }, { RUNNER_ENVIRONMENT: "unsupported" }
+  ]) {
+    const rejected = fixture.run("Fast", { ...hosted, ...override }, { Execution: "Plan" });
+    assert.equal(rejected.status, 1, processEvidence(rejected));
+    assert.match(rejected.stdout + rejected.stderr, /execution environment/i);
+    await assert.rejects(readFile(join(fixture.directory, "calls.jsonl")), { code: "ENOENT" },
+      "Invalid hosted identity must fail before external commands.");
+  }
+  for (const environment of [{}, { ...hosted, RUNNER_ENVIRONMENT: "self-hosted" }]) {
+    const planned = fixture.run("Fast", environment, { Execution: "Plan" });
+    assert.equal(planned.status, 0, processEvidence(planned));
+    const own = (await fixture.report()).execution.isolation;
+    assert.deepEqual(own.execution_environment, { kind: "physical-host" });
+    assert.ok(own.host_id.length);
+    assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+  }
 });
 
 test("public owned workers preserve assignment through build and report missing results truthfully", async t => {

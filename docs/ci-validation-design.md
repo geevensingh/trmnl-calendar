@@ -156,6 +156,19 @@ registration with `DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false` before SDK use, then r
 the caller. This prevents private SDK homes from being added to persistent user PATH;
 it does not remove existing entries or repair an already oversized host PATH.
 
+Hosted isolation uses the standard `RUNNER_ENVIRONMENT=github-hosted` allocation:
+`RUNNER_NAME` namespaced by `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`. These
+[GitHub runner variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables#default-environment-variables)
+are captured before tool-environment filtering and retained through owned child
+processes. The machine name remains diagnostic, not hosted isolation authority:
+separate Windows jobs can reuse both that image hostname and the same workspace
+spelling. Runner names are not globally unique; duplicate allocation identities
+still undergo the existing overlapping-workspace checks. Local and self-hosted
+execution retain physical machine-name semantics, including those checks. Missing,
+malformed or unsupported allocation metadata fails explicitly, and hosted report
+run/attempt identities must match the immutable plan. No component ID or random
+report/process marker establishes an independent host.
+
 Private scratch is separate from the long report/launcher hierarchy:
 `.tools\run\<pid>-<sequence>` inside each physical worktree. The per-process sequence
 separates live scopes; an existing address fails rather than reusing it. The full

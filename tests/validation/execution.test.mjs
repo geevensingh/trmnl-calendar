@@ -95,6 +95,7 @@ function componentReports(plan, coverage, context, nodeFiles) {
         component: component.id, plan_sha256: plan.sha256,
         isolation: {
           host_id: "same-host", workspace_root: workspace,
+          execution_environment: { kind: "physical-host" },
           artifact_root: artifact, process_root: `${workspace}\\.tools\\run\\${1000 + index}-1`,
           browser_root: `${workspace}\\.tools\\playwright`,
           build_roots: ["src\\CalendarAgenda", "tests\\CalendarAgenda.Tests"]
@@ -264,6 +265,62 @@ test("workers on the same host cannot overlap workspaces, build outputs or owned
   const { plan, reports, jobs } = fixture();
   reports[1].execution.isolation = { ...structuredClone(reports[0].execution.isolation), host_id: "different-host" };
   assert.equal(reconcileExecution(plan, reports, jobs).component_set_complete, true);
+});
+
+function hostedReports(state) {
+  const paths = structuredClone(state.reports[0].execution.isolation);
+  for (const [index, report] of state.reports.entries()) {
+    report.execution.isolation = {
+      ...structuredClone(paths), host_id: "runnervmhao91",
+      execution_environment: {
+        kind: "github-hosted", run_id: state.context.run_id, run_attempt: state.context.run_attempt,
+        runner_name: `GitHubActions${1000023469 + index}`
+      }
+    };
+  }
+}
+
+test("hosted allocations with distinct runner names may reuse image hostnames and Windows workspace paths", () => {
+  const state = fixture();
+  hostedReports(state);
+  assert.equal(reconcileExecution(state.plan, state.reports, state.jobs).component_set_complete, true);
+  state.reports[1].execution.isolation.execution_environment.runner_name =
+    state.reports[0].execution.isolation.execution_environment.runner_name;
+  assert.throws(() => reconcileExecution(state.plan, state.reports, state.jobs), /execution_workspaces_overlap/);
+  const separate = fixture();
+  for (const report of separate.reports) {
+    report.execution.isolation.execution_environment = {
+      kind: "github-hosted", run_id: separate.context.run_id, run_attempt: separate.context.run_attempt,
+      runner_name: "Hosted Agent"
+    };
+  }
+  assert.equal(reconcileExecution(separate.plan, separate.reports, separate.jobs).component_set_complete, true);
+});
+
+test("hosted isolation rejects absent, malformed and cross-run allocation identities", () => {
+  for (const mutate of [
+    own => { delete own.execution_environment; },
+    own => { own.execution_environment.kind = "foreign-hosted"; },
+    own => { delete own.execution_environment.runner_name; },
+    own => { own.execution_environment.runner_name = ""; },
+    own => { own.execution_environment.runner_name = " runner "; },
+    own => { own.execution_environment.runner_name = "runner\nforeign"; },
+    own => { own.execution_environment.run_id = "100"; },
+    own => { own.execution_environment.run_attempt = "1"; },
+    own => { own.execution_environment.run_id = "local-not-a-hosted-run"; },
+    own => { own.execution_environment.component = "d1"; }
+  ]) {
+    const state = fixture();
+    hostedReports(state);
+    mutate(state.reports[0].execution.isolation);
+    assert.throws(() => reconcileExecution(state.plan, state.reports, state.jobs), /execution_environment/);
+  }
+  const state = fixture();
+  hostedReports(state);
+  state.reports[1].execution.isolation.host_id = "different-display-name";
+  state.reports[1].execution.isolation.execution_environment =
+    structuredClone(state.reports[0].execution.isolation.execution_environment);
+  assert.throws(() => reconcileExecution(state.plan, state.reports, state.jobs), /execution_workspaces_overlap/);
 });
 
 test("the public validator rejects incomplete modes and unused component inputs before any work", () => {

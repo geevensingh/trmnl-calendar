@@ -97,7 +97,8 @@ function Remove-ValidationUnsupportedToolEnvironment($Variables) {
         'NUMBER_OF_PROCESSORS', 'OS', 'PATH', 'PATHEXT', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_ARCHITEW6432',
         'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'PSModulePath', 'PUBLIC',
         'SystemDrive', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR', 'USERDOMAIN', 'USERNAME', 'USERPROFILE', 'windir',
-        'CI', 'ImageVersion', 'ImageOS', 'PR_HEAD_COMMIT', 'PR_BASE_COMMIT', 'PLAYWRIGHT_BROWSERS_PATH',
+        'CI', 'ImageVersion', 'ImageOS', 'RUNNER_ENVIRONMENT', 'RUNNER_NAME',
+        'PR_HEAD_COMMIT', 'PR_BASE_COMMIT', 'PLAYWRIGHT_BROWSERS_PATH',
         'MSBUILDDISABLENODEREUSE', 'UseSharedCompilation', 'AZURE_CONFIG_DIR',
         'AZURE_BICEP_USE_BINARY_FROM_PATH', 'AZURE_BICEP_CHECK_VERSION', 'AZURE_EXTENSION_USE_DYNAMIC_INSTALL',
         'CC', 'CXX', 'MAKE', 'INCLUDE', 'LIB', 'LIBPATH', 'MSYSTEM', 'MSYS2_PATH_TYPE',
@@ -194,6 +195,23 @@ function Enter-ValidationWorkerEnvironment([string]$Root, [string]$ReportDirecto
     }
     Assert-ValidationWorkerWorkspace $rootPath
     Assert-ValidationPhysicalDirectory $reportPath
+    $executionEnvironment = [ordered]@{ kind = 'physical-host' }
+    if ($env:RUNNER_ENVIRONMENT -ceq 'github-hosted') {
+        if ($env:GITHUB_RUN_ID -cnotmatch '^[1-9]\d{0,31}$' -or
+            $env:GITHUB_RUN_ATTEMPT -cnotmatch '^[1-9]\d{0,31}$' -or
+            $env:RUNNER_NAME -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$' -or
+            $env:RUNNER_NAME -cne $env:RUNNER_NAME.Trim()) {
+            throw 'Hosted execution environment requires a valid runner name and GitHub run/attempt.'
+        }
+        $executionEnvironment = [ordered]@{
+            kind = 'github-hosted'; run_id = $env:GITHUB_RUN_ID; run_attempt = $env:GITHUB_RUN_ATTEMPT
+            runner_name = $env:RUNNER_NAME
+        }
+    }
+    elseif (($env:RUNNER_ENVIRONMENT -and $env:RUNNER_ENVIRONMENT -cne 'self-hosted') -or
+        (!$env:RUNNER_ENVIRONMENT -and ($env:RUNNER_NAME -or $env:GITHUB_RUN_ID))) {
+        throw 'Execution environment metadata is missing or unsupported; refusing an ambiguous host identity.'
+    }
     $buildRoots = @(
         foreach ($project in @('src\CalendarAgenda', 'tests\CalendarAgenda.Tests')) {
             foreach ($kind in @('bin', 'obj')) { Join-Path $rootPath "$project\$kind" }
@@ -267,6 +285,7 @@ function Enter-ValidationWorkerEnvironment([string]$Root, [string]$ReportDirecto
         owner = $owner; saved_environment = $saved; restored = $false
         isolation = [ordered]@{
             host_id = [Environment]::MachineName
+            execution_environment = $executionEnvironment
             workspace_root = $rootPath; artifact_root = $reportPath; process_root = $processRoot
             build_roots = $buildRoots
             browser_root = Join-Path $rootPath '.tools\playwright'

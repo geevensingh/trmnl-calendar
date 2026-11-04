@@ -169,6 +169,18 @@ malformed or unsupported allocation metadata fails explicitly, and hosted report
 run/attempt identities must match the immutable plan. No component ID or random
 report/process marker establishes an independent host.
 
+The owned command request is UTF-8 JSON without a BOM. Its reader and the
+parent's stdout/stderr readers explicitly decode UTF-8 with invalid-byte errors;
+they do not rely on an inherited console codepage. Private-console regressions
+exercise non-ASCII executable/workspace paths, literal arguments, discovered
+identities and native output under codepage 1252 without changing a shared
+console. Malformed bytes and native failures remain failures. The existing
+PowerShell native pipeline is exercised at that same boundary, not replaced by
+another transport. Owned test-fixture process records are staged completely
+before atomic publication, so polling never accepts a half-written JSON record;
+permanent parse errors, read errors and the existing missing-record deadline
+remain strict.
+
 Private scratch is separate from the long report/launcher hierarchy:
 `.tools\run\<pid>-<sequence>` inside each physical worktree. The per-process sequence
 separates live scopes; an existing address fails rather than reusing it. The full

@@ -414,7 +414,8 @@ public sealed class ValidationOwnedJob : SafeHandleZeroOrMinusOneIsInvalid
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $PSNativeCommandArgumentPassing = 'Standard'
-$request = [Console]::In.ReadLine() | ConvertFrom-Json
+$requestReader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.UTF8Encoding]::new($false, $true), $false)
+$request = $requestReader.ReadLine() | ConvertFrom-Json
 if (!$request) { throw 'Owned tool request was not provided.' }
 & $request.command @($request.arguments)
 exit $LASTEXITCODE
@@ -429,6 +430,8 @@ exit $LASTEXITCODE
     $start.RedirectStandardError = $true
     $start.RedirectStandardInput = $true
     $start.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+    $start.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
+    $start.StandardErrorEncoding = [Text.UTF8Encoding]::new($false, $true)
     foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
         [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcher)))) {
         $start.ArgumentList.Add($argument)

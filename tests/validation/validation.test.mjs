@@ -21,14 +21,14 @@ function processEvidence(result) {
   });
 }
 
-async function checkout(t, { owned = false } = {}) {
+async function checkout(t, { owned = false, label = "" } = {}) {
   const parent = owned && process.platform === "win32" ? join(process.env.SystemDrive ?? "C:", "\\", ".tools") : tmpdir();
   await mkdir(parent, { recursive: true });
   if (owned) assert.equal((await lstat(parent)).isSymbolicLink(), false, "Owned fixture parent must be physical");
   const namespace = owned ? await realpath(await mkdtemp(join(parent, "vf-"))) : parent;
   const owner = owned ? randomUUID() : undefined;
   if (owned) await writeFile(join(namespace, ".fixture-owner"), owner, { flag: "wx" });
-  const directory = await realpath(await mkdtemp(join(namespace, owned ? `v ${process.pid}-` : "agenda validation ")));
+  const directory = await realpath(await mkdtemp(join(namespace, owned ? `v ${process.pid}${label}-` : "agenda validation ")));
   if (owned) await writeFile(join(directory, ".fixture-owner"), owner, { flag: "wx" });
   if (!owned || !process.env.VALIDATION_RETAIN_FIXTURES)
     t.after(async () => {
@@ -147,8 +147,7 @@ exit 0
   }
   let reportDirectory;
   let bootstrapped = false;
-  const run = (scope = "Fast", environment = {}, selection = {}, background = false) => {
-    const arguments_ = [
+  const arguments_ = [
     "-NoProfile", "-NonInteractive", "-Command", `
       $ErrorActionPreference = 'Stop'
       function global:Get-Command {
@@ -506,8 +505,25 @@ public class ExternalToolFixture {
                 "-NoLogo -NoProfile -NonInteractive -Command \\"Start-Sleep -Seconds 120\\"");
             childStart.UseShellExecute = false;
             var child = Process.Start(childStart);
-            File.WriteAllText(Path.Combine(directory, "owned-processes.json"), serializer.Serialize(new {
-                parent = Process.GetCurrentProcess().Id, child = child.Id, scratch = snapshot["TEMP"] }));
+            string recordPath = Path.Combine(directory, "owned-processes.json");
+            string stagedRecord = recordPath + "." + Process.GetCurrentProcess().Id + ".tmp";
+            string record = serializer.Serialize(new {
+                parent = Process.GetCurrentProcess().Id, child = child.Id, scratch = snapshot["TEMP"] });
+            string split;
+            if (configuration.TryGetValue("VALIDATION_RECORD_PREFIX", out split) && split == "1") {
+                File.WriteAllText(stagedRecord, record.Substring(0, record.Length / 2));
+                string ready = Path.Combine(directory, "record-prefix-ready");
+                File.WriteAllText(ready + ".tmp", serializer.Serialize(new { prefix = File.ReadAllText(stagedRecord) }));
+                File.Move(ready + ".tmp", ready);
+                var publication = Stopwatch.StartNew();
+                while (!File.Exists(Path.Combine(directory, "complete-record"))) {
+                    if (publication.Elapsed.TotalSeconds >= 10) return 92;
+                    System.Threading.Thread.Sleep(10);
+                }
+            }
+            File.WriteAllText(stagedRecord, record);
+            if (File.Exists(recordPath)) File.Replace(stagedRecord, recordPath, null);
+            else File.Move(stagedRecord, recordPath);
             if (behavior == "orphan") { Console.WriteLine("10.0.100"); return 0; }
             var clock = Stopwatch.StartNew();
             while (!File.Exists(Path.Combine(directory, "release")) &&
@@ -520,8 +536,23 @@ public class ExternalToolFixture {
         }
         if (args.Length > 0 && (args[0] == "format" || args[0] == "build" || args[0] == "--check")) {
             if (args[0] == "build") {
-                Console.WriteLine("owned stdout");
-                Console.Error.WriteLine("owned stderr");
+                string text;
+                string invalid;
+                if (configuration.TryGetValue("VALIDATION_NATIVE_INVALID_UTF8", out invalid) && invalid == "1") {
+                    var bytes = new byte[] { 0xc3, 0x28 };
+                    Console.OpenStandardOutput().Write(bytes, 0, bytes.Length);
+                } else if (configuration.TryGetValue("VALIDATION_NATIVE_UTF8_TEXT", out text)) {
+                    var utf8 = new System.Text.UTF8Encoding(false);
+                    var stdout = utf8.GetBytes(text + " stdout" + Environment.NewLine);
+                    var stderr = utf8.GetBytes(text + " stderr" + Environment.NewLine);
+                    File.WriteAllBytes(Path.Combine(directory, "native-stdout-utf8.bin"), stdout);
+                    File.WriteAllBytes(Path.Combine(directory, "native-stderr-utf8.bin"), stderr);
+                    Console.OpenStandardOutput().Write(stdout, 0, stdout.Length);
+                    Console.OpenStandardError().Write(stderr, 0, stderr.Length);
+                } else {
+                    Console.WriteLine("owned stdout");
+                    Console.Error.WriteLine("owned stderr");
+                }
             }
             string failure;
             return configuration.TryGetValue("VALIDATION_FAIL", out failure) && failure == tool + ":" + args[0] ? 23 : 0;
@@ -605,14 +636,61 @@ Add-Type -Path (Join-Path $Directory 'host.cs') -OutputAssembly (Join-Path $Dire
       if ($env:VALIDATION_BOOTSTRAP_ONLY) { exit 0 }
       $selection = $env:VALIDATION_SELECTION | ConvertFrom-Json -AsHashtable
       if ($env:VALIDATION_DISPLAY_PROFILE) { $selection.DisplayCoverage = $env:VALIDATION_DISPLAY_PROFILE }
-      & $env:VALIDATION_SCRIPT -Scope $env:VALIDATION_SCOPE @selection
-      $code = $LASTEXITCODE
+      $privateConsole = $null
+      if ($env:VALIDATION_PRIVATE_CODEPAGE) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FixturePrivateConsole {
+    [DllImport("kernel32.dll")] public static extern bool FreeConsole();
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AllocConsole();
+    [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int value);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetStdHandle(int value, IntPtr handle);
+}
+'@
+        $handles = @{}
+        foreach ($handle in @(-10,-11,-12)) { $handles[$handle] = [FixturePrivateConsole]::GetStdHandle($handle) }
+        $null = [FixturePrivateConsole]::FreeConsole()
+        if (![FixturePrivateConsole]::AllocConsole()) { throw 'Private fixture console could not be allocated.' }
+        foreach ($handle in @(-10,-11,-12)) {
+          if (![FixturePrivateConsole]::SetStdHandle($handle, $handles[$handle])) { throw 'Private fixture stream restoration failed.' }
+        }
+        $privateConsole = @{ input = [Console]::InputEncoding; output = [Console]::OutputEncoding; pipeline = $OutputEncoding }
+        [Console]::InputEncoding = [Text.Encoding]::GetEncoding([int]$env:VALIDATION_PRIVATE_CODEPAGE)
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding([int]$env:VALIDATION_PRIVATE_CODEPAGE)
+        $OutputEncoding = [Text.Encoding]::GetEncoding([int]$env:VALIDATION_PRIVATE_CODEPAGE)
+        $selectedEncoding = @{ input = [Console]::InputEncoding.CodePage;
+          output = [Console]::OutputEncoding.CodePage; pipeline = $OutputEncoding.CodePage }
+        Start-Transcript -LiteralPath '.tools\\fixture\\private-console.log' | Out-Null
+      }
+      try {
+        & $env:VALIDATION_SCRIPT -Scope $env:VALIDATION_SCOPE @selection
+        $code = $LASTEXITCODE
+      } finally {
+        if ($privateConsole) {
+          [Console]::InputEncoding = $privateConsole.input
+          [Console]::OutputEncoding = $privateConsole.output
+          $OutputEncoding = $privateConsole.pipeline
+          @{ selected = $selectedEncoding;
+            before = @{ input = $privateConsole.input.CodePage; output = $privateConsole.output.CodePage;
+              pipeline = $privateConsole.pipeline.CodePage };
+            after = @{ input = [Console]::InputEncoding.CodePage; output = [Console]::OutputEncoding.CodePage;
+              pipeline = $OutputEncoding.CodePage } } |
+            ConvertTo-Json | Set-Content -LiteralPath '.tools\\fixture\\console-restoration.json'
+          Stop-Transcript | Out-Null
+          $null = [FixturePrivateConsole]::FreeConsole()
+        }
+      }
       $after = Get-CallerEnvironment
       @{ before = $before; after = $after } | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath $env:VALIDATION_ENVIRONMENT
       exit $code
     `
   ];
+  const driver = join(directory, ".tools", `validation-driver-${randomUUID()}.ps1`);
+  writeFileSync(driver, arguments_.at(-1));
+  arguments_.splice(2, 2, "-File", driver);
+  const run = (scope = "Fast", environment = {}, selection = {}, background = false) => {
     const options = {
     cwd: directory, encoding: "utf8", timeout: Number(environment.VALIDATION_TIMEOUT_MS ?? 30_000),
     env: {
@@ -811,12 +889,13 @@ exit $code
   const failure = execute(["error"]);
   assert.equal(failure.status, 1, failure.stdout + failure.stderr);
   assert.match(failure.stderr, /Strict fixture native error/);
-  for (const input of ['{"tool":', "\ufeff" + JSON.stringify({ tool: "ruby", arguments: values })]) {
+  for (const input of ['{"tool":', "\ufeff" + JSON.stringify({ tool: "ruby", arguments: values }),
+    Buffer.from([0xc3, 0x28])]) {
     const invalid = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", join(tools, "command.ps1")], {
       cwd: fixture.directory, input, encoding: "utf8", timeout: 10_000
     });
     assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
-    assert.match(invalid.stderr, /Conversion from JSON failed/);
+    assert.match(invalid.stderr, /Conversion from JSON failed|Unable to translate/);
   }
   const child = (await readFile(join(tools, "child.pid"), "utf8")).trim();
   const cleanup = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
@@ -824,6 +903,70 @@ exit $code
     encoding: "utf8", timeout: 10_000
   });
   assert.equal(cleanup.status, 0, cleanup.stdout + cleanup.stderr);
+});
+
+test("public owned modes preserve non-ASCII paths and discovered identities under a private non-UTF8 console", async t => {
+  const fixture = await checkout(t, { owned: true, label: " caf\u00e9 \u96ea" });
+  const tools = join(fixture.directory, ".tools", "fixture");
+  const discoveryPath = join(tools, "discovery.json");
+  const discovery = JSON.parse(await readFile(discoveryPath, "utf8"));
+  const literal = 'caf\u00e9 \u96ea \ud83d\ude80 "literal"';
+  for (const item of discovery.tests) item.name = `${item.method}(${literal})`;
+  await writeFile(discoveryPath, JSON.stringify(discovery));
+  const nativeText = "native caf\u00e9 \u96ea \ud83d\ude80";
+  const environment = { VALIDATION_PRIVATE_CODEPAGE: "1252", VALIDATION_TIMEOUT_MS: "60000",
+    VALIDATION_NATIVE_UTF8_TEXT: nativeText };
+  const planned = fixture.run("Fast", environment, { Execution: "Plan" });
+  assert.notEqual(planned.phase, "fixture-bootstrap", processEvidence(planned));
+  assert.deepEqual([...(await readFile(join(tools, "dotnet.exe"))).subarray(0, 2)], [0x4d, 0x5a],
+    "The independently compiled native fixture must exist before diagnosing transport.");
+  assert.equal(planned.status, 0, processEvidence(planned));
+  for (const stream of ["stdout", "stderr"]) {
+    assert.deepEqual(await readFile(join(tools, `native-${stream}-utf8.bin`)),
+      Buffer.from(`${nativeText} ${stream}\r\n`, "utf8"));
+    assert.ok((await readFile(join(tools, "private-console.log"), "utf8")).includes(`${nativeText} ${stream}`),
+      `Actual UTF-8 native ${stream} must decode without the private console codepage.`);
+  }
+  const reports = join(fixture.directory, "artifacts", "validation");
+  const planDirectory = join(reports, (await readdir(reports)).find(name => name.startsWith("plan-")));
+  const planPath = join(planDirectory, "execution-plan.json");
+  const bytes = await readFile(planPath);
+  assert.ok(bytes.includes(Buffer.from("caf\u00e9 \u96ea \ud83d\ude80", "utf8")));
+  const plan = JSON.parse(bytes.toString("utf8"));
+  assert.deepEqual(plan.components.flatMap(component => component.expected_tests.map(item => item.name)).sort(),
+    discovery.tests.map(item => item.name).sort());
+  const worker = fixture.run("Full", environment, { Execution: "Worker", Component: "d1", ExecutionPlan: planPath });
+  assert.equal(worker.status, 0, processEvidence(worker));
+  const component = join(reports, (await readdir(reports)).find(name => name.startsWith("component-")));
+  const summary = JSON.parse(await readFile(join(component, "summary.json"), "utf8"));
+  assert.deepEqual(summary.evidence.dotnet.tests.map(item => item.name),
+    plan.components.find(item => item.id === "d1").expected_tests.map(item => item.name));
+  const calls = await fixture.calls();
+  assert.ok(calls.some(item => item.arguments.includes(component)));
+  assert.ok(calls.some(item => item.arguments.includes(join(fixture.directory, "tests", "validation-partitions.runsettings"))));
+  const encodings = JSON.parse(await readFile(join(tools, "console-restoration.json"), "utf8"));
+  assert.deepEqual(encodings.selected, { input: 1252, output: 1252, pipeline: 1252 });
+  assert.deepEqual(encodings.after, encodings.before);
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+  const invalid = fixture.run("Fast", { ...environment, VALIDATION_NATIVE_INVALID_UTF8: "1" },
+    { Execution: "Plan" });
+  assert.equal(invalid.status, 1, processEvidence(invalid));
+  assert.match(invalid.stdout + invalid.stderr, /Unable to translate|invalid.*UTF|fallback|decod/i);
+  const failed = fixture.run("Fast", { ...environment, VALIDATION_FAIL: "dotnet:build" },
+    { Execution: "Plan" });
+  assert.equal(failed.status, 1, processEvidence(failed));
+  assert.match(failed.stdout + failed.stderr, /exited with code 23/);
+  assert.ok((await readFile(join(tools, "private-console.log"), "utf8")).includes(`${nativeText} stderr`));
+  const restored = JSON.parse(await readFile(join(tools, "console-restoration.json"), "utf8"));
+  assert.deepEqual(restored.after, restored.before);
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+  t.diagnostic(JSON.stringify({
+    private_console: restored, literal,
+    decoded_theory_names: summary.evidence.dotnet.tests.map(item => item.name),
+    native_stdout_utf8_hex: (await readFile(join(tools, "native-stdout-utf8.bin"))).toString("hex"),
+    native_stderr_utf8_hex: (await readFile(join(tools, "native-stderr-utf8.bin"))).toString("hex"),
+    malformed_native_utf8_rejected: invalid.status === 1, native_exit_23_preserved: failed.status === 1
+  }));
 });
 
 test("public Worker classifies identity-complete failed TRX as known failure rather than missing evidence", async t => {
@@ -1135,6 +1278,86 @@ async function waitForRecord(path) {
   }
   assert.fail(`Owned native process never produced ${path}`);
 }
+
+test("public owned fixture publishes a complete process record only after its writer finishes", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const owner = fixture.start("Fast", {
+    VALIDATION_PROCESS_BEHAVIOR: "hold", VALIDATION_RECORD_PREFIX: "1", VALIDATION_TIMEOUT_MS: "60000"
+  }, { Execution: "Plan" });
+  t.after(() => stopProcess(owner.process.pid));
+  const tools = join(fixture.directory, ".tools", "fixture");
+  let observed;
+  let prefix;
+  try {
+    prefix = (await waitForRecord(join(tools, "record-prefix-ready"))).prefix;
+    assert.throws(() => JSON.parse(prefix), SyntaxError);
+    observed = await readFile(join(tools, "owned-processes.json"), "utf8").catch(error => {
+      if (error.code !== "ENOENT") throw error;
+      return null;
+    });
+  } finally {
+    await writeFile(join(tools, "complete-record"), "continue");
+    await writeFile(join(tools, "release"), "continue");
+  }
+  const completed = await owner.done;
+  assert.equal(completed.status, 0, processEvidence(completed));
+  const processes = await waitForRecord(join(tools, "owned-processes.json"));
+  assertProcessState([processes.parent, processes.child]);
+  assert.equal(observed, null, "A polling reader must not see the deterministic half-written JSON prefix.");
+  assert.deepEqual((await fixture.environment()).after, (await fixture.environment()).before);
+  t.diagnostic(JSON.stringify({ staged_prefix: prefix, published_before_completion: observed,
+    completed_record: processes, owned_descendants_terminated: true }));
+});
+
+test("public owned fixture polling rejects permanent malformed, locked and missing process records", async t => {
+  const fixture = await checkout(t, { owned: true });
+  const owner = fixture.start("Fast", { VALIDATION_PROCESS_BEHAVIOR: "hold", VALIDATION_TIMEOUT_MS: "60000" },
+    { Execution: "Plan" });
+  t.after(() => stopProcess(owner.process.pid));
+  const tools = join(fixture.directory, ".tools", "fixture");
+  const path = join(tools, "owned-processes.json");
+  const processes = await waitForRecord(path);
+  let lockedError;
+  try {
+    await writeFile(path, '{"parent":');
+    await assert.rejects(waitForRecord(path), SyntaxError);
+    await writeFile(path, JSON.stringify(processes));
+    const locker = spawn("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `
+$ErrorActionPreference = 'Stop'
+$file = [IO.File]::Open($env:RECORD_PATH, 'Open', 'ReadWrite', 'None')
+try {
+    [IO.File]::WriteAllText($env:RECORD_LOCKED + '.tmp', 'true')
+    [IO.File]::Move($env:RECORD_LOCKED + '.tmp', $env:RECORD_LOCKED)
+    if (![Console]::In.ReadLine()) { throw 'Lock release was not provided.' }
+} finally { $file.Dispose() }
+`], { cwd: fixture.directory, env: { ...process.env, RECORD_PATH: path,
+      RECORD_LOCKED: join(tools, "record-locked") }, stdio: ["pipe", "ignore", "pipe"] });
+    const unlocked = new Promise((resolve, reject) => {
+      locker.on("error", reject);
+      locker.on("close", resolve);
+    });
+    t.after(() => stopProcess(locker.pid));
+    try {
+      assert.equal(await waitForRecord(join(tools, "record-locked")), true);
+      await assert.rejects(waitForRecord(path), error => {
+        lockedError = error.code;
+        return ["EACCES", "EPERM", "EBUSY"].includes(error.code);
+      });
+    } finally {
+      locker.stdin.end("release\n");
+      assert.equal(await unlocked, 0);
+    }
+    await rm(path);
+    await assert.rejects(waitForRecord(path), /Owned native process never produced/);
+  } finally {
+    await writeFile(join(tools, "release"), "continue");
+  }
+  const completed = await owner.done;
+  assert.equal(completed.status, 0, processEvidence(completed));
+  assertProcessState([processes.parent, processes.child]);
+  t.diagnostic(JSON.stringify({ permanent_malformed_rejected: true, locked_error: lockedError,
+    missing_record_rejected_at_existing_deadline: true, owned_descendants_terminated: true }));
+});
 
 function stopProcess(pid) {
   return spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
@@ -1540,6 +1763,14 @@ test("public reports bind exact event/evaluated identities and reject hidden wor
   assert.deepEqual(report.content.finished, report.content.started);
   assert.match(report.component_contract_sha256, /^[a-f0-9]{64}$/);
   assert.ok(report.provenance.tools.git.startsWith("git version"));
+  await writeFile(join(fixture.directory, "unknown-user.txt"), "preserve real untracked input\n");
+  assert.equal(fixture.run("Fast", pins).status, 0);
+  assert.equal((await fixture.report()).provenance.working_tree_clean, false);
+  await rm(join(fixture.directory, "unknown-user.txt"));
+  await writeFile(join(fixture.directory, "content.txt"), "visible tracked modification\n");
+  assert.equal(fixture.run("Fast", pins).status, 0);
+  assert.equal((await fixture.report()).provenance.working_tree_clean, false);
+  await writeFile(join(fixture.directory, "content.txt"), "synthetic evaluated input\n");
   git("update-index", "--assume-unchanged", "content.txt");
   await writeFile(join(fixture.directory, "content.txt"), "hidden modification\n");
   assert.equal(fixture.run("Fast", pins).status, 0);
